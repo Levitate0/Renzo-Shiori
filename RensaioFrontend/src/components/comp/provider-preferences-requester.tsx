@@ -33,11 +33,9 @@ export function ProviderPreferencesRequester({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isInitializing, setIsInitializing] = useState(false);
   const [loadedValues, setLoadedValues] = useState<Record<number, unknown>>({});  // Load preferences when dialog opens
   const loadPreferences = useCallback(async () => {
     setLoading(true);
-    setIsInitializing(true);
     setError(null);
     
     try {
@@ -50,13 +48,9 @@ export function ProviderPreferencesRequester({
         initialValues[index] = pref.currentValue ?? pref.defaultValue;
       });
       setLoadedValues(initialValues);
-      
-      // Allow a brief delay to ensure React has processed the state update
-      setTimeout(() => setIsInitializing(false), 100);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load preferences');
       console.error('Failed to load preferences:', err);
-      setIsInitializing(false);
     } finally {
       setLoading(false);
     }
@@ -64,8 +58,7 @@ export function ProviderPreferencesRequester({
     if (open && pkgName) {
       void loadPreferences();
     } else if (!open) {
-      // Reset initialization state when dialog closes
-      setIsInitializing(false);
+      // Reset state when dialog closes
       setPreferences(null);
       setError(null);
       setLoadedValues({});
@@ -91,23 +84,15 @@ export function ProviderPreferencesRequester({
   const updatePreferenceValue = (index: number, newValue: unknown) => {
     if (!preferences) return;
 
-    // Prevent updates during initialization to avoid overwriting loaded values
-    if (isInitializing) {
-      return;
-    }
-
     const currentPref = preferences.preferences[index];
     if (!currentPref) return;
     
     const currentVal = getCurrentValue(currentPref);
-    const loadedVal = loadedValues[index];
-    
-    // If we're trying to set the value to what was originally loaded, ignore it
-    if (loadedVal !== undefined && newValue === loadedVal && currentVal === loadedVal) {
-      return;
-    }
-    
-    // Only update if the value actually changed to prevent unnecessary overwrites
+
+    // Only update if the value actually changed to prevent unnecessary re-renders.
+    // Note: this reference/value equality check intentionally does not special-case
+    // array values (ComboCheckBox) - a shallow "!==" on arrays is always true, so
+    // multi-select updates always flow through, which is the desired behavior there.
     if (currentVal === newValue) return;
 
     const updatedPreferences = {
