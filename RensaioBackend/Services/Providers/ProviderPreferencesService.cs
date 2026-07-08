@@ -119,7 +119,19 @@ namespace RensaioBackend.Services.Providers
                 bool newValue = storageValue == "permanent";
                 if (newValue != providers[0].IsStorage) //At this isStorage or not is for all source belonging to an extension.
                 {
-                    providers.ForEach(a=> a.IsStorage = newValue);
+                    // NOTE: `providers` here comes from ProviderCacheService's static, cross-request cache -
+                    // those entity instances are tracked (if at all) by whichever DbContext happened to be
+                    // active the last time the cache was refreshed, not by this request's `_db`. Mutating
+                    // them directly and calling `_db.SaveChangesAsync()` is a silent no-op: this `_db` never
+                    // tracked those objects, so nothing gets persisted even though no exception is thrown.
+                    // Re-fetch the same rows through the current request's DbContext so the mutation is
+                    // actually tracked and persisted.
+                    var providerIds = providers.Select(a => a.MihonProviderId).ToList();
+                    var trackedProviders = await _db.Providers
+                        .Where(a => providerIds.Contains(a.MihonProviderId))
+                        .ToListAsync(token)
+                        .ConfigureAwait(false);
+                    trackedProviders.ForEach(a => a.IsStorage = newValue);
                     await _db.SaveChangesAsync(token).ConfigureAwait(false);
                     await _providerCache.RefreshCacheAsync(false, token).ConfigureAwait(false);
                 }
