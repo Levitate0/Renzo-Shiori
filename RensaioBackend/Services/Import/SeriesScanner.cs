@@ -37,8 +37,42 @@ namespace RensaioBackend.Services.Import
             NumberHandling = JsonNumberHandling.AllowReadingFromString
         };
 
+        /// <summary>
+        /// Derives a clean display title from a folder name when no other title
+        /// information is available (used by title-only scanning, see
+        /// <see cref="ProcessDirectoryAsync"/>).
+        /// </summary>
+        private static string TitleFromFolderName(string seriesFolder)
+        {
+            int idx = seriesFolder.LastIndexOfAny(['\\', '/']);
+            string title = idx >= 0
+                ? seriesFolder[(idx + 1)..]
+                : seriesFolder;
+            title = title.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            title = title.Replace("_", " ").Replace(".", " ");
+            title = title.Replace("  ", " ").Replace("  ", " ").Trim();
+            return title;
+        }
 
         public async Task<ImportSeriesSnapshot?> ProcessDirectoryAsync(List<TachiyomiRepository> repos, string directoryPath, string seriesFolder, CancellationToken token = default)
+            => await ProcessDirectoryAsync(repos, directoryPath, seriesFolder, titleOnly: false, token).ConfigureAwait(false);
+
+        /// <summary>
+        /// Scans a single series folder.
+        /// </summary>
+        /// <param name="titleOnly">
+        /// When true, a folder with no directly-contained archive files is not skipped
+        /// (the normal behavior) but instead registered as a bare title-only import -
+        /// just the folder name as the series title, with no chapters or providers
+        /// attached. This exists for migrating libraries downloaded by other tools
+        /// (e.g. Suwayomi, which stores each chapter as a folder of loose images -
+        /// series/chapter/001.jpg - rather than Rensaio's one-CBZ-per-chapter layout
+        /// directly inside the series folder). The resulting bare import still flows
+        /// through the normal SearchSeriesAsync auto-match pipeline unchanged, since
+        /// that already falls back to a pure title search when a provider snapshot
+        /// has no existing provider info to match against.
+        /// </param>
+        public async Task<ImportSeriesSnapshot?> ProcessDirectoryAsync(List<TachiyomiRepository> repos, string directoryPath, string seriesFolder, bool titleOnly, CancellationToken token = default)
         {
             string path = seriesFolder[directoryPath.Length..];
             path = path.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -66,7 +100,31 @@ namespace RensaioBackend.Services.Import
             var archiveFiles = allFiles.Where(f => Parser.IsArchive(f)).ToList();
 
             if (archiveFiles.Count == 0)
-                return null;  // Skip folders with no archives
+            {
+                if (!titleOnly)
+                    return null;  // Skip folders with no archives
+
+                // Title-only mode: this folder has no CBZ/archive files directly inside it
+                // (e.g. a Suwayomi-style series/chapter/loose-images.jpg layout), but we
+                // still want the series NAME registered so it can be auto-matched to a
+                // real online provider without the user re-typing 200+ titles by hand.
+                // No chapters/providers are attached here - SearchSeriesAsync fills those
+                // in later purely from the title.
+                string folderTitle = seriesInfo != null && !string.IsNullOrWhiteSpace(seriesInfo.metadata?.name)
+                    ? seriesInfo.metadata!.name!
+                    : TitleFromFolderName(seriesFolder);
+
+                if (string.IsNullOrWhiteSpace(folderTitle))
+                    return null;
+
+                return new ImportSeriesSnapshot
+                {
+                    Title = folderTitle,
+                    Path = path,
+                    Type = "Manga",
+                    Providers = new List<ImportProviderSnapshot>()
+                };
+            }
 
             LibraryType[] libraryTypes = { LibraryType.Manga, LibraryType.Comic };
             Dictionary<LibraryType, List<NewDetectedChapter>> detected =
@@ -199,13 +257,7 @@ namespace RensaioBackend.Services.Import
                             d.Title.StartsWith(invalidTitle, StringComparison.InvariantCultureIgnoreCase) ||
                             d.Title.Equals(invalidTitle, StringComparison.InvariantCultureIgnoreCase)))
                     {
-                        int idx = seriesFolder.LastIndexOfAny(['\\', '/']);
-                        if (idx >= 0)
-                            d.Title = seriesFolder[(idx + 1)..].TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                        else
-                            d.Title = seriesFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                        d.Title = d.Title.Replace("_", " ").Replace(".", " ");
-                        d.Title = d.Title.Replace("  ", " ").Replace("  ", " ").Trim();
+                        d.Title = TitleFromFolderName(seriesFolder);
                     }
                     detected[lib].Add(d);
                 }
@@ -269,6 +321,16 @@ namespace RensaioBackend.Services.Import
         public async Task RecurseDirectoryAsync(List<RensaioBackend.Models.Database.SeriesEntity> allseries, List<TachiyomiRepository> repos,
             List<ImportSeriesSnapshot> seriesDict, string directoryPath, string seriesFolder,
             ProgressReporter scanProgress, CancellationToken token = default)
+            => await RecurseDirectoryAsync(allseries, repos, seriesDict, directoryPath, seriesFolder, titleOnly: false, scanProgress, token).ConfigureAwait(false);
+
+        /// <param name="titleOnly">
+        /// See <see cref="ProcessDirectoryAsync(List{TachiyomiRepository}, string, string, bool, CancellationToken)"/>.
+        /// Registers folders with no directly-contained archive files as bare
+        /// title-only imports instead of skipping them.
+        /// </param>
+        public async Task RecurseDirectoryAsync(List<RensaioBackend.Models.Database.SeriesEntity> allseries, List<TachiyomiRepository> repos,
+            List<ImportSeriesSnapshot> seriesDict, string directoryPath, string seriesFolder, bool titleOnly,
+            ProgressReporter scanProgress, CancellationToken token = default)
         {
             var seriesFolders = await Task.Run(() => Directory.GetDirectories(seriesFolder, "*.*", SearchOption.AllDirectories), token).ConfigureAwait(false);
             if (seriesFolders.Length == 0)
@@ -279,7 +341,7 @@ namespace RensaioBackend.Services.Import
 
             foreach (var n in seriesFolders)
             {
-                ImportSeriesSnapshot? det = await ProcessDirectoryAsync(repos, directoryPath, n, token).ConfigureAwait(false);
+                ImportSeriesSnapshot? det = await ProcessDirectoryAsync(repos, directoryPath, n, titleOnly, token).ConfigureAwait(false);
                 acum += step;
 
                 if (det != null)
@@ -326,4 +388,3 @@ namespace RensaioBackend.Services.Import
         }
     }
 }
-
