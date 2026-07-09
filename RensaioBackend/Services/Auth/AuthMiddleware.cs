@@ -49,37 +49,36 @@ public class AuthMiddleware
 
         if (authEnabled)
         {
-            // JWT-based authentication.
-            // Prefer the Authorization header, but fall back to a `token` query string
-            // parameter. This fallback exists because <img src="..."> (and similarly,
-            // native browser-initiated requests like <link>/<video>) cannot attach
-            // custom headers - only the Authorization header path is available to
-            // fetch()/XHR-based API calls. Without this fallback, every image served
-            // through an authenticated route (e.g. /api/image/{key}) is unauthenticatable
-            // by design, regardless of a valid, logged-in session.
+            var jwtService = scope.ServiceProvider.GetRequiredService<JwtTokenService>();
+            ClaimsPrincipal? principal = null;
+
+            // Primary path: full-scope session token via the Authorization header.
+            // This is what every apiClient.ts fetch() call uses.
             string? authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
-            string? token = null;
             if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
-                token = authHeader["Bearer ".Length..].Trim();
+                string headerToken = authHeader["Bearer ".Length..].Trim();
+                principal = jwtService.ValidateToken(headerToken);
             }
             else
             {
+                // Fallback path: a short-lived, image-scoped token via `?token=`
+                // query string, for requests that can't set custom headers
+                // (<img src="...">, etc.). Deliberately validated with
+                // ValidateImageToken (audience "RensaioImages"), NOT the main
+                // ValidateToken (audience "Rensaio") - a full-power session
+                // token dropped into a URL by mistake or by an attacker is
+                // rejected here, since only tokens minted by
+                // GenerateImageAccessToken carry the right audience. This
+                // keeps the powerful, long-lived token out of URLs (and
+                // therefore out of browser history / server access logs /
+                // any intermediate proxy or CDN logs) entirely.
                 string? queryToken = context.Request.Query["token"].FirstOrDefault();
                 if (!string.IsNullOrWhiteSpace(queryToken))
                 {
-                    token = queryToken;
+                    principal = jwtService.ValidateImageToken(queryToken);
                 }
             }
-
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                context.Response.StatusCode = 401;
-                return;
-            }
-
-            var jwtService = scope.ServiceProvider.GetRequiredService<JwtTokenService>();
-            ClaimsPrincipal? principal = jwtService.ValidateToken(token);
 
             if (principal == null)
             {
