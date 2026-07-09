@@ -75,9 +75,19 @@ public class ImportCommandService
         _stateService = stateService;
     }
 
-    public async Task<JobResult> ScanAsync(string directoryPath, JobInfo jobInfo, CancellationToken token = default)
+    /// <param name="titleOnly">
+    /// When true, folders with no directly-contained CBZ/archive files are still
+    /// registered as bare title-only imports (folder name as series title, no
+    /// chapters/providers) instead of being silently skipped. Intended for
+    /// migrating libraries laid out by other downloaders (e.g. Suwayomi, which
+    /// stores each chapter as a folder of loose images rather than a CBZ) where
+    /// the goal is just getting the ~200+ series titles registered so they can be
+    /// auto-matched to real providers via the normal SearchSeriesAsync pipeline,
+    /// without needing the original files to be readable by Rensaio at all.
+    /// </param>
+    public async Task<JobResult> ScanAsync(string directoryPath, JobInfo jobInfo, bool titleOnly = false, CancellationToken token = default)
     {
-        _logger.LogInformation("Starting directory scan job for path: {directoryPath}", directoryPath);
+        _logger.LogInformation("Starting directory scan job for path: {directoryPath} (titleOnly: {titleOnly})", directoryPath, titleOnly);
         ProgressReporter progress = _reportingService.CreateReporter(jobInfo);
         if ((await _jobManagementService.IsJobTypeRunningAsync(JobType.SearchProviders, token).ConfigureAwait(false)) 
             || (await _jobManagementService.IsJobTypeRunningAsync(JobType.InstallAdditionalExtensions, token).ConfigureAwait(false)))
@@ -95,7 +105,7 @@ public class ImportCommandService
         }
         progress.Report(ProgressStatus.Started, 0, "Scanning Directories...");
         var seriesDict = new List<ImportSeriesSnapshot>();
-        await _scanner.RecurseDirectoryAsync(allseries, repos, seriesDict, directoryPath, directoryPath, progress, token).ConfigureAwait(false);
+        await _scanner.RecurseDirectoryAsync(allseries, repos, seriesDict, directoryPath, directoryPath, titleOnly, progress, token).ConfigureAwait(false);
         HashSet<string> folders = seriesDict.Select(a => a.Path).ToHashSet();
         await SaveImportsAsync(folders, seriesDict, token).ConfigureAwait(false);
         progress.Report(ProgressStatus.Completed, 100, "Scanning completed successfully.");
