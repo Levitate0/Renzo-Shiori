@@ -265,6 +265,13 @@ namespace RensaioBackend
                     {
                         headers.CacheControl = "no-cache";
                     }
+                    // Service worker + manifest control the PWA update cycle — a cached
+                    // copy here delays every future frontend update reaching clients.
+                    else if (context.File.Name.Equals("sw.js", StringComparison.OrdinalIgnoreCase)
+                             || context.File.Name.EndsWith(".webmanifest", StringComparison.OrdinalIgnoreCase))
+                    {
+                        headers.CacheControl = "no-cache";
+                    }
                     // Next.js content-hashes filenames under _next/static/, so a cached copy
                     // can never go stale — safe to cache aggressively and mark immutable.
                     else if (context.Context.Request.Path.Value?.Contains("/_next/static/", StringComparison.OrdinalIgnoreCase) == true)

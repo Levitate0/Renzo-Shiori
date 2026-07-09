@@ -1,11 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { settingsService } from '@/lib/api/services/settingsService';
+import { setPublicApiUrl } from '@/lib/api/config';
 import { type Settings } from '@/lib/api/types';
 
 export const useSettings = () => {
   return useQuery({
     queryKey: ['settings'],
-    queryFn: () => settingsService.getSettings(),
+    queryFn: async () => {
+      const settings = await settingsService.getSettings();
+      // Keep the API client's public-URL override in sync with the WebUI setting.
+      setPublicApiUrl(settings.externalDomain);
+      return settings;
+    },
   });
 };
 

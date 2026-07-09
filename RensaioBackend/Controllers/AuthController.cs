@@ -117,11 +117,15 @@ public class AuthController : ControllerBase
 
             await _userCommandService.StoreRefreshTokenAsync(user, refreshHash, expiresAt, token);
 
-            // Set httpOnly cookie
+            // Set httpOnly cookie. Secure follows the request scheme: through the
+            // Cloudflare Tunnel IsHttps is true (X-Forwarded-Proto is processed), so
+            // public access keeps the Secure flag; plain-HTTP LAN access (private IP)
+            // would silently never store a Secure cookie, which broke Remember Me on
+            // the local network — and the flag protects nothing on a plaintext link.
             Response.Cookies.Append("refresh_token", rawRefreshToken, new CookieOptions
             {
                 HttpOnly = true,
-                Secure = true,
+                Secure = Request.IsHttps,
                 SameSite = SameSiteMode.Strict,
                 Expires = expiresAt,
                 Path = "/api/auth/refresh"
@@ -199,10 +203,11 @@ public class AuthController : ControllerBase
 
         await _userCommandService.StoreRefreshTokenAsync(matchedUser, newRefreshHash, newExpiresAt, token);
 
+        // Secure follows the request scheme for the same LAN-vs-tunnel reason as in Login.
         Response.Cookies.Append("refresh_token", newRawRefreshToken, new CookieOptions
         {
             HttpOnly = true,
-            Secure = true,
+            Secure = Request.IsHttps,
             SameSite = SameSiteMode.Strict,
             Expires = newExpiresAt,
             Path = "/api/auth/refresh"

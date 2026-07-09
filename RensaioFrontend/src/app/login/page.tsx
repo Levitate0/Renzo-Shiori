@@ -14,7 +14,9 @@ export default function LoginPage() {
   const { login, isAuthEnabled } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [rememberMe, setRememberMe] = useState(false);
+  // Default on: staying signed in until explicit logout is the expected behavior
+  // for a personal/installed (PWA) app; unchecking opts into a 24h session.
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 

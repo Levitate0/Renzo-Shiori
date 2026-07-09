@@ -1,11 +1,37 @@
 import { getApiConfig } from './config';
 
+// Single in-flight silent-refresh shared across concurrent 401s, so a burst of
+// failing requests triggers exactly one /api/auth/refresh (the endpoint rotates
+// the refresh token, so parallel calls would invalidate each other).
+let refreshPromise: Promise<boolean> | null = null;
+
+async function trySilentRefresh(baseUrl: string): Promise<boolean> {
+  refreshPromise ??= (async () => {
+    try {
+      const response = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) return false;
+      const body = (await response.json()) as { token?: string };
+      if (!body?.token) return false;
+      sessionStorage.setItem('rensaio_token', body.token);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      // Allow the next expiry (hours later) to refresh again.
+      setTimeout(() => { refreshPromise = null; }, 0);
+    }
+  })();
+  return refreshPromise;
+}
+
 class RensaioApiClient {
-  private baseUrl: string;
-  constructor(baseUrl = '') {
-    // Use relative URLs when no baseUrl is provided (production mode)
-    // Use absolute URL when baseUrl is provided (development mode)
-    this.baseUrl = baseUrl;
+  // Resolved per-request (not captured at construction) so the WebUI-configured
+  // public URL takes effect as soon as settings load, without a page reload.
+  private get baseUrl(): string {
+    return getApiConfig().baseUrl;
   }
 
   private getAuthToken(): string | null {
@@ -20,13 +46,14 @@ class RensaioApiClient {
 
   private async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    isRetryAfterRefresh = false
   ): Promise<T> {
     const url = this.baseUrl ? `${this.baseUrl}${endpoint}` : endpoint;
-    
+
     // Determine if we're sending FormData
     const isFormData = options.body instanceof FormData;
-    
+
     // Build headers
     const headers: Record<string, string> = {
       // Only set Content-Type for non-FormData requests
@@ -52,6 +79,22 @@ class RensaioApiClient {
       credentials: 'include', // Include cookies for session management
       ...options,
     });
+
+    // Access token expired mid-session: silently refresh via the httpOnly cookie
+    // and retry once. Without this, a token expiring while the app is open leaves
+    // every call failing 401 until a manual page reload. Auth endpoints are
+    // excluded — a 401 there is a genuine credential failure, not expiry.
+    if (
+      response.status === 401 &&
+      !isRetryAfterRefresh &&
+      token !== null &&
+      !endpoint.startsWith('/api/auth/')
+    ) {
+      const refreshed = await trySilentRefresh(this.baseUrl);
+      if (refreshed) {
+        return this.request<T>(endpoint, options, true);
+      }
+    }
 
     if (!response.ok) {
       // Try to extract a meaningful error message from the response body
@@ -154,4 +197,4 @@ class RensaioApiClient {
   }
 }
 
-export const apiClient = new RensaioApiClient(getApiConfig().baseUrl);
+export const apiClient = new RensaioApiClient();

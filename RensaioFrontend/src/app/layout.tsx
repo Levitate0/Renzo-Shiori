@@ -32,6 +32,7 @@ import { ImportProgressPill } from "@/components/comp/setup-wizard/import-progre
 import { ImportWizard } from "@/components/comp/import-wizard";
 import { FontLoader } from "@/components/ui/font-loader";
 import { SearchProvider } from "@/contexts/search-context";
+import { ServiceWorkerRegistrar } from "@/components/comp/service-worker-registrar";
 
 export default function RootLayout({
   children,
@@ -43,6 +44,12 @@ export default function RootLayout({
       <head>
         <title>Rensaiō</title>
         <meta name="description" content="Series Downloader" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+        <meta name="theme-color" content="#0a0a0a"/>
+        <meta name="mobile-web-app-capable" content="yes"/>
+        <meta name="apple-mobile-web-app-capable" content="yes"/>
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+        <meta name="apple-mobile-web-app-title" content="Rensaiō"/>
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"/>
         <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png"/>
         <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png"/>
@@ -99,6 +106,7 @@ export default function RootLayout({
                   <ImportWizardProvider>
                     <SearchProvider>
                       <FontLoader />
+                      <ServiceWorkerRegistrar />
                       <ClientSideSetupWizard />
                       <ImportProgressPill />
                       <ImportWizard />

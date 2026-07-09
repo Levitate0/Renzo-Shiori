@@ -150,6 +150,10 @@ public class AuthMiddleware
         if (pathStr.StartsWith("/api/auth/refresh", StringComparison.OrdinalIgnoreCase)) return true;
         if (pathStr.StartsWith("/api/auth/set-password", StringComparison.OrdinalIgnoreCase)) return true;
 
+        // Server discovery — lets clients validate an entered server address
+        // (Jellyfin-style) before any credentials exist. Exposes nothing sensitive.
+        if (pathStr.Equals("/api/system/info/public", StringComparison.OrdinalIgnoreCase)) return true;
+
         // First-user creation (only when no users exist)
         if (pathStr.StartsWith("/api/users/first", StringComparison.OrdinalIgnoreCase) && method == "POST") return true;
         if (pathStr.StartsWith("/api/users/", StringComparison.OrdinalIgnoreCase) && pathStr.EndsWith("/claim", StringComparison.OrdinalIgnoreCase) && method == "PUT") return true;

@@ -8,12 +8,32 @@ export interface ApiConfig {
 }
 
 /**
+ * The server-configured public URL (Settings → External Domain in the WebUI),
+ * persisted client-side whenever settings are fetched so the API client can
+ * target it without a chicken-and-egg settings fetch on cold start.
+ */
+const PUBLIC_URL_STORAGE_KEY = 'rensaio_public_url';
+
+export function setPublicApiUrl(url: string | null | undefined): void {
+  if (typeof window === 'undefined') return;
+  const trimmed = url?.trim().replace(/\/+$/, '') ?? '';
+  if (trimmed) {
+    localStorage.setItem(PUBLIC_URL_STORAGE_KEY, trimmed);
+  } else {
+    localStorage.removeItem(PUBLIC_URL_STORAGE_KEY);
+  }
+}
+
+/**
  * Determines the appropriate base URL for API and SignalR connections
- * 
+ *
  * Logic:
- * - In development: Always use http://localhost:5001
- * - In production: Use NEXT_PUBLIC_RENSAIO_BACKEND_URL if set, otherwise use relative paths
- * 
+ * - In development: always use http://127.0.0.1:9833
+ * - In production: use the WebUI-configured public URL (External Domain setting)
+ *   when set — unless the page is already being served from that origin, where
+ *   relative paths are equivalent and avoid needless absolute-URL handling.
+ *   Falls back to relative paths when the setting is empty/not yet known.
+ *
  * @returns Configuration object with baseUrl and isAbsolute flag
  */
 export function getApiConfig(): ApiConfig {
@@ -25,28 +45,28 @@ export function getApiConfig(): ApiConfig {
     };
   }
 
-  const isDevelopment = process.env.NODE_ENV === 'development';
-  const backendUrl = process.env.NEXT_PUBLIC_RENSAIO_BACKEND_URL;
-  
-  if (isDevelopment) {
-    // In development, always use localhost:5001
+  if (process.env.NODE_ENV === 'development') {
     return {
       baseUrl: 'http://127.0.0.1:9833',
       isAbsolute: true
     };
-  } else if (backendUrl && backendUrl.trim() !== '') {
-    // In production, use backend URL if provided
-    return {
-      baseUrl:  '',
-      isAbsolute: false
-    };
-  } else {
-    // In production with no backend URL, use relative URLs
-    return {
-      baseUrl: '',
-      isAbsolute: false
-    };
   }
+
+  const publicUrl = localStorage.getItem(PUBLIC_URL_STORAGE_KEY);
+  if (publicUrl) {
+    try {
+      if (new URL(publicUrl).origin !== window.location.origin) {
+        return { baseUrl: publicUrl, isAbsolute: true };
+      }
+    } catch {
+      // Malformed stored URL — ignore and use relative paths
+    }
+  }
+
+  return {
+    baseUrl: '',
+    isAbsolute: false
+  };
 }
 
 /**

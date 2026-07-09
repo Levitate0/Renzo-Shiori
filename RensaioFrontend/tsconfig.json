@@ -51,6 +51,7 @@
   ],
   "exclude": [
     "node_modules",
+    "public/sw.js",
     "out/**/*",
     ".next/static/**/*",
     ".next/server/**/*",
