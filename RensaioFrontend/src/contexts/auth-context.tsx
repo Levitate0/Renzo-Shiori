@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { userService } from '@/lib/api/services/userService';
+import { ensureImageToken } from '@/lib/api/imageToken';
 import { type User, type AuthStatus, UserLevel } from '@/lib/api/types';
 
 // Cookie helpers for user session persistence (works across tabs/windows)
@@ -170,6 +171,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refreshAuth();
   }, [refreshAuth]);
+
+  // Eagerly fetch the short-lived image-scoped token (see imageToken.ts) as soon
+  // as we have a valid session, rather than waiting for the first <img> tag to
+  // lazily trigger it on render. Without this, the very first page a user lands
+  // on after login/refresh (e.g. a browse grid with dozens of covers) mounts all
+  // its <img> tags before any image token exists yet - every one of them fires
+  // its network request untokened and gets 401'd, and nothing re-renders them
+  // once the token arrives a moment later, since React has no reason to know a
+  // background fetch resolved. Covers the login, selectUser, refreshAuth
+  // (stored-token and refresh-token paths), and setAuthFromToken flows in one
+  // place, since they all converge on setUser().
+  useEffect(() => {
+    if (user) {
+      void ensureImageToken();
+    }
+  }, [user]);
 
   const login = useCallback(async (username: string, password: string, rememberMe = false) => {
     const result = await userService.login({ username, password, rememberMe });
