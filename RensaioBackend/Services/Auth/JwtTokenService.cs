@@ -16,6 +16,16 @@ namespace RensaioBackend.Services.Auth;
 public class JwtTokenService
 {
     private readonly IConfiguration _configuration;
+
+    /// <summary>
+    /// Distinct audience for short-lived image-access tokens (see
+    /// <see cref="GenerateImageAccessToken"/>). Kept separate from the main
+    /// "Rensaio" API audience so an image token can never be used to call any
+    /// other endpoint, and a main session token can never be used as an image
+    /// token, even though both are signed with the same key.
+    /// </summary>
+    private const string ImageAudience = "RensaioImages";
+
     public JwtTokenService(IConfiguration configuration)
     {
         _configuration = configuration;
@@ -88,6 +98,45 @@ public class JwtTokenService
     }
 
     /// <summary>
+    /// Generates a short-lived (15 minute), narrowly-scoped JWT for authenticating
+    /// image/thumbnail requests via a `?token=` query-string parameter, since
+    /// &lt;img src="..."&gt; tags are loaded natively by the browser and cannot
+    /// attach an Authorization header the way apiClient's fetch() calls do.
+    ///
+    /// This is deliberately weaker than the main access token in two ways:
+    ///   1. Short lifetime (minutes, not hours) - even if it leaks via browser
+    ///      history, server access logs, or an intermediate proxy/CDN log
+    ///      (relevant once this is exposed publicly via Cloudflare Tunnel), the
+    ///      exposure window is small.
+    ///   2. Distinct audience ("RensaioImages" vs "Rensaio") - a stolen image
+    ///      token cannot be replayed against any other endpoint, and conversely
+    ///      the main session token can never be used as an image token even if
+    ///      someone mistakenly (or maliciously) puts it in a URL, since
+    ///      ValidateImageToken only accepts the "RensaioImages" audience.
+    /// </summary>
+    public string GenerateImageAccessToken(UserEntity user)
+    {
+        SymmetricSecurityKey key = GetSigningKey();
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var claims = new[]
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        };
+
+        var token = new JwtSecurityToken(
+            issuer: "Rensaio",
+            audience: ImageAudience,
+            claims: claims,
+            expires: DateTime.UtcNow.AddMinutes(15),
+            signingCredentials: credentials
+        );
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    /// <summary>
     /// Generates a cryptographically random refresh token.
     /// Returns both the raw token (to give to client) and its SHA-256 hash (to store in DB).
     /// </summary>
@@ -136,6 +185,40 @@ public class JwtTokenService
                 ValidIssuer = "Rensaio",
                 ValidateAudience = true,
                 ValidAudience = "Rensaio",
+                ValidateLifetime = true,
+                ClockSkew = TimeSpan.Zero
+            }, out _);
+
+            return result;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Validates a short-lived image-access token (see
+    /// <see cref="GenerateImageAccessToken"/>). Only accepts tokens with the
+    /// "RensaioImages" audience - a normal full-scope access token, despite
+    /// being signed with the same key, is rejected here because its audience
+    /// is "Rensaio" instead.
+    /// </summary>
+    public ClaimsPrincipal? ValidateImageToken(string token)
+    {
+        SymmetricSecurityKey key = GetSigningKey();
+
+        try
+        {
+            var handler = new JwtSecurityTokenHandler();
+            var result = handler.ValidateToken(token, new TokenValidationParameters
+            {
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = key,
+                ValidateIssuer = true,
+                ValidIssuer = "Rensaio",
+                ValidateAudience = true,
+                ValidAudience = ImageAudience,
                 ValidateLifetime = true,
                 ClockSkew = TimeSpan.Zero
             }, out _);
