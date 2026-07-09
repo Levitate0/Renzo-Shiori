@@ -75,6 +75,17 @@ public class ImportCommandService
         _stateService = stateService;
     }
 
+    /// <param name="titleOnly">
+    /// When true, folders with no directly-contained CBZ/archive files are not
+    /// silently skipped — a folder that looks like an actual series (a chapter
+    /// subfolder containing images directly, per SeriesScanner's heuristic) is
+    /// registered as a bare title-only import instead. Intended for migrating
+    /// libraries laid out by other downloaders (e.g. Suwayomi, which stores each
+    /// chapter as a folder of loose images rather than a CBZ) where the goal is
+    /// just getting the series titles registered so they can be auto-matched to
+    /// real providers via the normal SearchSeriesAsync pipeline, without needing
+    /// the original files to be readable by Rensaio at all.
+    /// </param>
     public async Task<JobResult> ScanAsync(string directoryPath, JobInfo jobInfo, bool titleOnly = false, CancellationToken token = default)
     {
         _logger.LogInformation("Starting directory scan job for path: {directoryPath} (titleOnly={titleOnly})", directoryPath, titleOnly);

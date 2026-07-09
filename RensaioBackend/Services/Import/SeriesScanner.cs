@@ -37,6 +37,22 @@ namespace RensaioBackend.Services.Import
             NumberHandling = JsonNumberHandling.AllowReadingFromString
         };
 
+        /// <summary>
+        /// Derives a clean display title from a folder name when no other title
+        /// information is available (used by title-only scanning, see
+        /// <see cref="ProcessDirectoryAsync"/>).
+        /// </summary>
+        private static string TitleFromFolderName(string seriesFolder)
+        {
+            int idx = seriesFolder.LastIndexOfAny(['\\', '/']);
+            string title = idx >= 0
+                ? seriesFolder[(idx + 1)..]
+                : seriesFolder;
+            title = title.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            title = title.Replace("_", " ").Replace(".", " ");
+            title = title.Replace("  ", " ").Replace("  ", " ").Trim();
+            return title;
+        }
 
         private static readonly string[] ImageExtensions =
             { ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp" };
@@ -55,23 +71,15 @@ namespace RensaioBackend.Services.Import
             return false;
         }
 
-        private static string ExtractTitleFromFolderPath(string seriesFolder)
-        {
-            string title = seriesFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            int idx = title.LastIndexOfAny(['\\', '/']);
-            if (idx >= 0)
-                title = title[(idx + 1)..];
-            title = title.Replace("_", " ").Replace(".", " ").Replace("  ", " ").Replace("  ", " ").Trim();
-            return title;
-        }
-
-        private static ImportSeriesSnapshot? BuildTitleOnlyStub(string seriesFolder, string relativePath)
+        private static ImportSeriesSnapshot? BuildTitleOnlyStub(string seriesFolder, string relativePath, SeriesInfo? seriesInfo)
         {
             if (!HasChapterFolderWithImages(seriesFolder))
                 return null;
 
-            string title = ExtractTitleFromFolderPath(seriesFolder);
-            if (string.IsNullOrEmpty(title))
+            string title = seriesInfo != null && !string.IsNullOrWhiteSpace(seriesInfo.metadata?.name)
+                ? seriesInfo.metadata!.name!
+                : TitleFromFolderName(seriesFolder);
+            if (string.IsNullOrWhiteSpace(title))
                 return null;
 
             return new ImportSeriesSnapshot
@@ -83,6 +91,22 @@ namespace RensaioBackend.Services.Import
             };
         }
 
+        /// <summary>
+        /// Scans a single series folder.
+        /// </summary>
+        /// <param name="titleOnly">
+        /// When true, a folder with no directly-contained archive files is not skipped
+        /// (the normal behavior) but instead registered as a bare title-only import
+        /// stub, provided it looks like an actual series folder (a chapter subfolder
+        /// containing images directly) rather than an intermediate grouping folder or
+        /// a chapter folder itself. Exists for migrating libraries downloaded by other
+        /// tools (e.g. Suwayomi, which stores each chapter as a folder of loose images —
+        /// series/chapter/001.jpg — rather than Rensaio's one-CBZ-per-chapter layout
+        /// directly inside the series folder). The resulting bare import still flows
+        /// through the normal SearchSeriesAsync auto-match pipeline unchanged, since
+        /// that already falls back to a pure title search when a provider snapshot has
+        /// no existing provider info to match against.
+        /// </param>
         public async Task<ImportSeriesSnapshot?> ProcessDirectoryAsync(List<TachiyomiRepository> repos, string directoryPath, string seriesFolder, bool titleOnly = false, CancellationToken token = default)
         {
             string path = seriesFolder[directoryPath.Length..];
@@ -111,7 +135,7 @@ namespace RensaioBackend.Services.Import
             var archiveFiles = allFiles.Where(f => Parser.IsArchive(f)).ToList();
 
             if (archiveFiles.Count == 0)
-                return titleOnly ? BuildTitleOnlyStub(seriesFolder, path) : null;
+                return titleOnly ? BuildTitleOnlyStub(seriesFolder, path, seriesInfo) : null;
 
             LibraryType[] libraryTypes = { LibraryType.Manga, LibraryType.Comic };
             Dictionary<LibraryType, List<NewDetectedChapter>> detected =
@@ -176,7 +200,7 @@ namespace RensaioBackend.Services.Import
                             });
                             continue;
                         }
-                       
+
                     }
 
                     // Parse the file using BasicParser
@@ -218,7 +242,7 @@ namespace RensaioBackend.Services.Import
                             });
                             continue;
                         }
-                       
+
                         parsedInfo.Scanlator = string.Empty;
                     }
 
@@ -244,13 +268,7 @@ namespace RensaioBackend.Services.Import
                             d.Title.StartsWith(invalidTitle, StringComparison.InvariantCultureIgnoreCase) ||
                             d.Title.Equals(invalidTitle, StringComparison.InvariantCultureIgnoreCase)))
                     {
-                        int idx = seriesFolder.LastIndexOfAny(['\\', '/']);
-                        if (idx >= 0)
-                            d.Title = seriesFolder[(idx + 1)..].TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                        else
-                            d.Title = seriesFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                        d.Title = d.Title.Replace("_", " ").Replace(".", " ");
-                        d.Title = d.Title.Replace("  ", " ").Replace("  ", " ").Trim();
+                        d.Title = TitleFromFolderName(seriesFolder);
                     }
                     detected[lib].Add(d);
                 }
@@ -311,6 +329,13 @@ namespace RensaioBackend.Services.Import
             return detectedInfo;
         }
 
+        /// <param name="titleOnly">
+        /// See <see cref="ProcessDirectoryAsync(List{TachiyomiRepository}, string, string, bool, CancellationToken)"/>.
+        /// Registers folders with no directly-contained archive files as bare
+        /// title-only import stubs (subject to the series-folder heuristic) instead of
+        /// skipping them, and skips existing-series path/title reconciliation entirely
+        /// since title-only scans are rooted outside StorageFolder.
+        /// </param>
         public async Task RecurseDirectoryAsync(List<RensaioBackend.Models.Database.SeriesEntity> allseries, List<TachiyomiRepository> repos,
             List<ImportSeriesSnapshot> seriesDict, string directoryPath, string seriesFolder,
             ProgressReporter scanProgress, bool titleOnly = false, CancellationToken token = default)
@@ -378,4 +403,3 @@ namespace RensaioBackend.Services.Import
         }
     }
 }
-
