@@ -6,6 +6,7 @@ using RensaioBackend.Services.Auth;
 using RensaioBackend.Services.Users;
 using RensaioBackend.Services.Settings;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 namespace RensaioBackend.Controllers;
@@ -81,8 +82,10 @@ public class AuthController : ControllerBase
     /// <summary>
     /// POST /api/auth/login - Authenticate user with username and password.
     /// Public endpoint, only works when auth is enabled.
+    /// Rate limited (5 attempts/minute/IP) as brute-force mitigation.
     /// </summary>
     [HttpPost("/api/auth/login")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult<LoginResponseDto>> Login([FromBody] LoginRequestDto request, CancellationToken token)
     {
         var settings = await _settingsService.GetSettingsAsync();
@@ -305,8 +308,12 @@ public class AuthController : ControllerBase
     /// <summary>
     /// POST /api/auth/set-password - Set password using invite token.
     /// Public endpoint.
+    /// Rate limited (5 attempts/minute/IP) - this endpoint effectively verifies
+    /// a token guess (like a password), so it gets the same brute-force
+    /// protection as login.
     /// </summary>
     [HttpPost("/api/auth/set-password")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult<LoginResponseDto>> SetPassword([FromBody] SetPasswordRequestDto request, CancellationToken token)
     {
         var settings = await _settingsService.GetSettingsAsync();
@@ -338,8 +345,11 @@ public class AuthController : ControllerBase
     /// <summary>
     /// POST /api/auth/change-password - Change current user's password.
     /// Authenticated endpoint.
+    /// Rate limited (5 attempts/minute/IP) - requires the current password, so
+    /// the same brute-force protection as login applies here.
     /// </summary>
     [HttpPost("/api/auth/change-password")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult> ChangePassword([FromBody] ChangePasswordDto request, CancellationToken token)
     {
         UserEntity? user = HttpContext.Items["User"] as UserEntity;
