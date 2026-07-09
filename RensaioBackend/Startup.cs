@@ -257,8 +257,22 @@ namespace RensaioBackend
                     // Add caching headers for static files
                     var headers = context.Context.Response.Headers;
 
+                    // HTML entry points (index.html, library/index.html, ...) aren't
+                    // content-hashed and change on every deploy — always revalidate with the
+                    // server instead of letting the browser keep serving a stale page (and its
+                    // stale JS) for up to a day after a redeploy.
+                    if (context.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+                    {
+                        headers.CacheControl = "no-cache";
+                    }
+                    // Next.js content-hashes filenames under _next/static/, so a cached copy
+                    // can never go stale — safe to cache aggressively and mark immutable.
+                    else if (context.Context.Request.Path.Value?.Contains("/_next/static/", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        headers.CacheControl = "public, max-age=31536000, immutable"; // 1 year
+                    }
                     // Cache .txt files for a shorter period (1 hour) since they might change more frequently
-                    if (context.File.Name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                    else if (context.File.Name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
                     {
                         headers.CacheControl = "public, max-age=3600"; // 1 hour
                     }

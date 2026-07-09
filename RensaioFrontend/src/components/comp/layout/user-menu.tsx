@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   Edit,
+  FolderInput,
   LogOut,
   Medal,
   Monitor,
@@ -24,11 +25,10 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ResponsiveModal } from "@/components/ui/responsive-modal";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { useSettings } from "@/lib/api/hooks/useSettings";
 import { useImportWizard } from "@/components/providers/import-wizard-provider";
@@ -92,6 +92,7 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isTrackerOpen, setIsTrackerOpen] = useState(false);
+  const [isImportPickerOpen, setIsImportPickerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const handleLogout = async () => {
@@ -250,29 +251,18 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
             </DropdownMenuItem>
           )}
 
-          {/* Import Series — Manager+ (Users have no access). */}
+          {/* Import Series — Manager+ (Users have no access). A DropdownMenuSub flyout
+              here would render identically (and awkwardly) on mobile, so the two-option
+              choice lives in a ResponsiveModal instead (Dialog on desktop, bottom-sheet
+              Drawer on mobile) opened from a plain menu item. */}
           {canManage && (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger className="flex items-center gap-2 cursor-pointer">
-                <Download className="h-4 w-4" />
-                Import Series
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuItem
-                  onClick={() => startWizard(false)}
-                  className="cursor-pointer"
-                >
-                  Regular Import
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => startWizard(true)}
-                  disabled={!settings?.importFolder}
-                  className="cursor-pointer"
-                >
-                  Import Titles Only (e.g. from Suwayomi)
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+            <DropdownMenuItem
+              onClick={() => setIsImportPickerOpen(true)}
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <Download className="h-4 w-4" />
+              Import Series
+            </DropdownMenuItem>
           )}
 
           {(canOwner || canManage) && <DropdownMenuSeparator />}
@@ -317,6 +307,52 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
 
       {/* Tracker / scrobbler management dialog */}
       <UserTrackerRequester open={isTrackerOpen} onOpenChange={setIsTrackerOpen} />
+
+      {/* Import Series: choose regular local-file import vs. title-only (e.g. Suwayomi) */}
+      <ResponsiveModal
+        open={isImportPickerOpen}
+        onOpenChange={setIsImportPickerOpen}
+        title="Import Series"
+        description="Choose how to scan your library folder."
+      >
+        <div className="flex flex-col gap-2 py-1">
+          <Button
+            variant="outline"
+            className="h-auto flex-col items-start gap-1 whitespace-normal p-3 text-left"
+            onClick={() => {
+              setIsImportPickerOpen(false);
+              startWizard(false);
+            }}
+          >
+            <span className="flex items-center gap-2 font-medium">
+              <Download className="h-4 w-4 shrink-0" />
+              Regular Import
+            </span>
+            <span className="text-xs font-normal text-muted-foreground">
+              Scan the library folder for existing archives (CBZ/CBR).
+            </span>
+          </Button>
+          <Button
+            variant="outline"
+            className="h-auto flex-col items-start gap-1 whitespace-normal p-3 text-left"
+            disabled={!settings?.importFolder}
+            onClick={() => {
+              setIsImportPickerOpen(false);
+              startWizard(true);
+            }}
+          >
+            <span className="flex items-center gap-2 font-medium">
+              <FolderInput className="h-4 w-4 shrink-0" />
+              Import Titles Only (e.g. from Suwayomi)
+            </span>
+            <span className="text-xs font-normal text-muted-foreground">
+              {settings?.importFolder
+                ? "Register bare titles from a folder with no archives yet (e.g. loose-image chapters), then auto-match them online."
+                : "Not configured — no import folder is mounted."}
+            </span>
+          </Button>
+        </div>
+      </ResponsiveModal>
     </>
   );
 }
