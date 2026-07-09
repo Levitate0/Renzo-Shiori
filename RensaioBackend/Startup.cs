@@ -103,7 +103,7 @@ namespace RensaioBackend
             services.AddRateLimiter(options =>
             {
                 options.AddPolicy("login", context =>
-                    RateLimiter.RateLimitPartition.GetFixedWindowLimiter(
+                    RateLimitPartition.GetFixedWindowLimiter(
                         partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                         factory: _ => new FixedWindowRateLimiterOptions
                         {
