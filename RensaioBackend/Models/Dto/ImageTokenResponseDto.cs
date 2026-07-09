@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RensaioBackend.Models.Dto;
 
 /// <summary>
@@ -7,6 +9,9 @@ namespace RensaioBackend.Models.Dto;
 /// </summary>
 public class ImageTokenResponseDto
 {
+    [JsonPropertyName("token")]
     public required string Token { get; set; }
+
+    [JsonPropertyName("expiresAt")]
     public DateTime ExpiresAt { get; set; }
 }
