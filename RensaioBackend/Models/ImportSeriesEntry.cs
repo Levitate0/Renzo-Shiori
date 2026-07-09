@@ -100,6 +100,9 @@ public class ImportSeriesEntry : ImportSummaryBase
         set => _series.IsDisabled = value;
     }
 
+    [JsonPropertyName("isTitleOnly")]
+    public bool IsTitleOnly { get; set; }
+
     [JsonPropertyName("Version")]
     public int Version
     {

@@ -11,6 +11,10 @@ import {
 } from "@/lib/api/hooks/useSetupWizard";
 import { JobType, type SetupJobStatusValue } from "@/lib/api/types";
 
+// Module-level (not recreated per render) so it's a stable reference for hook dependencies
+// and array-index lookups keyed by currentActionIndex.
+const WATCHED_JOB_TYPES: JobType[] = [JobType.ScanLocalFiles, JobType.InstallAdditionalExtensions, JobType.SearchProviders];
+
 // Custom hook to detect if scrollbar is visible
 function useScrollbarDetection() {
   const [hasScrollbar, setHasScrollbar] = useState(false);
@@ -63,6 +67,11 @@ interface ImportLocalStepProps {
    * was reloaded mid-scan) is still resumed rather than restarted.
    */
   forceRescan?: boolean;
+  /**
+   * Scan the configured ImportFolder instead of StorageFolder, registering bare titles for
+   * archive-less folders (e.g. a Suwayomi migration) instead of skipping them.
+   */
+  titleOnly?: boolean;
 }
 
 interface ActionProgressProps {
@@ -141,7 +150,7 @@ function ActionProgress({
   );
 }
 
-export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProcessStarted, forceRescan }: ImportLocalStepProps) {
+export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProcessStarted, forceRescan, titleOnly }: ImportLocalStepProps) {
   const [currentActionIndex, setCurrentActionIndex] = useState(-1);
   const [allActionsCompleted, setAllActionsCompleted] = useState(false);
   // Jobs that the server reports already completed (e.g. before a page reload) so the UI
@@ -209,10 +218,37 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
   }, [setError]);
 
   const { getProgressForJob, isJobCompleted, isJobFailed, getJobProgress } = useSignalRProgress({
-    jobTypes: [JobType.ScanLocalFiles, JobType.InstallAdditionalExtensions, JobType.SearchProviders],
+    jobTypes: WATCHED_JOB_TYPES,
     onComplete: handleJobComplete,
     onError: handleJobError,
   });
+
+  // Fallback for a missed SignalR broadcast (no replay, and the connection handshake can still
+  // lose the very first message if a job finishes before it completes) — poll server-side status
+  // periodically while an action is active so this can't strand the wizard at 0% forever.
+  useEffect(() => {
+    if (currentActionIndex < 0) return;
+    const activeJobType = WATCHED_JOB_TYPES[currentActionIndex];
+    if (activeJobType === undefined) return;
+
+    const interval = setInterval(() => {
+      statusMutation.mutateAsync()
+        .then((status) => {
+          const value =
+            activeJobType === JobType.ScanLocalFiles ? status.scanLocalFiles :
+            activeJobType === JobType.InstallAdditionalExtensions ? status.installAdditionalExtensions :
+            status.searchProviders;
+          if (value === 'Completed') {
+            handleJobComplete(activeJobType);
+          } else if (value === 'Failed') {
+            handleJobError('Job failed', activeJobType);
+          }
+        })
+        .catch(() => { /* transient — next tick retries */ });
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [currentActionIndex, statusMutation, handleJobComplete, handleJobError]);
 
   const actions = [
     {
@@ -231,15 +267,19 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
 
   const triggerAction = useCallback((index: number) => {
     setCurrentActionIndex(index);
-    const mutation = index === 0 ? scanMutation : index === 1 ? installMutation : searchMutation;
     const label = index === 0 ? 'scan' : index === 1 ? 'install' : 'search';
-    mutation.mutateAsync().catch((error) => {
+    const promise = index === 0
+      ? scanMutation.mutateAsync(titleOnly ?? false)
+      : index === 1
+        ? installMutation.mutateAsync()
+        : searchMutation.mutateAsync();
+    promise.catch((error) => {
       console.error(`Failed to start ${label}:`, error);
       setError(`Failed to start ${label} process`);
       setCurrentActionIndex(-1);
       hasStartedRef.current = false; // Reset on error to allow retry
     });
-  }, [scanMutation, installMutation, searchMutation, setError]);
+  }, [scanMutation, installMutation, searchMutation, titleOnly, setError]);
 
   // On mount, reconcile with the server so a page reload resumes the running step instead
   // of restarting the whole scan/install/search chain from scratch.

@@ -23,6 +23,9 @@ namespace RensaioBackend.Models.Database
 
         public decimal? ContinueAfterChapter { get; set; } = null;
 
+        // Scans ImportFolder instead of StorageFolder; commit path computes a fresh storage
+        // path from title/type instead of reusing Path, since there's nothing to reuse on disk.
+        public bool IsTitleOnly { get; set; } = false;
 
     }
 }

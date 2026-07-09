@@ -6,6 +6,7 @@ using RensaioBackend.Models.Enums;
 using RensaioBackend.Services.Helpers;
 using RensaioBackend.Services.Import;
 using RensaioBackend.Services.Jobs;
+using RensaioBackend.Services.Jobs.Models;
 using RensaioBackend.Services.Settings;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -76,7 +77,7 @@ namespace RensaioBackend.Controllers
         [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(object), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(object), StatusCodes.Status500InternalServerError)]
-        public async Task<ActionResult> ScanLocalFilesAsync(CancellationToken token = default)
+        public async Task<ActionResult> ScanLocalFilesAsync([FromQuery] bool titleOnly = false, CancellationToken token = default)
         {
             try
             {
@@ -84,7 +85,12 @@ namespace RensaioBackend.Controllers
                     return Ok(new { success = true, message = "Scan already in progress", alreadyRunning = true });
 
                 SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-                await _jobManagementService.EnqueueJobAsync(JobType.ScanLocalFiles, settings.StorageFolder, Priority.High, null, null, null, "Default", token).ConfigureAwait(false);
+                if (titleOnly && string.IsNullOrEmpty(settings.ImportFolder))
+                    return BadRequest(new { error = "Title-only import is not configured (no ImportFolder mounted)." });
+
+                string scanPath = titleOnly ? settings.ImportFolder : settings.StorageFolder;
+                var parameters = new ScanLocalFilesParameters(scanPath, titleOnly);
+                await _jobManagementService.EnqueueJobAsync(JobType.ScanLocalFiles, parameters, Priority.High, null, null, null, "Default", token).ConfigureAwait(false);
                 return Ok(new { success = true, message = "Scan Scheduled" });
             }
             catch (Exception ex)

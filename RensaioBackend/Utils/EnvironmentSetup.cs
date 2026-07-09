@@ -101,6 +101,11 @@ namespace RensaioBackend.Utils
             {
                 storageDirectory = "/series";
             }
+            string? importDirectory = Environment.GetEnvironmentVariable("RENSAIO_IMPORTDIR");
+            if (importDirectory==null && IsDocker)
+            {
+                importDirectory = "/import";
+            }
             var destAppSettingsPath = System.IO.Path.Combine(Path, AppSettings);
             var sourceAppSettingsPath = System.IO.Path.Combine(AppContext.BaseDirectory, AppSettings);
 
@@ -181,6 +186,11 @@ namespace RensaioBackend.Utils
                 if (!string.IsNullOrEmpty(storageDirectory) && Directory.Exists(storageDirectory))
                 {
                     destinationJson["StorageFolder"] = storageDirectory;
+                    updated = true;
+                }
+                if (!string.IsNullOrEmpty(importDirectory) && Directory.Exists(importDirectory))
+                {
+                    destinationJson["ImportFolder"] = importDirectory;
                     updated = true;
                 }
                 var secret = destinationJson["JwtSecret"];

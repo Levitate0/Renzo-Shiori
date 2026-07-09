@@ -24,6 +24,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/contexts/auth-context";
@@ -249,13 +252,27 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
 
           {/* Import Series — Manager+ (Users have no access). */}
           {canManage && (
-            <DropdownMenuItem
-              onClick={() => startWizard()}
-              className="flex items-center gap-2 cursor-pointer"
-            >
-              <Download className="h-4 w-4" />
-              Import Series
-            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="flex items-center gap-2 cursor-pointer">
+                <Download className="h-4 w-4" />
+                Import Series
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuItem
+                  onClick={() => startWizard(false)}
+                  className="cursor-pointer"
+                >
+                  Regular Import
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => startWizard(true)}
+                  disabled={!settings?.importFolder}
+                  className="cursor-pointer"
+                >
+                  Import Titles Only (e.g. from Suwayomi)
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
           )}
 
           {(canOwner || canManage) && <DropdownMenuSeparator />}

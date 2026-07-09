@@ -35,6 +35,7 @@ export interface Settings {
   flareSolverrSessionTtl: string; // TimeSpan as string
   flareSolverrAsResponseFallback: boolean;
   storageFolder: string;
+  importFolder: string;
   socksProxyEnabled: boolean;
   socksProxyVersion: number;
   socksProxyHost: string;
@@ -234,6 +235,7 @@ export interface ImportInfo {
   providers: ImportProviderSnapshot[];
   seriesStatus: SeriesStatus;
   isDisabled: boolean;
+  isTitleOnly: boolean;
   Version: number;
 }
 

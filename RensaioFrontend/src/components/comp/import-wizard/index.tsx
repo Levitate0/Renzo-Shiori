@@ -43,7 +43,7 @@ const WIZARD_STEPS: WizardStep[] = [
 ];
 
 export function ImportWizard() {
-  const { isWizardActive, currentStep, totalSteps, nextStep, previousStep, completeWizard, cancelWizard } =
+  const { isWizardActive, currentStep, totalSteps, titleOnly, nextStep, previousStep, completeWizard, cancelWizard } =
     useImportWizard();
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -89,6 +89,7 @@ export function ImportWizard() {
           setIsLoading={setIsLoading}
           setCanProgress={setCanProgress}
           forceRescan
+          titleOnly={titleOnly}
         />
       )}
 

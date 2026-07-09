@@ -247,6 +247,9 @@ namespace RensaioBackend.Data
                         v => JsonSerializer.Serialize(v, new JsonSerializerOptions { WriteIndented = false }),
                         v => JsonSerializer.Deserialize<List<ProviderSeriesDetails>>(v, new JsonSerializerOptions { WriteIndented = false }) ?? new List<ProviderSeriesDetails>()
                     ).Metadata.SetValueComparer(GenericValueComparer.Create<List<ProviderSeriesDetails>>());
+                entity.Property(i => i.IsTitleOnly)
+                    .IsRequired()
+                    .HasDefaultValue(false);
                 entity.HasIndex(i => new { i.Status, i.Action })
                     .HasDatabaseName("IX_Import_Status_Action");
             });

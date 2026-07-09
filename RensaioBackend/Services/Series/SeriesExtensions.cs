@@ -47,6 +47,8 @@ public static class SeriesExtensions
         import.Status = info.Status;
         import.Action = info.Action;
         import.ContinueAfterChapter = info.ContinueAfterChapter;
+        if (!string.IsNullOrEmpty(info.Type))
+            import.Info.Type = info.Type;
         if (import.Series == null || import.Series.Count == 0)
             return;
         if (info.Series != null)
@@ -81,6 +83,8 @@ public static class SeriesExtensions
             Status = import.Status,
             Action = import.Action,
             ContinueAfterChapter = lastRecordChap ?? -1,
+            Type = import.Info.Type,
+            IsTitleOnly = import.IsTitleOnly,
             Series = new List<ProviderSeriesOption>()
         };
         if (import.Series == null || import.Series.Count == 0)

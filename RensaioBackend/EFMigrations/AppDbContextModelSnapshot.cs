@@ -219,6 +219,11 @@ namespace RensaioBackend.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsTitleOnly")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("Series")
                         .HasColumnType("TEXT");
 

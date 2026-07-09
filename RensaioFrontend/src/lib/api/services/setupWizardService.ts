@@ -3,10 +3,12 @@ import type { ImportInfo, LinkedSeries, SetupOperationResponse, ImportTotals, Im
 
 export const setupWizardService = {
   /**
-   * Scan local files for series
+   * Scan local files for series. Pass titleOnly to scan the configured ImportFolder
+   * (e.g. a Suwayomi migration) instead of StorageFolder, registering bare titles for
+   * folders that have no archives yet instead of skipping them.
    */
-  async scanLocalFiles(): Promise<SetupOperationResponse> {
-    return await apiClient.post<SetupOperationResponse>('/api/setup/scan');
+  async scanLocalFiles(titleOnly: boolean = false): Promise<SetupOperationResponse> {
+    return await apiClient.post<SetupOperationResponse>(`/api/setup/scan?titleOnly=${titleOnly}`);
   },
   /**
    * Install additional extensions required for the imported series

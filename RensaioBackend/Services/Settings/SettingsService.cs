@@ -400,6 +400,7 @@ namespace RensaioBackend.Services.Settings
                 ExternalDomain = ed.ExternalDomain,
             };
             set.StorageFolder = _config["StorageFolder"] ?? string.Empty;
+            set.ImportFolder = _config["ImportFolder"] ?? string.Empty;
             return set;
         }
         /// <summary>

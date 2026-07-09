@@ -36,6 +36,7 @@ import { SearchSeriesRequester } from "@/components/comp/setup-wizard/search-ser
 import type { ImportInfo, SmallSeries } from "@/lib/api/types";
 import { ImportStatus, Action } from "@/lib/api/types";
 import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
+import { useSettings } from "@/lib/api/hooks/useSettings";
 import { MatchRow } from "./match-row";
 import { ImportsContext } from "./imports-context";
 
@@ -74,6 +75,19 @@ export const ImportCard = React.memo(
     const importsCtx = useContext(ImportsContext);
     if (!importsCtx)
       throw new Error("ImportCard must be used within ImportsContext.Provider");
+
+    // Title-only stubs (e.g. Suwayomi migration) have no on-disk category signal to infer
+    // from, unlike a real local scan whose storage path already encodes it — surface a manual
+    // picker here instead, backed by the same field a regular scan's (unedited) folder-heuristic
+    // Type would occupy.
+    const { data: settings } = useSettings();
+    const availableCategories = settings?.categorizedFolders ? settings?.categories ?? [] : [];
+    const handleCategoryChange = useCallback(
+      (value: string) => {
+        importsCtx.updateImportField(importItem.path, "type", value);
+      },
+      [importItem.path, importsCtx]
+    );
 
     // Preferred-series poster thumbnail
     const preferredSeries = importItem.series?.find(
@@ -246,6 +260,31 @@ export const ImportCard = React.memo(
               {importItem.title || "Unknown Title"}
             </h3>
             <div className="iw-card-path">{importItem.path}</div>
+            {importItem.isTitleOnly && availableCategories.length > 0 && (
+              <div
+                className="flex items-center gap-2 mt-1"
+                onPointerDown={handleSelectPointerDown}
+                onClick={handleSelectClick}
+              >
+                <span className="text-xs text-muted-foreground">Category:</span>
+                <Select
+                  value={importItem.type || availableCategories[0]}
+                  onValueChange={handleCategoryChange}
+                  disabled={isUpdating}
+                >
+                  <SelectTrigger className="h-7 w-32 text-xs">
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableCategories.map((category) => (
+                      <SelectItem key={category} value={category}>
+                        {category}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           {/* Action cluster */}
@@ -343,6 +382,7 @@ export const ImportCard = React.memo(
     const basicEqual =
       prevProps.import.path === nextProps.import.path &&
       prevProps.import.status === nextProps.import.status &&
+      prevProps.import.type === nextProps.import.type &&
       prevProps.showActionCombobox === nextProps.showActionCombobox &&
       prevProps.showSearchButton === nextProps.showSearchButton &&
       prevProps.showSkipButton === nextProps.showSkipButton &&

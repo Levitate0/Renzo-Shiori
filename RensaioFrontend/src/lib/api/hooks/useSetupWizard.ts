@@ -7,7 +7,7 @@ import { ProgressStatus } from '../types';
 
 export function useSetupWizardScanLocalFiles() {
   return useMutation({
-    mutationFn: () => setupWizardService.scanLocalFiles(),
+    mutationFn: (titleOnly: boolean = false) => setupWizardService.scanLocalFiles(titleOnly),
     onError: (error) => {
       console.error('Scan local files error:', error);
     },
@@ -142,19 +142,28 @@ interface ProgressTrackingOptions {
 
 export function useSignalRProgress(options: ProgressTrackingOptions) {
   const { jobTypes, onProgress, onComplete, onError } = options;
-  
+
   // Create stable refs for the callbacks to prevent connection recreation
   const onProgressRef = useRef(onProgress);
   const onCompleteRef = useRef(onComplete);
   const onErrorRef = useRef(onError);
-  
+
   // Update refs when callbacks change
   useEffect(() => {
     onProgressRef.current = onProgress;
     onCompleteRef.current = onComplete;
     onErrorRef.current = onError;
   }, [onProgress, onComplete, onError]);
-  
+
+  // jobTypes is typically passed as a fresh array literal by the caller on every render.
+  // Track it via a ref (read inside the listener) instead of a hook dependency — otherwise
+  // every incoming progress message triggers setProgressStates -> re-render -> a new jobTypes
+  // reference -> this effect tears down and re-subscribes, and any message that arrives during
+  // that unsubscribe/resubscribe gap (SignalR has no replay) is silently lost. A fast job whose
+  // Started+Completed land close together can have its Completed dropped this way.
+  const jobTypesRef = useRef(jobTypes);
+  jobTypesRef.current = jobTypes;
+
   const [progressStates, setProgressStates] = useState<Record<JobType, ProgressState | null>>(() => {
     const initial = {} as Record<JobType, ProgressState | null>;
     jobTypes.forEach(jobType => {
@@ -169,14 +178,14 @@ export function useSignalRProgress(options: ProgressTrackingOptions) {
     }
 
     let unsubscribe: (() => void) | null = null;
-    
+
     const setupConnection = async () => {
       try {
         await getProgressHub().startConnection();
-        
+
         // Create a stable listener function that doesn't change
         const progressListener = (progress: ProgressState) => {
-          if (jobTypes.includes(progress.jobType)) {
+          if (jobTypesRef.current.includes(progress.jobType)) {
             setProgressStates(prev => ({
               ...prev,
               [progress.jobType]: progress,
@@ -191,7 +200,7 @@ export function useSignalRProgress(options: ProgressTrackingOptions) {
             }
           }
         };
-        
+
         unsubscribe = getProgressHub().onProgress(progressListener);
       } catch (error) {
         console.error('Failed to setup SignalR connection:', error);
@@ -203,7 +212,9 @@ export function useSignalRProgress(options: ProgressTrackingOptions) {
     return () => {
       unsubscribe?.();
     };
-  }, [jobTypes]);
+    // Connection/listener is set up once per mount — jobTypes is read live via jobTypesRef.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const getProgressForJob = (jobType: JobType): ProgressState | null => {
     return progressStates[jobType];

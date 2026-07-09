@@ -38,7 +38,52 @@ namespace RensaioBackend.Services.Import
         };
 
 
-        public async Task<ImportSeriesSnapshot?> ProcessDirectoryAsync(List<TachiyomiRepository> repos, string directoryPath, string seriesFolder, CancellationToken token = default)
+        private static readonly string[] ImageExtensions =
+            { ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp" };
+
+        // Suwayomi-style folders have no archives at the series level, only chapter subfolders
+        // full of loose images. This distinguishes an actual series folder from an intermediate
+        // grouping folder (whose children are themselves series folders, not chapter folders) and
+        // from a chapter folder itself (images live directly inside it, not one level further).
+        private static bool HasChapterFolderWithImages(string seriesFolder)
+        {
+            foreach (string subDir in Directory.EnumerateDirectories(seriesFolder))
+            {
+                if (Directory.EnumerateFiles(subDir).Any(f => ImageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())))
+                    return true;
+            }
+            return false;
+        }
+
+        private static string ExtractTitleFromFolderPath(string seriesFolder)
+        {
+            string title = seriesFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            int idx = title.LastIndexOfAny(['\\', '/']);
+            if (idx >= 0)
+                title = title[(idx + 1)..];
+            title = title.Replace("_", " ").Replace(".", " ").Replace("  ", " ").Replace("  ", " ").Trim();
+            return title;
+        }
+
+        private static ImportSeriesSnapshot? BuildTitleOnlyStub(string seriesFolder, string relativePath)
+        {
+            if (!HasChapterFolderWithImages(seriesFolder))
+                return null;
+
+            string title = ExtractTitleFromFolderPath(seriesFolder);
+            if (string.IsNullOrEmpty(title))
+                return null;
+
+            return new ImportSeriesSnapshot
+            {
+                Title = title,
+                Providers = [],
+                Version = 2,
+                Path = relativePath
+            };
+        }
+
+        public async Task<ImportSeriesSnapshot?> ProcessDirectoryAsync(List<TachiyomiRepository> repos, string directoryPath, string seriesFolder, bool titleOnly = false, CancellationToken token = default)
         {
             string path = seriesFolder[directoryPath.Length..];
             path = path.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -66,7 +111,7 @@ namespace RensaioBackend.Services.Import
             var archiveFiles = allFiles.Where(f => Parser.IsArchive(f)).ToList();
 
             if (archiveFiles.Count == 0)
-                return null;  // Skip folders with no archives
+                return titleOnly ? BuildTitleOnlyStub(seriesFolder, path) : null;
 
             LibraryType[] libraryTypes = { LibraryType.Manga, LibraryType.Comic };
             Dictionary<LibraryType, List<NewDetectedChapter>> detected =
@@ -268,7 +313,7 @@ namespace RensaioBackend.Services.Import
 
         public async Task RecurseDirectoryAsync(List<RensaioBackend.Models.Database.SeriesEntity> allseries, List<TachiyomiRepository> repos,
             List<ImportSeriesSnapshot> seriesDict, string directoryPath, string seriesFolder,
-            ProgressReporter scanProgress, CancellationToken token = default)
+            ProgressReporter scanProgress, bool titleOnly = false, CancellationToken token = default)
         {
             var seriesFolders = await Task.Run(() => Directory.GetDirectories(seriesFolder, "*.*", SearchOption.AllDirectories), token).ConfigureAwait(false);
             if (seriesFolders.Length == 0)
@@ -279,44 +324,51 @@ namespace RensaioBackend.Services.Import
 
             foreach (var n in seriesFolders)
             {
-                ImportSeriesSnapshot? det = await ProcessDirectoryAsync(repos, directoryPath, n, token).ConfigureAwait(false);
+                ImportSeriesSnapshot? det = await ProcessDirectoryAsync(repos, directoryPath, n, titleOnly, token).ConfigureAwait(false);
                 acum += step;
 
                 if (det != null)
                 {
-                    var seriesComparer = new SeriesComparer();
-                    List<RensaioBackend.Models.Database.SeriesEntity> findMatchingSeries = seriesComparer.FindMatchingSeries(allseries, det);
-
-                    if (findMatchingSeries.Count > 0)
+                    // Title-only scans are rooted outside StorageFolder (ImportFolder), so existing
+                    // series' StoragePath (which lives under StorageFolder) can't be meaningfully
+                    // reconciled against paths found here — skip matching entirely to avoid
+                    // clobbering a real series' StoragePath with an unrelated import-folder path.
+                    if (!titleOnly)
                     {
-                        Dictionary<RensaioBackend.Models.Database.SeriesEntity, ArchiveCompare> matches = [];
-                        foreach (RensaioBackend.Models.Database.SeriesEntity s in findMatchingSeries)
-                        {
-                            matches.Add(s, seriesComparer.CompareArchives(det, s));
-                        }
+                        var seriesComparer = new SeriesComparer();
+                        List<RensaioBackend.Models.Database.SeriesEntity> findMatchingSeries = seriesComparer.FindMatchingSeries(allseries, det);
 
-                        ArchiveCompare bt = ArchiveCompare.Equal;
-                        KeyValuePair<RensaioBackend.Models.Database.SeriesEntity, ArchiveCompare>? r = matches.FirstOrDefault(a => (a.Value & ArchiveCompare.Equal) == ArchiveCompare.Equal);
-                        if (r == null || r?.Key==null)
+                        if (findMatchingSeries.Count > 0)
                         {
-                            bt = ArchiveCompare.MissingDB;
-                            r = matches.FirstOrDefault(a =>
-                                (a.Value & ArchiveCompare.MissingDB) == ArchiveCompare.MissingDB);
-                        }
+                            Dictionary<RensaioBackend.Models.Database.SeriesEntity, ArchiveCompare> matches = [];
+                            foreach (RensaioBackend.Models.Database.SeriesEntity s in findMatchingSeries)
+                            {
+                                matches.Add(s, seriesComparer.CompareArchives(det, s));
+                            }
 
-                        if (r == null || r?.Key==null)
-                        {
-                            bt = ArchiveCompare.MissingArchive;
-                            r = matches.FirstOrDefault(a =>
-                                (a.Value & ArchiveCompare.MissingDB) == ArchiveCompare.MissingArchive);
-                        }
+                            ArchiveCompare bt = ArchiveCompare.Equal;
+                            KeyValuePair<RensaioBackend.Models.Database.SeriesEntity, ArchiveCompare>? r = matches.FirstOrDefault(a => (a.Value & ArchiveCompare.Equal) == ArchiveCompare.Equal);
+                            if (r == null || r?.Key==null)
+                            {
+                                bt = ArchiveCompare.MissingDB;
+                                r = matches.FirstOrDefault(a =>
+                                    (a.Value & ArchiveCompare.MissingDB) == ArchiveCompare.MissingDB);
+                            }
 
-                        if (r != null && r?.Key!=null)
-                        {
-                            det.ArchiveCompare = bt;
-                            det.MatchExisting = r.Value.Key.Id;
-                            if (r.Value.Key.StoragePath != det.Path)
-                                r.Value.Key.StoragePath = det.Path;
+                            if (r == null || r?.Key==null)
+                            {
+                                bt = ArchiveCompare.MissingArchive;
+                                r = matches.FirstOrDefault(a =>
+                                    (a.Value & ArchiveCompare.MissingDB) == ArchiveCompare.MissingArchive);
+                            }
+
+                            if (r != null && r?.Key!=null)
+                            {
+                                det.ArchiveCompare = bt;
+                                det.MatchExisting = r.Value.Key.Id;
+                                if (r.Value.Key.StoragePath != det.Path)
+                                    r.Value.Key.StoragePath = det.Path;
+                            }
                         }
                     }
                     seriesDict.Add(det);

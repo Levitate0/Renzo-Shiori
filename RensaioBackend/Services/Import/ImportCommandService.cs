@@ -75,17 +75,17 @@ public class ImportCommandService
         _stateService = stateService;
     }
 
-    public async Task<JobResult> ScanAsync(string directoryPath, JobInfo jobInfo, CancellationToken token = default)
+    public async Task<JobResult> ScanAsync(string directoryPath, JobInfo jobInfo, bool titleOnly = false, CancellationToken token = default)
     {
-        _logger.LogInformation("Starting directory scan job for path: {directoryPath}", directoryPath);
+        _logger.LogInformation("Starting directory scan job for path: {directoryPath} (titleOnly={titleOnly})", directoryPath, titleOnly);
         ProgressReporter progress = _reportingService.CreateReporter(jobInfo);
-        if ((await _jobManagementService.IsJobTypeRunningAsync(JobType.SearchProviders, token).ConfigureAwait(false)) 
+        if ((await _jobManagementService.IsJobTypeRunningAsync(JobType.SearchProviders, token).ConfigureAwait(false))
             || (await _jobManagementService.IsJobTypeRunningAsync(JobType.InstallAdditionalExtensions, token).ConfigureAwait(false)))
         {
             progress.Report(ProgressStatus.Completed, 100, "Scanning completed successfully.");
             return JobResult.Success;
-        }            
-  
+        }
+
         List<RensaioBackend.Models.Database.SeriesEntity> allseries = await _db.Series.Include(a => a.Sources).ToListAsync(token).ConfigureAwait(false);
         List<TachiyomiRepository> repos = _mihon.ListOnlineRepositories();
         if (!Directory.Exists(directoryPath))
@@ -95,9 +95,9 @@ public class ImportCommandService
         }
         progress.Report(ProgressStatus.Started, 0, "Scanning Directories...");
         var seriesDict = new List<ImportSeriesSnapshot>();
-        await _scanner.RecurseDirectoryAsync(allseries, repos, seriesDict, directoryPath, directoryPath, progress, token).ConfigureAwait(false);
+        await _scanner.RecurseDirectoryAsync(allseries, repos, seriesDict, directoryPath, directoryPath, progress, titleOnly, token).ConfigureAwait(false);
         HashSet<string> folders = seriesDict.Select(a => a.Path).ToHashSet();
-        await SaveImportsAsync(folders, seriesDict, token).ConfigureAwait(false);
+        await SaveImportsAsync(folders, seriesDict, titleOnly, token).ConfigureAwait(false);
         progress.Report(ProgressStatus.Completed, 100, "Scanning completed successfully.");
         _logger.LogInformation("Directory scan job completed successfully for path: {directoryPath}", directoryPath);
         return JobResult.Success;
@@ -122,9 +122,12 @@ public class ImportCommandService
         }
     }
 
-    private async Task SaveImportsAsync(HashSet<string> existingFolders, List<ImportSeriesSnapshot> newSeries, CancellationToken token = default)
+    private async Task SaveImportsAsync(HashSet<string> existingFolders, List<ImportSeriesSnapshot> newSeries, bool titleOnly, CancellationToken token = default)
     {
-        var imports = await _db.Imports.ToListAsync(token).ConfigureAwait(false);
+        // Scoped by IsTitleOnly: title-only scans are rooted at ImportFolder and regular scans at
+        // StorageFolder, two disjoint path namespaces. Without this scope, either scan's "not seen
+        // this pass" cleanup would delete the other's still-pending rows.
+        var imports = await _db.Imports.Where(a => a.IsTitleOnly == titleOnly).ToListAsync(token).ConfigureAwait(false);
         foreach (RensaioBackend.Models.Database.ImportEntity a in imports)
         {
             if (!existingFolders.Contains(a.Path, StringComparer.InvariantCultureIgnoreCase) && a.Status != ImportStatus.DoNotChange)
@@ -136,7 +139,7 @@ public class ImportCommandService
         foreach (ImportSeriesSnapshot k in newSeries)
         {
             RensaioBackend.Models.Database.SeriesEntity? s = null;
-            if (!string.IsNullOrEmpty(k.Path) && paths.TryGetValue(k.Path, out Guid id))
+            if (!titleOnly && !string.IsNullOrEmpty(k.Path) && paths.TryGetValue(k.Path, out Guid id))
             {
                 s = await _db.Series.Include(a => a.Sources)
                     .Where(a => a.Id == id)
@@ -200,7 +203,8 @@ public class ImportCommandService
                     Path = k.Path,
                     Status = ImportStatus.Import,
                     Action = Action.Add,
-                    Info = k
+                    Info = k,
+                    IsTitleOnly = titleOnly
                 };
                 _db.Imports.Add(imp);
             }
@@ -279,6 +283,7 @@ public class ImportCommandService
             return;
         import.ApplyImportSeriesEntry(info);
         _db.Touch(import, e => e.Series);
+        _db.Touch(import, e => e.Info);
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 
@@ -579,6 +584,15 @@ public class ImportCommandService
                             if (series.Count > 0)
                             {
                                 import.Series = series;
+                                if (import.IsTitleOnly && string.IsNullOrEmpty(import.Info.Type))
+                                {
+                                    string? derivedType = series.Select(a => a.Type).FirstOrDefault(a => !string.IsNullOrEmpty(a));
+                                    if (!string.IsNullOrEmpty(derivedType))
+                                    {
+                                        import.Info.Type = derivedType;
+                                        _db.Touch(import, a => a.Info);
+                                    }
+                                }
                                 ImportSeriesEntry inf = import.ToImportSeriesEntry();
                                 import.Action = inf.Action;
                                 import.Status = inf.Status;
@@ -624,6 +638,7 @@ public class ImportCommandService
         ProgressReporter progress = _reportingService.CreateReporter(jobInfo);
         _logger.LogInformation("Starting series import job...");
         progress.Report(ProgressStatus.Started, 0, "Starting series import...");
+        SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
         List<RensaioBackend.Models.Database.ImportEntity> imports = await _db.Imports
             .Where(a => a.Status != ImportStatus.DoNotChange)
             .AsNoTracking()
@@ -638,7 +653,12 @@ public class ImportCommandService
                 {
                     AugmentedResponseDto augmented = new AugmentedResponseDto();
                     augmented.DisableJobs = disableJob;
-                    augmented.StorageFolderPath = import.Path;
+                    // Title-only imports have no real files at import.Path (it's an ImportFolder-relative
+                    // Suwayomi-style folder, not a StorageFolder subpath) — compute a fresh storage
+                    // location from the matched title/type instead of reusing it.
+                    augmented.StorageFolderPath = import.IsTitleOnly
+                        ? import.Info.Title.BuildStoragePath(import.Info.Type, settings)
+                        : import.Path;
                     ImportSeriesEntry info = import.ToImportSeriesEntry();
                     import.ApplyImportSeriesEntry(info);
                     augmented.Series = import.Series.Where(a => a.IsSelected).ToList();
@@ -652,10 +672,10 @@ public class ImportCommandService
                 acum += step;
                 progress.Report(ProgressStatus.InProgress, (int)acum, $"{import.Info.Title} imported.");
             }
-            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-            settings.IsWizardSetupComplete = true;
-            settings.WizardSetupStepCompleted = 0;
-            await _settings.SaveSettingsAsync(settings, false, token).ConfigureAwait(false);
+            SettingsDto finishedSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            finishedSettings.IsWizardSetupComplete = true;
+            finishedSettings.WizardSetupStepCompleted = 0;
+            await _settings.SaveSettingsAsync(finishedSettings, false, token).ConfigureAwait(false);
             progress.Report(ProgressStatus.Completed, 100, $"Import completed for {imports.Count} series");
             _logger.LogInformation("Import completed for {count} series.", imports.Count);
             return JobResult.Success;

@@ -8,6 +8,9 @@ interface ImportWizardState {
   currentStep: number;
   completedSteps: number;
   stepData: Record<string, unknown>;
+  /** True when this run scans the configured ImportFolder (e.g. a Suwayomi migration)
+   * instead of StorageFolder, registering bare titles for archive-less folders. */
+  titleOnly: boolean;
 }
 
 interface ImportWizardContextType {
@@ -15,10 +18,11 @@ interface ImportWizardContextType {
   currentStep: number;
   totalSteps: number;
   isLoading: boolean;
+  titleOnly: boolean;
   nextStep: () => void;
   previousStep: () => void;
   completeWizard: () => void;
-  startWizard: () => void;
+  startWizard: (titleOnly?: boolean) => void;
   cancelWizard: () => void;
   setStepData: (stepIndex: number, data: unknown) => void;
   getStepData: (stepIndex: number) => unknown;
@@ -37,6 +41,7 @@ export function ImportWizardProvider({ children }: { children: React.ReactNode }
     currentStep: 0,
     completedSteps: 0,
     stepData: {},
+    titleOnly: false,
   });
   
   const [isClient, setIsClient] = useState(false);
@@ -62,12 +67,13 @@ export function ImportWizardProvider({ children }: { children: React.ReactNode }
     }
   }, [wizardState]);
 
-  const startWizard = useCallback(() => {
+  const startWizard = useCallback((titleOnly: boolean = false) => {
     setWizardState({
       isActive: true,
       currentStep: 0,
       completedSteps: 0,
       stepData: {},
+      titleOnly,
     });
   }, []);
 
@@ -77,6 +83,7 @@ export function ImportWizardProvider({ children }: { children: React.ReactNode }
       currentStep: 0,
       completedSteps: 0,
       stepData: {},
+      titleOnly: false,
     });
     
     // Clear localStorage
@@ -114,6 +121,7 @@ export function ImportWizardProvider({ children }: { children: React.ReactNode }
       currentStep: 0,
       completedSteps: 0,
       stepData: {},
+      titleOnly: false,
     });
     
     // Clear localStorage
@@ -143,6 +151,7 @@ export function ImportWizardProvider({ children }: { children: React.ReactNode }
     currentStep: wizardState.currentStep,
     totalSteps: TOTAL_STEPS,
     isLoading: false, // Import wizard doesn't need complex loading states like setup wizard
+    titleOnly: wizardState.titleOnly,
     nextStep,
     previousStep,
     completeWizard,
