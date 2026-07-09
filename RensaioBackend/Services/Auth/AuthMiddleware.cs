@@ -49,15 +49,35 @@ public class AuthMiddleware
 
         if (authEnabled)
         {
-            // JWT-based authentication
+            // JWT-based authentication.
+            // Prefer the Authorization header, but fall back to a `token` query string
+            // parameter. This fallback exists because <img src="..."> (and similarly,
+            // native browser-initiated requests like <link>/<video>) cannot attach
+            // custom headers - only the Authorization header path is available to
+            // fetch()/XHR-based API calls. Without this fallback, every image served
+            // through an authenticated route (e.g. /api/image/{key}) is unauthenticatable
+            // by design, regardless of a valid, logged-in session.
             string? authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(authHeader) || !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            string? token = null;
+            if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                token = authHeader["Bearer ".Length..].Trim();
+            }
+            else
+            {
+                string? queryToken = context.Request.Query["token"].FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(queryToken))
+                {
+                    token = queryToken;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(token))
             {
                 context.Response.StatusCode = 401;
                 return;
             }
 
-            string token = authHeader["Bearer ".Length..].Trim();
             var jwtService = scope.ServiceProvider.GetRequiredService<JwtTokenService>();
             ClaimsPrincipal? principal = jwtService.ValidateToken(token);
 
