@@ -33,15 +33,29 @@ public class JwtTokenService
 
     /// <summary>
     /// Gets the JWT signing key from configuration.
-    /// On first run, a random key is auto-generated and persisted.
+    /// On first run, EnvironmentSetup.WriteToAppSettingsAsync auto-generates a
+    /// cryptographically random 256-bit secret and persists it to
+    /// appsettings.json before the app ever starts serving requests, so this
+    /// should always be present by the time anything calls GetSigningKey().
+    ///
+    /// This deliberately fails closed (throws) rather than falling back to a
+    /// hardcoded default if the secret is somehow still missing. This is
+    /// open-source code - any hardcoded fallback secret is, by definition,
+    /// public knowledge, and anyone who read it could forge valid tokens for
+    /// any user. A missing secret here means something upstream is broken
+    /// (unwritable config, failed config load, etc.) and the app should refuse
+    /// to start with forgeable auth rather than silently doing so.
     /// </summary>
     private string GetJwtSecret()
     {
         string? secret = _configuration["JwtSecret"];
         if (string.IsNullOrWhiteSpace(secret))
         {
-            return "GreatSecretKeyThatShouldBeReplaced";
-
+            throw new InvalidOperationException(
+                "JwtSecret is missing from configuration. This is normally auto-generated " +
+                "on first run (see EnvironmentSetup.WriteToAppSettingsAsync). If you're seeing " +
+                "this, appsettings.json may not be writable, or configuration failed to load - " +
+                "refusing to start with forgeable authentication.");
         }
         return secret;
     }
