@@ -279,6 +279,30 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
+    /// GET /api/auth/image-token - Mints a short-lived (15 minute), narrowly-scoped
+    /// token for authenticating &lt;img src&gt; requests via a `?token=` query
+    /// parameter. Requires a valid full-scope session (Bearer header) to call -
+    /// the token this returns is intentionally weaker/narrower than the one used
+    /// to request it, and cannot be used to call any other endpoint.
+    /// Authenticated endpoint.
+    /// </summary>
+    [HttpGet("/api/auth/image-token")]
+    public ActionResult<ImageTokenResponseDto> GetImageToken()
+    {
+        UserEntity? user = HttpContext.Items["User"] as UserEntity;
+        if (user == null)
+            return Unauthorized();
+
+        string imageToken = _jwtTokenService.GenerateImageAccessToken(user);
+
+        return Ok(new ImageTokenResponseDto
+        {
+            Token = imageToken,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(15)
+        });
+    }
+
+    /// <summary>
     /// POST /api/auth/set-password - Set password using invite token.
     /// Public endpoint.
     /// </summary>
