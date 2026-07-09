@@ -128,7 +128,15 @@ export function ProviderPreferencesRequester({
     return (currentVal as string) || EMPTY_VALUE_SENTINEL;
   };
 
-  // Process summary text for ComboBox preferences, replacing %s with selected display value
+  // Process summary text for ComboBox preferences, replacing %s with selected display value.
+  // Returns plain text (no HTML) - line breaks are handled at render time by splitting on
+  // '\n', NOT by injecting <br/> and rendering via dangerouslySetInnerHTML. Preference
+  // summaries originate from third-party Mihon/Tachiyomi extension APKs pulled from
+  // external repositories - text Rensaio does not author or control. Rendering that as
+  // raw HTML would let a malicious or compromised extension repo inject a <script> tag
+  // (or an event-handler attribute) that runs in this app's origin and can read
+  // sessionStorage, including the auth token. Keeping this as plain text means React
+  // escapes it automatically, so any embedded markup just displays as inert text.
   const getProcessedSummary = (preference: ProviderPreference): string => {
     if (!preference.summary) return '';
     
@@ -140,14 +148,14 @@ export function ProviderPreferencesRequester({
         if (valueIndex !== -1 && valueIndex < preference.entries.length) {
           // Replace %s with the corresponding display entry
           const displayValue = preference.entries[valueIndex];
-          return preference.summary.replace(/%s/g, displayValue ?? '').replace(/\n/g, '<br/>');
+          return preference.summary.replace(/%s/g, displayValue ?? '');
         }
       }
       // If no match found, replace %s with current value or empty string
-      return preference.summary.replace(/%s/g, String(currentValue ?? '')).replace(/\n/g, '<br/>');
+      return preference.summary.replace(/%s/g, String(currentValue ?? ''));
     }
     
-    return preference.summary.replace(/\n/g, '<br/>');
+    return preference.summary;
   };
 
   const renderPreferenceControl = (preference: ProviderPreference, index: number) => {
@@ -252,10 +260,14 @@ export function ProviderPreferencesRequester({
                   <Label className="text-base font-medium">
                     {preference.title}
                   </Label>                  {preference.summary && (
-                    <p 
-                      className="text-sm text-muted-foreground"
-                      dangerouslySetInnerHTML={{ __html: getProcessedSummary(preference) }}
-                    />
+                    <p className="text-sm text-muted-foreground">
+                      {getProcessedSummary(preference).split('\n').map((line, lineIndex, arr) => (
+                        <React.Fragment key={lineIndex}>
+                          {line}
+                          {lineIndex < arr.length - 1 && <br />}
+                        </React.Fragment>
+                      ))}
+                    </p>
                   )}</div>
                 <div className="mt-auto">
                   {renderPreferenceControl(preference, index)}
