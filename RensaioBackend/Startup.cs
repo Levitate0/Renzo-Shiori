@@ -6,6 +6,7 @@ using RensaioBackend.Services.Auth;
 using RensaioBackend.Services.Background;
 using RensaioBackend.Utils;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +16,7 @@ using Mihon.ExtensionsBridge.Core.Extensions;
 using Mihon.ExtensionsBridge.Models.Configuration;
 using Serilog;
 using Serilog.Extensions.Logging;
+using System.Threading.RateLimiting;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
 
 namespace RensaioBackend
@@ -68,12 +70,57 @@ namespace RensaioBackend
                         .AllowAnyHeader()
                         .AllowAnyMethod().AllowCredentials();
 #else
-                    policy.AllowAnyOrigin()
-                        .AllowAnyHeader()
-                        .AllowAnyMethod();
+                    // Prefer an explicitly configured origin allowlist (e.g. your public
+                    // domain behind Cloudflare Tunnel) over the previous unconditional
+                    // AllowAnyOrigin(). Set "AllowedOrigins": ["https://levitatemedia.top"]
+                    // in appsettings.json to lock this down once the instance is exposed
+                    // publicly. Falls back to the old permissive behavior (without
+                    // credentials, which browsers reject combined with AllowAnyOrigin
+                    // anyway) if nothing is configured, so this doesn't break existing
+                    // installs that haven't set it.
+                    var allowedOrigins = Configuration.GetSection("AllowedOrigins").Get<string[]>();
+                    if (allowedOrigins != null && allowedOrigins.Length > 0)
+                    {
+                        policy.WithOrigins(allowedOrigins)
+                            .AllowAnyHeader()
+                            .AllowAnyMethod()
+                            .AllowCredentials();
+                    }
+                    else
+                    {
+                        policy.AllowAnyOrigin()
+                            .AllowAnyHeader()
+                            .AllowAnyMethod();
+                    }
 #endif
                 });
             });
+
+            // Rate limiting: IP-scoped fixed window specifically for the login endpoint,
+            // as a brute-force mitigation. RemoteIpAddress reflects the real client IP
+            // (not Cloudflare's edge IP) because UseForwardedHeaders() runs before this
+            // is ever evaluated per-request, reading X-Forwarded-For from the tunnel.
+            services.AddRateLimiter(options =>
+            {
+                options.AddPolicy("login", context =>
+                    RateLimiter.RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            Window = TimeSpan.FromMinutes(1),
+                            PermitLimit = 5,
+                            QueueLimit = 0
+                        }));
+
+                options.OnRejected = async (context, token) =>
+                {
+                    context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                    context.HttpContext.Response.ContentType = "application/json";
+                    await context.HttpContext.Response.WriteAsync(
+                        "{\"error\":\"Too many login attempts. Please wait a minute and try again.\"}", token);
+                };
+            });
+
             services.AddResponseCompression(options =>
             {
                 options.EnableForHttps = true;
@@ -138,6 +185,10 @@ namespace RensaioBackend
             // all subsequent middleware (redirects, HSTS, etc.) use the correct scheme and IP.
             // Without this, Response.Redirect() generates http:// URLs even when the client
             // connected over HTTPS, causing ERR_FR_REDIRECTION_FAILURE in strict HTTPS clients.
+            // It also matters for rate limiting: the "login" policy partitions by
+            // Connection.RemoteIpAddress, which this middleware rewrites from
+            // X-Forwarded-For - without it, every request behind Cloudflare Tunnel would
+            // appear to come from the same edge IP and share one rate-limit bucket.
             app.UseForwardedHeaders();
 
             if (env.IsDevelopment())
@@ -219,8 +270,31 @@ namespace RensaioBackend
                 }
             });
 
+            // Baseline security response headers. Cheap, broad-coverage hardening that
+            // doesn't require any per-endpoint work:
+            //   - X-Content-Type-Options: stops the browser from MIME-sniffing a response
+            //     into a different type than declared (mitigates some XSS/content-confusion
+            //     attacks via uploaded/served files).
+            //   - X-Frame-Options / frame-ancestors: stops the app being embedded in a
+            //     hidden iframe on another site (clickjacking) now that it's public.
+            //   - Referrer-Policy: avoids leaking full URLs (which could include the image
+            //     token query string) to third-party sites via the Referer header when a
+            //     user clicks an outbound link (e.g. a "view on source site" link).
+            app.Use(async (context, next) =>
+            {
+                context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+                context.Response.Headers.Append("X-Frame-Options", "SAMEORIGIN");
+                context.Response.Headers.Append("Referrer-Policy", "strict-origin-when-cross-origin");
+                await next();
+            });
+
             // Order matters for the following middleware
             app.UseRouting();
+
+            // Must come after UseRouting (so [EnableRateLimiting] endpoint metadata is
+            // available) and before UseAuthMiddleware/UseEndpoints (so a rate-limited
+            // request never reaches the login handler at all).
+            app.UseRateLimiter();
 
             // Auth middleware - after routing, before endpoints
             app.UseAuthMiddleware();
