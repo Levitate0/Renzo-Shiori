@@ -1,4 +1,5 @@
 import { getApiConfig } from "@/lib/api/config";
+import { getCachedImageToken } from "@/lib/api/imageToken";
 
 /**
  * Returns a fully qualified URL for a thumbnail/image path.
@@ -8,12 +9,17 @@ import { getApiConfig } from "@/lib/api/config";
  * - When `thumbnailUrl` is falsy or empty, returns a local placeholder so the
  *   frontend never makes a needless network round-trip to the backend.
  * - When `thumbnailUrl` already starts with `http`, returns it as-is.
- * - When JWT authentication is enabled, appends the token as a `?token=`
- *   query parameter. <img src="..."> tags are loaded natively by the browser
- *   and cannot attach an Authorization header the way apiClient's fetch()
- *   calls do, so without this the backend's AuthMiddleware rejects every
- *   image request with 401 regardless of having a valid, logged-in session.
- *   See AuthMiddleware.cs's query-string token fallback.
+ * - When JWT authentication is enabled, appends a short-lived, narrowly-scoped
+ *   image token as a `?token=` query parameter (see imageToken.ts). <img
+ *   src="..."> tags are loaded natively by the browser and cannot attach an
+ *   Authorization header the way apiClient's fetch() calls do, so without
+ *   this the backend's AuthMiddleware rejects every image request with 401
+ *   regardless of having a valid, logged-in session. This intentionally does
+ *   NOT use the main session token (sessionStorage 'rensaio_token') - that
+ *   token is long-lived and full-scope, and putting it in a URL would leak it
+ *   into browser history, server access logs, and any intermediate proxy/CDN
+ *   logs. The image token is short-lived (15 min) and can only ever be used
+ *   for image requests, so exposure there is low-value even if it leaks.
  */
 export const formatThumbnailUrl = (thumbnailUrl?: string): string => {
   const config = getApiConfig();
@@ -27,7 +33,7 @@ export const formatThumbnailUrl = (thumbnailUrl?: string): string => {
   if (typeof window === "undefined") {
     return url;
   }
-  const token = sessionStorage.getItem("rensaio_token");
+  const token = getCachedImageToken();
   if (!token) {
     return url;
   }
