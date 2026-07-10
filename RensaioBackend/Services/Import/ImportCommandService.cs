@@ -40,6 +40,7 @@ public class ImportCommandService
     private readonly SettingsService _settings;
     private readonly SeriesScanner _scanner;
     private readonly ThumbCacheService _thumb;
+    private readonly CoverHashService _coverHash;
     private readonly Series.SeriesStateService _stateService;
     public ImportCommandService(
         ILogger<ImportCommandService> logger,
@@ -55,6 +56,7 @@ public class ImportCommandService
         ProviderCacheService providerCache,
         ProviderManagerService provicerManagerService,
         ThumbCacheService thumb,
+        CoverHashService coverHash,
         SeriesScanner scanner,
         Series.SeriesStateService stateService)
     {
@@ -72,6 +74,7 @@ public class ImportCommandService
         _mihon = mihon;
         _scanner = scanner;
         _thumb = thumb;
+        _coverHash = coverHash;
         _stateService = stateService;
     }
 
@@ -507,6 +510,10 @@ public class ImportCommandService
                         List<ImportProviderSnapshot> fnd = existing.Select(a => a.Item1).Distinct().ToList();
                         List<ImportProviderSnapshot> left = import.Info.Series.Providers.Where(a => !fnd.Contains(a)).ToList();
                         List<LinkedSeriesDto> linked = new List<LinkedSeriesDto>();
+                        // Results that fail the strict title check are kept as candidates for the
+                        // cover-image / transitive-title second pass instead of being discarded.
+                        List<LinkedSeriesDto> unmatched = new List<LinkedSeriesDto>();
+                        List<string> referenceTitles = new List<string> { import.Info.Title };
                         if (existing.Count > 0)
                         {
                             _logger.LogInformation("Searching for '{Title}' across {Count} matched providers in languages: {langstr}", import.Info.Title, existing.Count, langstr);
@@ -529,18 +536,15 @@ public class ImportCommandService
                             }
                             if (list.Count==0)
                                 left.AddRange(existing.Select(a=>a.Item1));
-                
+                            referenceTitles.AddRange(sourceTitles.Values.SelectMany(a => a));
+
                             foreach (LinkedSeriesDto l in list)
                             {
                                 List<string> lss = sourceTitles[l.MihonProviderId];
-                                foreach (string n in lss)
-                                {
-                                    if (l.Title.AreStringSimilar(n))
-                                    {
-                                        linked.Add(l);
-                                        break;
-                                    }
-                                }
+                                if (lss.Any(n => l.Title.AreStringSimilar(n)))
+                                    linked.Add(l);
+                                else
+                                    unmatched.Add(l);
                             }
 
                         }
@@ -574,18 +578,17 @@ public class ImportCommandService
                                     }
                                 }
                             }
+                            referenceTitles.AddRange(titles);
                             foreach (LinkedSeriesDto l in list)
                             {
-                                foreach (string title in titles)
-                                {
-                                    if (l.Title.AreStringSimilar(title,0.1))
-                                    {
-                                        linked.Add(l);
-                                        break;
-                                    }
-                                }
+                                if (titles.Any(title => l.Title.AreStringSimilar(title, 0.1)))
+                                    linked.Add(l);
+                                else
+                                    unmatched.Add(l);
                             }
                         }
+                        linked = await ExpandMatchesByCoverAsync(referenceTitles, linked, unmatched, token)
+                            .ConfigureAwait(false);
                         bool success = false;
                         if (linked.Count > 0)
                         {
@@ -642,6 +645,116 @@ public class ImportCommandService
             progress.Report(ProgressStatus.Failed, 100, $"Series search failed: {ex.Message}");
             return JobResult.Failed;
         }
+    }
+
+    // Cover-assisted matching thresholds, calibrated against this instance's real
+    // thumbnail cache: the same artwork served by different providers (other
+    // format/resolution/crop) lands at Hamming distance 0-12, while unrelated
+    // covers start around 16. <=8 is safely "same artwork" on its own; 9-12 needs
+    // a loosely similar title to corroborate. All accepted results still require
+    // manual confirmation in the import review screen.
+    private const int ExactCoverMaxDistance = 8;
+    private const int SimilarCoverMaxDistance = 12;
+    private const double LooseTitleThreshold = 0.35;
+    private const int MaxCoverHashesPerImport = 80;
+    private const int MaxExpansionRounds = 4;
+
+    /// <summary>
+    /// Second-chance matching for search results that failed the strict title
+    /// check. Every accepted result contributes its title and cover art to the
+    /// reference set, so a source matched by title can vouch for the same series
+    /// on other sources even when those use a completely different (e.g.
+    /// localized) title. A candidate is accepted when: its title is similar to a
+    /// reference title (transitive title match), OR its cover is a near-exact
+    /// match of a reference cover, OR a loosely similar title agrees with a
+    /// looser cover match. Runs until no new candidates are accepted, bounded by
+    /// a round limit and a per-import cover-download budget.
+    /// </summary>
+    private async Task<List<LinkedSeriesDto>> ExpandMatchesByCoverAsync(
+        List<string> referenceTitles,
+        List<LinkedSeriesDto> linked,
+        List<LinkedSeriesDto> unmatched,
+        CancellationToken token)
+    {
+        // Without at least one title-matched source there is no reference cover
+        // to compare against (title-only imports have no local artwork).
+        if (unmatched.Count == 0 || linked.Count == 0)
+            return linked;
+
+        List<string> titles = referenceTitles
+            .Concat(linked.Select(a => a.Title))
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Distinct(StringComparer.InvariantCultureIgnoreCase)
+            .ToList();
+
+        int hashBudget = MaxCoverHashesPerImport;
+        List<ulong> referenceHashes = new List<ulong>();
+        foreach (LinkedSeriesDto l in linked)
+        {
+            if (hashBudget <= 0)
+                break;
+            hashBudget--;
+            ulong? h = await _coverHash.ComputeHashAsync(l.ThumbnailUrl, token).ConfigureAwait(false);
+            if (h != null)
+                referenceHashes.Add(h.Value);
+        }
+        if (referenceHashes.Count == 0)
+            return linked;
+
+        // Spend the download budget on the most plausible candidates first.
+        List<LinkedSeriesDto> pending = unmatched
+            .OrderByDescending(c => titles.Any(t => c.Title.AreStringSimilar(t, LooseTitleThreshold)))
+            .ToList();
+        Dictionary<LinkedSeriesDto, ulong?> candidateHashes = new Dictionary<LinkedSeriesDto, ulong?>();
+
+        bool changed = true;
+        int rounds = 0;
+        while (changed && rounds++ < MaxExpansionRounds)
+        {
+            changed = false;
+            foreach (LinkedSeriesDto candidate in pending.ToList())
+            {
+                bool accept = titles.Any(t => candidate.Title.AreStringSimilar(t));
+                ulong? hash = null;
+                if (!accept)
+                {
+                    if (!candidateHashes.TryGetValue(candidate, out hash))
+                    {
+                        if (hashBudget <= 0)
+                            continue;
+                        hashBudget--;
+                        hash = await _coverHash.ComputeHashAsync(candidate.ThumbnailUrl, token).ConfigureAwait(false);
+                        candidateHashes[candidate] = hash;
+                    }
+                    if (hash != null)
+                    {
+                        int best = referenceHashes.Min(r => CoverHashService.HammingDistance(r, hash.Value));
+                        accept = best <= ExactCoverMaxDistance ||
+                                 (best <= SimilarCoverMaxDistance &&
+                                  titles.Any(t => candidate.Title.AreStringSimilar(t, LooseTitleThreshold)));
+                    }
+                }
+                if (!accept)
+                    continue;
+
+                linked.Add(candidate);
+                pending.Remove(candidate);
+                changed = true;
+                if (!string.IsNullOrWhiteSpace(candidate.Title) &&
+                    !titles.Contains(candidate.Title, StringComparer.InvariantCultureIgnoreCase))
+                    titles.Add(candidate.Title);
+                if (hash == null && hashBudget > 0)
+                {
+                    hashBudget--;
+                    hash = await _coverHash.ComputeHashAsync(candidate.ThumbnailUrl, token).ConfigureAwait(false);
+                }
+                if (hash != null)
+                    referenceHashes.Add(hash.Value);
+                _logger.LogInformation("Cover/transitive match accepted '{Title}' from {Provider} ({Lang})",
+                    candidate.Title, candidate.Provider, candidate.Lang);
+            }
+        }
+        return linked;
     }
 
     public async Task<JobResult> ImportSeriesAsync(JobInfo jobInfo, bool disableJob, CancellationToken token = default)

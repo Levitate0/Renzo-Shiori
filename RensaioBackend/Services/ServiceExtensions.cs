@@ -82,6 +82,7 @@ namespace RensaioBackend.Services
             services.AddScoped<IImageProvider, ExtensionsImageProvider>();
             services.AddScoped<IImageProvider, StorageImageProvider>();
             services.TryAddScoped<ThumbCacheService>();
+            services.TryAddScoped<CoverHashService>();
             services.TryAddScoped<IImageFactory, NetVipsImageFactory>();
             services.TryAddScoped<ArchiveHelperService>();
             services.TryAddScoped<DailyService>();
