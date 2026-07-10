@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  Bell,
   Library,
   List,
   Plug,
@@ -42,6 +43,7 @@ export function useSections(): SectionDef[] {
 
   if (canViewLibrary) {
     sections.push({ name: "Library", href: "/library", icon: Library });
+    sections.push({ name: "Updates", href: "/updates", icon: Bell });
   }
   if (canBrowse) {
     sections.push({ name: "Browse", href: "/cloud-latest", icon: Sparkles });

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { seriesService } from '@/lib/api/services/seriesService';
-import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail } from '@/lib/api/types';
+import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail, type UpdateFeedItem } from '@/lib/api/types';
 
 /**
  * Hook to get available search sources (for search and filtering)
@@ -128,6 +128,18 @@ export const useLatestGenres = () => {
     queryKey: ['series', 'latest', 'genres'],
     queryFn: () => seriesService.getLatestGenres(),
     staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+};
+
+/**
+ * Hook to get the "Updates" feed (recently downloaded chapters / added series)
+ */
+export const useUpdatesFeed = (start: number, count: number) => {
+  return useQuery<UpdateFeedItem[]>({
+    queryKey: ['series', 'updates', start, count],
+    queryFn: () => seriesService.getUpdates(start, count),
+    staleTime: 30 * 1000, // 30 seconds
+    refetchOnWindowFocus: true,
   });
 };
 

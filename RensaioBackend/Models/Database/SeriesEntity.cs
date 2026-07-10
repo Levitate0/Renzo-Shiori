@@ -52,6 +52,14 @@ namespace RensaioBackend.Models.Database
         public DateTime? LastChapterDate { get; set; }
 
         /// <summary>
+        /// When the series entered the library. Null on rows that predate the
+        /// column; the updates feed falls back to the earliest chapter
+        /// download date for those.
+        /// </summary>
+        [JsonPropertyName("dateAdded")]
+        public DateTime? DateAdded { get; set; } = DateTime.UtcNow;
+
+        /// <summary>
         /// Computed release cadence in days. Null = not yet determined.
         /// Mapped values: 7 (1 week), 15 (half month), 30 (1 month).
         /// Recalculated after each download or chapter fetch.

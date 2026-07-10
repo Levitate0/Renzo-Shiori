@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api/client';
-import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail } from '@/lib/api/types';
+import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail, type UpdateFeedItem } from '@/lib/api/types';
 
 export const seriesService = {
   /**
@@ -93,6 +93,18 @@ export const seriesService = {
    */
   async getLatestGenres(): Promise<LatestGenre[]> {
     return apiClient.get<LatestGenre[]>('/api/serie/latest/genres');
+  },
+
+  /**
+   * Get the "Updates" feed: recently downloaded chapters and recently added
+   * series, newest first.
+   */
+  async getUpdates(start: number, count: number): Promise<UpdateFeedItem[]> {
+    const params = new URLSearchParams({
+      start: start.toString(),
+      count: count.toString(),
+    });
+    return apiClient.get<UpdateFeedItem[]>(`/api/serie/updates?${params.toString()}`);
   },
 
   /**

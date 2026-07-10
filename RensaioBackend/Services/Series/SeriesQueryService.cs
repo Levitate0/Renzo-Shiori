@@ -107,6 +107,69 @@ namespace RensaioBackend.Services.Series
         }
 
         /// <summary>
+        /// Builds the "Updates" feed (Suwayomi-style): one entry per chapter that
+        /// finished downloading plus one entry per series added to the library,
+        /// newest first. Derived entirely from existing data — chapter
+        /// DownloadDate and series DateAdded (older rows without DateAdded fall
+        /// back to their earliest chapter download).
+        /// </summary>
+        /// <param name="start">Starting index for pagination</param>
+        /// <param name="count">Number of items to return</param>
+        /// <param name="token">Cancellation token</param>
+        public async Task<List<UpdateFeedItemDto>> GetUpdatesFeedAsync(int start, int count, CancellationToken token = default)
+        {
+            List<Models.Database.SeriesEntity> series = await _db.Series
+                .Include(s => s.Sources).AsNoTracking().ToListAsync(token).ConfigureAwait(false);
+
+            List<UpdateFeedItemDto> items = new();
+            foreach (Models.Database.SeriesEntity s in series)
+            {
+                // One entry per chapter number; when several sources hold the same
+                // chapter keep the most recent download of it.
+                var chapterEvents = s.Sources
+                    .SelectMany(p => p.Chapters, (p, c) => (Provider: p, Chapter: c))
+                    .Where(x => x.Chapter.DownloadDate != null && !x.Chapter.IsDeleted && !string.IsNullOrEmpty(x.Chapter.Filename))
+                    .GroupBy(x => x.Chapter.Number)
+                    .Select(g => g.OrderByDescending(x => x.Chapter.DownloadDate).First())
+                    .ToList();
+
+                foreach ((SeriesProviderEntity p, Models.Chapter c) in chapterEvents)
+                {
+                    items.Add(new UpdateFeedItemDto
+                    {
+                        SeriesId = s.Id,
+                        SeriesTitle = s.Title,
+                        ThumbnailUrl = s.ThumbnailUrl,
+                        Kind = UpdateFeedItemDto.KindNewChapter,
+                        ChapterNumber = c.Number,
+                        ChapterName = c.Name,
+                        Provider = p.Provider,
+                        Timestamp = c.DownloadDate!.Value
+                    });
+                }
+
+                DateTime? added = s.DateAdded ?? chapterEvents.Min(x => x.Chapter.DownloadDate);
+                if (added != null)
+                {
+                    items.Add(new UpdateFeedItemDto
+                    {
+                        SeriesId = s.Id,
+                        SeriesTitle = s.Title,
+                        ThumbnailUrl = s.ThumbnailUrl,
+                        Kind = UpdateFeedItemDto.KindSeriesAdded,
+                        Timestamp = added.Value
+                    });
+                }
+            }
+
+            return items
+                .OrderByDescending(i => i.Timestamp)
+                .Skip(start)
+                .Take(count)
+                .ToList();
+        }
+
+        /// <summary>
         /// Gets the latest series with optional filtering
         /// </summary>
         /// <param name="start">Starting index for pagination</param>

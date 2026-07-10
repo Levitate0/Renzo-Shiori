@@ -843,3 +843,18 @@ export interface OAuthAuthorizeResponse {
   authUrl: string;
   state: string;
 }
+
+/**
+ * One row of the "Updates" feed: a series added to the library or a chapter
+ * that finished downloading.
+ */
+export interface UpdateFeedItem {
+  seriesId: string;
+  seriesTitle: string;
+  thumbnailUrl?: string;
+  kind: 'seriesAdded' | 'newChapter';
+  chapterNumber?: number;
+  chapterName?: string;
+  provider?: string;
+  timestamp: string;
+}

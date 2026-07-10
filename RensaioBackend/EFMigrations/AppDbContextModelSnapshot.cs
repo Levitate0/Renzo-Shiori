@@ -503,6 +503,10 @@ namespace RensaioBackend.Migrations
                         .HasColumnType("INTEGER")
                         .HasAnnotation("Relational:JsonPropertyName", "chapterCount");
 
+                    b.Property<DateTime?>("DateAdded")
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Relational:JsonPropertyName", "dateAdded");
+
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasColumnType("TEXT")

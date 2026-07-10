@@ -252,6 +252,31 @@ namespace RensaioBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// Gets the "Updates" feed: recently downloaded chapters and recently
+        /// added series, newest first.
+        /// </summary>
+        /// <param name="start">Starting index for pagination.</param>
+        /// <param name="count">Number of items to return.</param>
+        /// <param name="token">Cancellation token.</param>
+        [HttpGet("updates")]
+        [ProducesResponseType(typeof(List<UpdateFeedItemDto>), 200)]
+        [ProducesResponseType(500)]
+        public async Task<ActionResult<List<UpdateFeedItemDto>>> GetUpdatesAsync([FromQuery] int start = 0, [FromQuery] int count = 100, CancellationToken token = default)
+        {
+            try
+            {
+                var result = await _queryService.GetUpdatesFeedAsync(start, count, token).ConfigureAwait(false);
+                await _thumb.PopulateThumbsAsync(result, "/api/image/", token).ConfigureAwait(false);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting updates feed: {Message}", ex.Message);
+                return StatusCode(500, $"Error getting updates feed.");
+            }
+        }
+
         [HttpGet("latest")]
         [ProducesResponseType(typeof(List<LatestSeriesDto>), 200)]
         [ProducesResponseType(500)]
