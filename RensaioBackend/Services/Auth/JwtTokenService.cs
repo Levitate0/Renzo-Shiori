@@ -1,5 +1,6 @@
 using RensaioBackend.Models.Database;
 using RensaioBackend.Models.Enums;
+using RensaioBackend.Services.Settings;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
@@ -89,7 +90,7 @@ public class JwtTokenService
         SymmetricSecurityKey key = GetSigningKey();
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
-        int expirationHours = _configuration.GetValue<int>("Authentication:SessionExpirationHours", 24);
+        int expirationHours = RuntimeSecuritySettings.SessionExpirationHours;
 
         var claims = new[]
         {
@@ -264,10 +265,10 @@ public class JwtTokenService
     }
 
     /// <summary>
-    /// Gets the remember-me expiration days from configuration.
+    /// Gets the remember-me expiration days from the live (WebUI-editable) settings.
     /// </summary>
     public int GetRememberMeExpirationDays()
     {
-        return _configuration.GetValue<int>("Authentication:RememberMeExpirationDays", 30);
+        return RuntimeSecuritySettings.RememberMeExpirationDays;
     }
 }

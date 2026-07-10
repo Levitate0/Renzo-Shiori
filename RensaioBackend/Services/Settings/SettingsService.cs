@@ -316,6 +316,7 @@ namespace RensaioBackend.Services.Settings
             if (needSave)
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
             _settings = GetFromEditableSettings(set);
+            RuntimeSecuritySettings.Update(set);
         }
         
         public async Task SaveSettingsAsync(SettingsDto settings, bool force, CancellationToken token = default)
@@ -356,6 +357,9 @@ namespace RensaioBackend.Services.Settings
                 ProviderErrorRedHours = settings.ProviderErrorRedHours,
                 AuthenticationEnabled = settings.AuthenticationEnabled,
                 ExternalDomain = settings.ExternalDomain,
+                AllowedOrigins = settings.AllowedOrigins,
+                SessionExpirationHours = settings.SessionExpirationHours,
+                RememberMeExpirationDays = settings.RememberMeExpirationDays,
             };
 
             await SaveSettingsAsync(editableSettings, force, token).ConfigureAwait(false);
@@ -398,6 +402,9 @@ namespace RensaioBackend.Services.Settings
                 ProviderErrorRedHours = ed.ProviderErrorRedHours,
                 AuthenticationEnabled = ed.AuthenticationEnabled,
                 ExternalDomain = ed.ExternalDomain,
+                AllowedOrigins = ed.AllowedOrigins,
+                SessionExpirationHours = ed.SessionExpirationHours,
+                RememberMeExpirationDays = ed.RememberMeExpirationDays,
             };
             set.StorageFolder = _config["StorageFolder"] ?? string.Empty;
             set.ImportFolder = _config["ImportFolder"] ?? string.Empty;
@@ -434,6 +441,12 @@ namespace RensaioBackend.Services.Settings
                 return _settings;
             SettingsDto firstTimeEditableSettings = new SettingsDto();
             _config.Bind("FirstTimeSettings", firstTimeEditableSettings);
+            // Legacy top-level appsettings.json keys seed the security defaults so
+            // installs that configured them via config file keep their values when
+            // these settings migrate into the DB (and become WebUI-editable).
+            firstTimeEditableSettings.AllowedOrigins = _config.GetSection("AllowedOrigins").Get<string[]>() ?? [];
+            firstTimeEditableSettings.SessionExpirationHours = _config.GetValue("Authentication:SessionExpirationHours", 24);
+            firstTimeEditableSettings.RememberMeExpirationDays = _config.GetValue("Authentication:RememberMeExpirationDays", 90);
             List<SettingEntity> settings = await _db.Settings.AsNoTracking().ToListAsync(token).ConfigureAwait(false);
             bool needSave;
             if (settings.Count == 0)
@@ -456,6 +469,7 @@ namespace RensaioBackend.Services.Settings
             }
             if (needSave)
                 await SaveSettingsAsync(_settings, true, token).ConfigureAwait(false);
+            RuntimeSecuritySettings.Update(_settings);
             return _settings;
         }
     }

@@ -12,6 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/auth-context";
 import { useMutation } from "@tanstack/react-query";
 import { userService } from "@/lib/api/services/userService";
@@ -1120,6 +1121,18 @@ const getExternalDomainError = (value: string): string | null => {
   return null;
 };
 
+/** Returns the first allowed-origin line that is not a valid http(s) origin */
+const getAllowedOriginsError = (raw: string): string | null => {
+  const invalid = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .find((line) => !/^https?:\/\/./.test(line));
+  return invalid
+    ? `"${invalid}" is not a valid origin (e.g. https://rensaio.example.com)`
+    : null;
+};
+
 // Security Settings Section
 function SecuritySection({
   localSettings,
@@ -1132,6 +1145,12 @@ function SecuritySection({
   const externalDomainError = getExternalDomainError(
     localSettings.externalDomain || "",
   );
+  // Raw textarea text so the user can type blank lines / partial URLs freely;
+  // the parsed non-empty lines are what get pushed into localSettings.
+  const [allowedOriginsText, setAllowedOriginsText] = useState(
+    (localSettings.allowedOrigins || []).join("\n"),
+  );
+  const allowedOriginsError = getAllowedOriginsError(allowedOriginsText);
 
   return (
     <CardContent className="space-y-4">
@@ -1170,6 +1189,83 @@ function SecuritySection({
         <p className="text-xs text-muted-foreground">
           Used for invite links and OPDS URLs when accessed from outside your local network.
         </p>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="allowed-origins">Allowed Origins (CORS)</Label>
+        <Textarea
+          id="allowed-origins"
+          value={allowedOriginsText}
+          onChange={(e) => {
+            const raw = e.target.value;
+            setAllowedOriginsText(raw);
+            const parsed = raw
+              .split("\n")
+              .map((line) => line.trim().replace(/\/+$/, ""))
+              .filter(Boolean);
+            setLocalSettings((prev) => ({
+              ...prev,
+              allowedOrigins: parsed,
+            }));
+          }}
+          placeholder={"https://rensaio.example.com\nhttp://192.168.1.10:9833"}
+          rows={3}
+        />
+        {allowedOriginsError && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+            <span>⚠</span>
+            <span>{allowedOriginsError}</span>
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground">
+          One origin per line. Browsers may only call the API from these
+          origins. Leave empty to allow any origin (without credentials).
+          Changes apply immediately, no restart needed.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="session-expiration-hours">
+            Session Expiration (hours)
+          </Label>
+          <Input
+            id="session-expiration-hours"
+            type="number"
+            min="1"
+            max="8760"
+            value={localSettings.sessionExpirationHours}
+            onChange={(e) =>
+              setLocalSettings((prev) => ({
+                ...prev,
+                sessionExpirationHours: parseInt(e.target.value) || 1,
+              }))
+            }
+          />
+          <p className="text-xs text-muted-foreground">
+            How long a login token stays valid.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="remember-me-expiration-days">
+            Remember Me Expiration (days)
+          </Label>
+          <Input
+            id="remember-me-expiration-days"
+            type="number"
+            min="1"
+            max="3650"
+            value={localSettings.rememberMeExpirationDays}
+            onChange={(e) =>
+              setLocalSettings((prev) => ({
+                ...prev,
+                rememberMeExpirationDays: parseInt(e.target.value) || 1,
+              }))
+            }
+          />
+          <p className="text-xs text-muted-foreground">
+            How long &quot;Remember Me&quot; sessions stay signed in. The timer
+            resets each time the session refreshes.
+          </p>
+        </div>
       </div>
     </CardContent>
   );

@@ -4,7 +4,9 @@ using RensaioBackend.Models;
 using RensaioBackend.Services;
 using RensaioBackend.Services.Auth;
 using RensaioBackend.Services.Background;
+using RensaioBackend.Services.Settings;
 using RensaioBackend.Utils;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
@@ -61,40 +63,17 @@ namespace RensaioBackend
             services.AddSwaggerGen();
             services.Configure<HostOptions>(opts => opts.ShutdownTimeout = TimeSpan.FromSeconds(10));
 
-            services.AddCors(options =>
-            {
-                options.AddDefaultPolicy(policy =>
-                {
-#if DEBUG
-                    policy.WithOrigins("http://localhost:5001", "http://localhost:3000")
-                        .AllowAnyHeader()
-                        .AllowAnyMethod().AllowCredentials();
-#else
-                    // Prefer an explicitly configured origin allowlist (e.g. your public
-                    // domain behind Cloudflare Tunnel) over the previous unconditional
-                    // AllowAnyOrigin(). Set "AllowedOrigins": ["https://levitatemedia.top"]
-                    // in appsettings.json to lock this down once the instance is exposed
-                    // publicly. Falls back to the old permissive behavior (without
-                    // credentials, which browsers reject combined with AllowAnyOrigin
-                    // anyway) if nothing is configured, so this doesn't break existing
-                    // installs that haven't set it.
-                    var allowedOrigins = Configuration.GetSection("AllowedOrigins").Get<string[]>();
-                    if (allowedOrigins != null && allowedOrigins.Length > 0)
-                    {
-                        policy.WithOrigins(allowedOrigins)
-                            .AllowAnyHeader()
-                            .AllowAnyMethod()
-                            .AllowCredentials();
-                    }
-                    else
-                    {
-                        policy.AllowAnyOrigin()
-                            .AllowAnyHeader()
-                            .AllowAnyMethod();
-                    }
-#endif
-                });
-            });
+            // CORS policy is resolved per request by DynamicCorsPolicyProvider from the
+            // WebUI-editable AllowedOrigins setting (Settings → Security), so origin
+            // changes apply live. Seed the runtime snapshot from the legacy top-level
+            // appsettings.json keys so pre-UI configs keep working until first save;
+            // SettingsService overwrites the snapshot with DB-persisted values on load.
+            RuntimeSecuritySettings.Set(
+                Configuration.GetSection("AllowedOrigins").Get<string[]>(),
+                Configuration.GetValue<int>("Authentication:SessionExpirationHours", 24),
+                Configuration.GetValue<int>("Authentication:RememberMeExpirationDays", 90));
+            services.AddCors();
+            services.AddSingleton<ICorsPolicyProvider, DynamicCorsPolicyProvider>();
 
             // Rate limiting: IP-scoped fixed window specifically for the login endpoint,
             // as a brute-force mitigation. RemoteIpAddress reflects the real client IP

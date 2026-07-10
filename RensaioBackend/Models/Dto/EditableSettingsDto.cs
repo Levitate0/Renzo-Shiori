@@ -89,6 +89,20 @@ public class EditableSettingsDto
 
     [JsonPropertyName("externalDomain")]
     public string ExternalDomain { get; set; } = string.Empty;
+
+    /// <summary>
+    /// CORS origin allowlist. Empty = permissive AllowAnyOrigin (without
+    /// credentials) for installs that never configured it; non-empty = strict
+    /// allowlist with credentials. Applied live via DynamicCorsPolicyProvider.
+    /// </summary>
+    [JsonPropertyName("allowedOrigins")]
+    public string[] AllowedOrigins { get; set; } = [];
+
+    [JsonPropertyName("sessionExpirationHours")]
+    public int SessionExpirationHours { get; set; } = 24;
+
+    [JsonPropertyName("rememberMeExpirationDays")]
+    public int RememberMeExpirationDays { get; set; } = 90;
 }
 public enum NsfwVisibility
 {

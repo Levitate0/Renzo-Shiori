@@ -49,6 +49,9 @@ export interface Settings {
   // Security settings
   authenticationEnabled: boolean;
   externalDomain: string;
+  allowedOrigins: string[];
+  sessionExpirationHours: number;
+  rememberMeExpirationDays: number;
 }
 
 export interface LinkedSeries {
