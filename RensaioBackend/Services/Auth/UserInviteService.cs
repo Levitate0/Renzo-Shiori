@@ -1,4 +1,5 @@
 using RensaioBackend.Models.Database;
+using System.Security.Cryptography;
 
 namespace RensaioBackend.Services.Auth;
 
@@ -33,6 +34,51 @@ public class UserInviteService
         user.PasswordSetToken = null;
         return true;
     }
+
+    /// <summary>
+    /// Lifetime of an emailed password-reset link.
+    /// </summary>
+    public static readonly TimeSpan PasswordResetTokenLifetime = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Generates a self-service password-reset token, storing only its SHA-256
+    /// hash plus an expiry on the user. Returns the raw token for the email
+    /// link; it is never persisted or shown in any UI.
+    /// </summary>
+    public string GeneratePasswordResetToken(UserEntity user)
+    {
+        string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        user.PasswordResetTokenHash = HashResetToken(token);
+        user.PasswordResetExpiresAt = DateTime.UtcNow.Add(PasswordResetTokenLifetime);
+        return token;
+    }
+
+    /// <summary>
+    /// Consumes (validates and clears) a password-reset token.
+    /// Returns true if the token matched the stored hash and had not expired.
+    /// </summary>
+    public bool ConsumePasswordResetToken(UserEntity user, string token)
+    {
+        if (string.IsNullOrWhiteSpace(user.PasswordResetTokenHash) ||
+            user.PasswordResetExpiresAt == null ||
+            user.PasswordResetExpiresAt.Value < DateTime.UtcNow ||
+            string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        byte[] expected = Convert.FromHexString(user.PasswordResetTokenHash);
+        byte[] actual = Convert.FromHexString(HashResetToken(token));
+        if (!CryptographicOperations.FixedTimeEquals(expected, actual))
+            return false;
+
+        user.PasswordResetTokenHash = null;
+        user.PasswordResetExpiresAt = null;
+        return true;
+    }
+
+    private static string HashResetToken(string token) =>
+        Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token.ToUpperInvariant())));
 
     /// <summary>
     /// Generates the formatted invite message text.

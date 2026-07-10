@@ -79,10 +79,12 @@ public class UserCommandService
     }
 
     /// <summary>
-    /// Updates user fields (level, active status, avatar).
+    /// Updates user fields (level, active status, avatar, email).
+    /// Email: null = unchanged, empty/whitespace = cleared.
     /// </summary>
     public async Task UpdateUserAsync(UserEntity user, UserLevel? level = null, bool? isActive = null,
         byte[]? avatarBlob = null, string? avatarContentType = null, bool? removeAvatar = null,
+        string? email = null,
         CancellationToken token = default)
     {
         // If promoting a user to Owner, ensure one doesn't already exist
@@ -94,6 +96,9 @@ public class UserCommandService
 
         if (isActive.HasValue)
             user.IsActive = isActive.Value;
+
+        if (email != null)
+            user.Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim();
 
         if (removeAvatar == true)
         {

@@ -37,6 +37,23 @@ public class UserEntity
     public string? PasswordSetToken { get; set; }
 
     /// <summary>
+    /// Optional email address, used for self-service password reset.
+    /// </summary>
+    public string? Email { get; set; }
+
+    /// <summary>
+    /// SHA-256 hash of the current self-service password-reset token. Unlike
+    /// PasswordSetToken (admin-generated, shown in the UI), reset tokens are
+    /// only ever sent by email, so only the hash is stored.
+    /// </summary>
+    public string? PasswordResetTokenHash { get; set; }
+
+    /// <summary>
+    /// Expiration of the current password-reset token.
+    /// </summary>
+    public DateTime? PasswordResetExpiresAt { get; set; }
+
+    /// <summary>
     /// SHA-256 hash of the raw refresh token for "Remember Me" functionality.
     /// </summary>
     public string? RefreshTokenHash { get; set; }

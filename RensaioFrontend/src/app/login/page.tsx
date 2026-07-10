@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useAuth } from '@/contexts/auth-context';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,14 +20,17 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetDone, setResetDone] = useState(false);
 
-  // On mount, pre-fill username from localStorage if previously remembered
+  // On mount, pre-fill username from localStorage if previously remembered,
+  // and show a confirmation note when arriving from a completed password reset.
   useEffect(() => {
     const rememberedUsername = localStorage.getItem(REMEMBERED_USER_KEY);
     if (rememberedUsername) {
       setUsername(rememberedUsername);
       setRememberMe(true);
     }
+    setResetDone(new URLSearchParams(window.location.search).get('reset') === '1');
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -83,6 +87,11 @@ export default function LoginPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
+            {resetDone && !error && (
+              <div className="p-3 text-sm rounded-md bg-muted text-muted-foreground">
+                Password reset successful. Log in with your new password.
+              </div>
+            )}
             {error && (
               <div className="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md">
                 {error}
@@ -124,6 +133,14 @@ export default function LoginPage() {
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? 'Logging in...' : 'Log in'}
             </Button>
+            <div className="text-center text-sm">
+              <Link
+                href="/auth/forgot-password"
+                className="text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+              >
+                Forgot password?
+              </Link>
+            </div>
           </form>
         </CardContent>
       </Card>

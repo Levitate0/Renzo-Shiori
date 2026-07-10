@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/auth-context';
 import { useSettings } from '@/lib/api/hooks/useSettings';
 import { useUpdateUser, useRegenerateOpdsPath } from '@/lib/api/hooks/useUsers';
 import { type User, UserLevel } from '@/lib/api/types';
+import { userService } from '@/lib/api/services/userService';
 import { fetchGravatarBase64 } from '@/lib/gravatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,6 +43,7 @@ export function EditUserDialog({ user, open, onOpenChange }: EditUserDialogProps
 
   const [level, setLevel] = useState<UserLevel>(user.level);
   const [isActive, setIsActive] = useState(user.isActive);
+  const [email, setEmail] = useState(user.email ?? '');
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [avatarBase64, setAvatarBase64] = useState<string | undefined>(undefined);
   const [avatarContentType, setAvatarContentType] = useState<string | undefined>(undefined);
@@ -56,6 +58,7 @@ export function EditUserDialog({ user, open, onOpenChange }: EditUserDialogProps
     if (open) {
       setLevel(user.level);
       setIsActive(user.isActive);
+      setEmail(user.email ?? '');
       setRemoveAvatar(false);
       setAvatarBase64(undefined);
       setAvatarContentType(undefined);
@@ -135,13 +138,21 @@ export function EditUserDialog({ user, open, onOpenChange }: EditUserDialogProps
       const updateData: Parameters<typeof updateUser.mutateAsync>[0]['data'] = {};
       if (level !== user.level) updateData.level = level;
       if (isActive !== user.isActive) updateData.isActive = isActive;
+      if ((user.email ?? '') !== email.trim()) updateData.email = email.trim();
       if (avatarBase64) {
         updateData.avatarBase64 = avatarBase64;
         updateData.avatarContentType = avatarContentType;
       }
       if (removeAvatar) updateData.removeAvatar = true;
 
-      await updateUser.mutateAsync({ id: user.id, data: updateData });
+      if (isSelf) {
+        // Self-edits go through /api/auth/me: the /api/users/{id} route is
+        // admin-only, so a regular user editing their own avatar/email would
+        // otherwise be rejected. Level/active are never self-editable anyway.
+        await userService.updateMe(updateData);
+      } else {
+        await updateUser.mutateAsync({ id: user.id, data: updateData });
+      }
       // Refresh auth context to pick up avatar changes for the current user
       if (isSelf) {
         await refreshAuth();
@@ -246,6 +257,21 @@ export function EditUserDialog({ user, open, onOpenChange }: EditUserDialogProps
               <Label htmlFor="remove-avatar">Remove avatar</Label>
             </div>
           )}
+
+          {/* Email — used for self-service password reset links */}
+          <div className="space-y-2">
+            <Label htmlFor="account-email">Email</Label>
+            <Input
+              id="account-email"
+              type="email"
+              placeholder="Optional — used for password reset"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Password-reset links are sent here. Leave empty to disable email reset for this account.
+            </p>
+          </div>
 
           {/* OPDS Path */}
           <div className="space-y-2">

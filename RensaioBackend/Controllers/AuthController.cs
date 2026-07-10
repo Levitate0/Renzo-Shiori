@@ -21,6 +21,8 @@ public class AuthController : ControllerBase
     private readonly UserQueryService _userQueryService;
     private readonly UserCommandService _userCommandService;
     private readonly SettingsService _settingsService;
+    private readonly EmailService _emailService;
+    private readonly ILogger _logger;
 
     public AuthController(
         AppDbContext db,
@@ -29,7 +31,9 @@ public class AuthController : ControllerBase
         UserInviteService userInviteService,
         UserQueryService userQueryService,
         UserCommandService userCommandService,
-        SettingsService settingsService)
+        SettingsService settingsService,
+        EmailService emailService,
+        ILogger<AuthController> logger)
     {
         _db = db;
         _passwordService = passwordService;
@@ -38,6 +42,8 @@ public class AuthController : ControllerBase
         _userQueryService = userQueryService;
         _userCommandService = userCommandService;
         _settingsService = settingsService;
+        _emailService = emailService;
+        _logger = logger;
     }
 
     /// <summary>
@@ -263,10 +269,17 @@ public class AuthController : ControllerBase
             }
         }
 
+        if (update.Email != null && !string.IsNullOrWhiteSpace(update.Email) &&
+            !System.Net.Mail.MailAddress.TryCreate(update.Email.Trim(), out _))
+        {
+            return BadRequest(new { error = "Invalid email address" });
+        }
+
         await _userCommandService.UpdateUserAsync(user,
             avatarBlob: avatarBlob,
             avatarContentType: update.RemoveAvatar == true ? null : update.AvatarContentType,
             removeAvatar: update.RemoveAvatar,
+            email: update.Email,
             token: token);
 
         return Ok(UserDto.FromEntity(user));
@@ -368,6 +381,94 @@ public class AuthController : ControllerBase
         if (!success)
             return BadRequest(new { error = "Current password is incorrect" });
 
+        return Ok(new { success = true });
+    }
+
+    /// <summary>
+    /// POST /api/auth/forgot-password - Emails a one-hour password-reset link.
+    /// Public endpoint. Accepts a username or email address; ALWAYS returns the
+    /// same generic response so it cannot be used to enumerate which accounts
+    /// exist or which have an email set.
+    /// Rate limited (5 attempts/minute/IP).
+    /// </summary>
+    [HttpPost("/api/auth/forgot-password")]
+    [EnableRateLimiting("login")]
+    public async Task<ActionResult> ForgotPassword([FromBody] ForgotPasswordRequestDto request, CancellationToken token)
+    {
+        var settings = await _settingsService.GetSettingsAsync();
+        if (!settings.AuthenticationEnabled)
+            return BadRequest(new { error = "Authentication is not enabled" });
+
+        // Deliberately identical response for every outcome below.
+        var genericOk = Ok(new { success = true, message = "If that account has an email address on file, a reset link has been sent." });
+
+        if (string.IsNullOrWhiteSpace(request.UsernameOrEmail))
+            return genericOk;
+
+        UserEntity? user = await _userQueryService.GetByUsernameOrEmailAsync(request.UsernameOrEmail.Trim(), token);
+        if (user == null || !user.IsActive || string.IsNullOrWhiteSpace(user.Email))
+            return genericOk;
+
+        if (!await _emailService.IsConfiguredAsync(token))
+        {
+            _logger.LogWarning("Password reset requested for '{Username}' but SMTP is not configured.", user.Username);
+            return genericOk;
+        }
+
+        string resetToken = _userInviteService.GeneratePasswordResetToken(user);
+        await _db.SaveChangesAsync(token);
+
+        string baseUrl = !string.IsNullOrWhiteSpace(settings.ExternalDomain)
+            ? settings.ExternalDomain.TrimEnd('/')
+            : $"{Request.Scheme}://{Request.Host}";
+        string link = $"{baseUrl}/auth/reset-password?username={Uri.EscapeDataString(user.Username)}&token={resetToken}";
+
+        string? error = await _emailService.SendAsync(
+            user.Email,
+            "Rensaiō password reset",
+            $"Hello {user.Username},\n\n" +
+            $"A password reset was requested for your Rensaiō account. Click the link below to choose a new password. " +
+            $"The link expires in {(int)UserInviteService.PasswordResetTokenLifetime.TotalMinutes} minutes.\n\n" +
+            $"{link}\n\n" +
+            "If you did not request this, you can ignore this email — your password has not been changed.",
+            token);
+
+        if (error != null)
+            _logger.LogWarning("Failed to send password-reset email for '{Username}': {Error}", user.Username, error);
+        else
+            _logger.LogInformation("Password-reset email sent for '{Username}'.", user.Username);
+
+        return genericOk;
+    }
+
+    /// <summary>
+    /// POST /api/auth/reset-password - Sets a new password using an emailed
+    /// reset token. Public endpoint; the token is single-use and expires.
+    /// Revokes the account's remember-me refresh token so stolen sessions
+    /// don't survive a reset.
+    /// Rate limited (5 attempts/minute/IP) - this endpoint verifies a token
+    /// guess, so it gets the same brute-force protection as login.
+    /// </summary>
+    [HttpPost("/api/auth/reset-password")]
+    [EnableRateLimiting("login")]
+    public async Task<ActionResult> ResetPassword([FromBody] ResetPasswordRequestDto request, CancellationToken token)
+    {
+        var settings = await _settingsService.GetSettingsAsync();
+        if (!settings.AuthenticationEnabled)
+            return BadRequest(new { error = "Authentication is not enabled" });
+
+        if (string.IsNullOrWhiteSpace(request.NewPassword) || request.NewPassword.Length < 6)
+            return BadRequest(new { error = "Password must be at least 6 characters" });
+
+        UserEntity? user = await _userQueryService.GetByUsernameAsync(request.Username, token);
+        if (user == null || !_userInviteService.ConsumePasswordResetToken(user, request.Token))
+            return BadRequest(new { error = "Invalid or expired reset link. Request a new one." });
+
+        user.RefreshTokenHash = null;
+        user.RefreshTokenExpiresAt = null;
+        await _userCommandService.SetPasswordAsync(user, request.NewPassword, token);
+
+        _logger.LogInformation("Password reset completed for '{Username}'.", user.Username);
         return Ok(new { success = true });
     }
 }

@@ -25,4 +25,9 @@ export const settingsService = {
 
     return apiClient.put<SettingsUpdateResponse>('/api/settings', settingsPayload);
   },
+
+  /** Sends a test email through the configured SMTP relay (owner only). */
+  async sendTestEmail(to: string): Promise<{ success: boolean; message: string }> {
+    return apiClient.post<{ success: boolean; message: string }>('/api/settings/test-email', { to });
+  },
 };

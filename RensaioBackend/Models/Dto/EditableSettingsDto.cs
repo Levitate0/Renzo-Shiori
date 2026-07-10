@@ -103,6 +103,28 @@ public class EditableSettingsDto
 
     [JsonPropertyName("rememberMeExpirationDays")]
     public int RememberMeExpirationDays { get; set; } = 90;
+
+    // --- Email (SMTP) Settings ---
+    // Outbound submission to an external relay (Gmail, Brevo, …); used for
+    // self-service password-reset emails. Empty host = email features off.
+
+    [JsonPropertyName("smtpHost")]
+    public string SmtpHost { get; set; } = string.Empty;
+
+    [JsonPropertyName("smtpPort")]
+    public int SmtpPort { get; set; } = 587;
+
+    [JsonPropertyName("smtpUsername")]
+    public string SmtpUsername { get; set; } = string.Empty;
+
+    [JsonPropertyName("smtpPassword")]
+    public string SmtpPassword { get; set; } = string.Empty;
+
+    [JsonPropertyName("smtpUseSsl")]
+    public bool SmtpUseSsl { get; set; } = true;
+
+    [JsonPropertyName("smtpFromAddress")]
+    public string SmtpFromAddress { get; set; } = string.Empty;
 }
 public enum NsfwVisibility
 {

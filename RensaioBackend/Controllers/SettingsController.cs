@@ -36,17 +36,20 @@ namespace RensaioBackend.Controllers
         private readonly SettingsService _settingsService;
         private readonly AppDbContext _db;
         private readonly UserInviteService _userInviteService;
+        private readonly EmailService _emailService;
         private readonly ILogger<SettingsController> _logger;
 
         public SettingsController(
             SettingsService settingsService,
             AppDbContext db,
             UserInviteService userInviteService,
+            EmailService emailService,
             ILogger<SettingsController> logger)
         {
             _settingsService = settingsService;
             _db = db;
             _userInviteService = userInviteService;
+            _emailService = emailService;
             _logger = logger;
         }
 
@@ -163,5 +166,44 @@ namespace RensaioBackend.Controllers
                 return StatusCode(StatusCodes.Status500InternalServerError, new { error = "An error occurred while updating settings" });
             }
         }
+
+        /// <summary>
+        /// Sends a test email through the configured SMTP relay so the owner can
+        /// verify their settings (and diagnose provider/ISP issues) before relying
+        /// on password-reset emails.
+        /// </summary>
+        /// <param name="request">Target address for the test message.</param>
+        /// <param name="token">Cancellation token.</param>
+        [HttpPost("test-email")]
+        [RequireUserLevel(UserLevel.Owner)]
+        [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(object), StatusCodes.Status400BadRequest)]
+        public async Task<ActionResult> SendTestEmailAsync([FromBody] TestEmailRequestDto request, CancellationToken token = default)
+        {
+            if (string.IsNullOrWhiteSpace(request.To) ||
+                !System.Net.Mail.MailAddress.TryCreate(request.To.Trim(), out _))
+            {
+                return BadRequest(new { error = "Enter a valid destination email address." });
+            }
+
+            string? error = await _emailService.SendAsync(
+                request.To.Trim(),
+                "Rensaiō test email",
+                "This is a test email from your Rensaiō server. If you are reading this, SMTP is configured correctly.",
+                token).ConfigureAwait(false);
+
+            if (error != null)
+                return BadRequest(new { error });
+            return Ok(new { success = true, message = $"Test email sent to {request.To.Trim()}." });
+        }
+    }
+
+    /// <summary>
+    /// Request body for the SMTP test-email endpoint.
+    /// </summary>
+    public class TestEmailRequestDto
+    {
+        [JsonPropertyName("to")]
+        public string To { get; set; } = string.Empty;
     }
 }

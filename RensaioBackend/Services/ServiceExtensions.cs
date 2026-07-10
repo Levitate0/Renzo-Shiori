@@ -182,6 +182,7 @@ namespace RensaioBackend.Services
             services.TryAddScoped<OpdsPathGenerator>();
             services.TryAddScoped<JwtTokenService>();
             services.TryAddScoped<UserInviteService>();
+            services.TryAddScoped<EmailService>();
             services.TryAddScoped<UserQueryService>();
             services.TryAddScoped<UserCommandService>();
             return services;

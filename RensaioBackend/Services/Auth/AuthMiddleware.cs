@@ -149,6 +149,10 @@ public class AuthMiddleware
         if (pathStr.StartsWith("/api/auth/select-user", StringComparison.OrdinalIgnoreCase)) return true;
         if (pathStr.StartsWith("/api/auth/refresh", StringComparison.OrdinalIgnoreCase)) return true;
         if (pathStr.StartsWith("/api/auth/set-password", StringComparison.OrdinalIgnoreCase)) return true;
+        // Self-service password reset: both are rate-limited, non-enumerating,
+        // and only act on a valid emailed token.
+        if (pathStr.StartsWith("/api/auth/forgot-password", StringComparison.OrdinalIgnoreCase)) return true;
+        if (pathStr.StartsWith("/api/auth/reset-password", StringComparison.OrdinalIgnoreCase)) return true;
 
         // Server discovery — lets clients validate an entered server address
         // (Jellyfin-style) before any credentials exist. Exposes nothing sensitive.

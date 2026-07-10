@@ -154,12 +154,19 @@ public class UserController : ControllerBase
             }
         }
 
+        if (dto.Email != null && !string.IsNullOrWhiteSpace(dto.Email) &&
+            !System.Net.Mail.MailAddress.TryCreate(dto.Email.Trim(), out _))
+        {
+            return BadRequest(new { error = "Invalid email address" });
+        }
+
         await _userCommandService.UpdateUserAsync(user,
             level: dto.Level,
             isActive: dto.IsActive,
             avatarBlob: avatarBlob,
             avatarContentType: dto.RemoveAvatar == true ? null : dto.AvatarContentType,
             removeAvatar: dto.RemoveAvatar,
+            email: dto.Email,
             token: token);
 
         return Ok(UserDto.FromEntity(user));

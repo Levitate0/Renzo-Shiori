@@ -52,6 +52,13 @@ export interface Settings {
   allowedOrigins: string[];
   sessionExpirationHours: number;
   rememberMeExpirationDays: number;
+  // Email (SMTP) settings — outbound relay for password-reset emails
+  smtpHost: string;
+  smtpPort: number;
+  smtpUsername: string;
+  smtpPassword: string;
+  smtpUseSsl: boolean;
+  smtpFromAddress: string;
 }
 
 export interface LinkedSeries {
@@ -682,6 +689,7 @@ export interface User {
   lastLoginAt?: string;
   isActive: boolean;
   hasPassword: boolean;
+  email?: string;
 }
 
 export enum UserLevel {
@@ -702,6 +710,8 @@ export interface UpdateUserRequest {
   removeAvatar?: boolean;
   level?: UserLevel;
   isActive?: boolean;
+  /** New email address. Empty string clears it; undefined leaves it unchanged. */
+  email?: string;
 }
 
 export interface AuthStatus {

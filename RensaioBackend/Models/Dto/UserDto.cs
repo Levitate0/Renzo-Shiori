@@ -36,6 +36,9 @@ public class UserDto
     [JsonPropertyName("hasPassword")]
     public bool HasPassword { get; set; }
 
+    [JsonPropertyName("email")]
+    public string? Email { get; set; }
+
     public static UserDto FromEntity(UserEntity entity)
     {
         return new UserDto
@@ -49,7 +52,8 @@ public class UserDto
             CreatedAt = entity.CreatedAt,
             LastLoginAt = entity.LastLoginAt,
             IsActive = entity.IsActive,
-            HasPassword = !string.IsNullOrWhiteSpace(entity.PasswordHash)
+            HasPassword = !string.IsNullOrWhiteSpace(entity.PasswordHash),
+            Email = entity.Email
         };
     }
 }
@@ -79,6 +83,12 @@ public class UpdateUserDto
 
     [JsonPropertyName("isActive")]
     public bool? IsActive { get; set; }
+
+    /// <summary>
+    /// New email address. Empty string clears it; null leaves it unchanged.
+    /// </summary>
+    [JsonPropertyName("email")]
+    public string? Email { get; set; }
 }
 
 public class AuthStatusDto
@@ -136,6 +146,25 @@ public class ChangePasswordDto
 {
     [JsonPropertyName("currentPassword")]
     public string CurrentPassword { get; set; } = string.Empty;
+
+    [JsonPropertyName("newPassword")]
+    public string NewPassword { get; set; } = string.Empty;
+}
+
+public class ForgotPasswordRequestDto
+{
+    /// <summary>Username or email address of the account to reset.</summary>
+    [JsonPropertyName("usernameOrEmail")]
+    public string UsernameOrEmail { get; set; } = string.Empty;
+}
+
+public class ResetPasswordRequestDto
+{
+    [JsonPropertyName("username")]
+    public string Username { get; set; } = string.Empty;
+
+    [JsonPropertyName("token")]
+    public string Token { get; set; } = string.Empty;
 
     [JsonPropertyName("newPassword")]
     public string NewPassword { get; set; } = string.Empty;

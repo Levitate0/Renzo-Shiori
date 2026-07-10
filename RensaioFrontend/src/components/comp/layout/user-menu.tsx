@@ -7,6 +7,7 @@ import {
   Download,
   Edit,
   FolderInput,
+  KeyRound,
   LogOut,
   Medal,
   Monitor,
@@ -33,6 +34,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { useSettings } from "@/lib/api/hooks/useSettings";
 import { useImportWizard } from "@/components/providers/import-wizard-provider";
 import { EditUserDialog } from "@/components/comp/users/user-dialog";
+import { ChangePasswordDialog } from "@/components/comp/users/change-password-dialog";
 import { UserTrackerRequester } from "@/components/comp/scrobbler/user-tracker-requester";
 import { ExternalLinks } from "@/components/comp/layout/external-links";
 import { UserLevel } from "@/lib/api/types";
@@ -91,6 +93,7 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
   const { theme, setTheme } = useTheme();
 
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isTrackerOpen, setIsTrackerOpen] = useState(false);
   const [isImportPickerOpen, setIsImportPickerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -215,6 +218,17 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
             Edit...
           </DropdownMenuItem>
 
+          {/* Change password — only meaningful when the account has one (auth enabled) */}
+          {user.hasPassword && (
+            <DropdownMenuItem
+              onClick={() => setIsChangePasswordOpen(true)}
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <KeyRound className="h-4 w-4" />
+              Change password...
+            </DropdownMenuItem>
+          )}
+
           {/* Trackers */}
           <DropdownMenuItem
             onClick={() => setIsTrackerOpen(true)}
@@ -303,6 +317,12 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
           // Refresh auth context so an updated avatar shows immediately.
           if (!open) refreshAuth();
         }}
+      />
+
+      {/* Self-service password change */}
+      <ChangePasswordDialog
+        open={isChangePasswordOpen}
+        onOpenChange={setIsChangePasswordOpen}
       />
 
       {/* Tracker / scrobbler management dialog */}

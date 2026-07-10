@@ -360,6 +360,12 @@ namespace RensaioBackend.Services.Settings
                 AllowedOrigins = settings.AllowedOrigins,
                 SessionExpirationHours = settings.SessionExpirationHours,
                 RememberMeExpirationDays = settings.RememberMeExpirationDays,
+                SmtpHost = settings.SmtpHost,
+                SmtpPort = settings.SmtpPort,
+                SmtpUsername = settings.SmtpUsername,
+                SmtpPassword = settings.SmtpPassword,
+                SmtpUseSsl = settings.SmtpUseSsl,
+                SmtpFromAddress = settings.SmtpFromAddress,
             };
 
             await SaveSettingsAsync(editableSettings, force, token).ConfigureAwait(false);
@@ -405,6 +411,12 @@ namespace RensaioBackend.Services.Settings
                 AllowedOrigins = ed.AllowedOrigins,
                 SessionExpirationHours = ed.SessionExpirationHours,
                 RememberMeExpirationDays = ed.RememberMeExpirationDays,
+                SmtpHost = ed.SmtpHost,
+                SmtpPort = ed.SmtpPort,
+                SmtpUsername = ed.SmtpUsername,
+                SmtpPassword = ed.SmtpPassword,
+                SmtpUseSsl = ed.SmtpUseSsl,
+                SmtpFromAddress = ed.SmtpFromAddress,
             };
             set.StorageFolder = _config["StorageFolder"] ?? string.Empty;
             set.ImportFolder = _config["ImportFolder"] ?? string.Empty;

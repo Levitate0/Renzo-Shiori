@@ -42,6 +42,14 @@ export const userService = {
     return apiClient.post<void>('/api/auth/change-password', data);
   },
 
+  async forgotPassword(usernameOrEmail: string): Promise<void> {
+    return apiClient.post<void>('/api/auth/forgot-password', { usernameOrEmail });
+  },
+
+  async resetPassword(username: string, token: string, newPassword: string): Promise<void> {
+    return apiClient.post<void>('/api/auth/reset-password', { username, token, newPassword });
+  },
+
   async getMe(): Promise<User> {
     return apiClient.get<User>('/api/auth/me');
   },

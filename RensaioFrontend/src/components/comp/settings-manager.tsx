@@ -26,6 +26,7 @@ import {
   useAvailableLanguages,
   useUpdateSettings,
 } from "@/lib/api/hooks/useSettings";
+import { settingsService } from "@/lib/api/services/settingsService";
 import { type Settings, NsfwVisibility } from "@/lib/api/types";
 import { useToast } from "@/hooks/use-toast";
 import ReactCountryFlag from "react-country-flag";
@@ -1267,7 +1268,145 @@ function SecuritySection({
           </p>
         </div>
       </div>
+
+      {/* Email (SMTP) — outbound relay for password-reset emails */}
+      <div className="space-y-4 border-t pt-4">
+        <div>
+          <Label className="text-base">Email (SMTP)</Label>
+          <p className="text-xs text-muted-foreground mt-1">
+            Outbound relay for password-reset emails (e.g. Gmail with an app
+            password, Brevo, SendGrid). Rensaiō only submits mail to the relay
+            — it never hosts an email server, so ISP hosting blocks don&apos;t
+            apply. Leave the host empty to disable email features.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="smtp-host">SMTP Host</Label>
+            <Input
+              id="smtp-host"
+              value={localSettings.smtpHost || ""}
+              onChange={(e) =>
+                setLocalSettings((prev) => ({ ...prev, smtpHost: e.target.value.trim() }))
+              }
+              placeholder="smtp.gmail.com"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="smtp-port">Port</Label>
+            <Input
+              id="smtp-port"
+              type="number"
+              min="1"
+              max="65535"
+              value={localSettings.smtpPort || 587}
+              onChange={(e) =>
+                setLocalSettings((prev) => ({ ...prev, smtpPort: parseInt(e.target.value) || 587 }))
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="smtp-username">Username</Label>
+            <Input
+              id="smtp-username"
+              value={localSettings.smtpUsername || ""}
+              onChange={(e) =>
+                setLocalSettings((prev) => ({ ...prev, smtpUsername: e.target.value }))
+              }
+              placeholder="you@gmail.com"
+              autoComplete="off"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="smtp-password">Password</Label>
+            <Input
+              id="smtp-password"
+              type="password"
+              value={localSettings.smtpPassword || ""}
+              onChange={(e) =>
+                setLocalSettings((prev) => ({ ...prev, smtpPassword: e.target.value }))
+              }
+              placeholder="App password / API key"
+              autoComplete="new-password"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="smtp-from">From Address</Label>
+            <Input
+              id="smtp-from"
+              type="email"
+              value={localSettings.smtpFromAddress || ""}
+              onChange={(e) =>
+                setLocalSettings((prev) => ({ ...prev, smtpFromAddress: e.target.value.trim() }))
+              }
+              placeholder="rensaio@yourdomain.com"
+            />
+          </div>
+          <div className="flex items-center space-x-2 pt-6">
+            <Switch
+              id="smtp-use-ssl"
+              checked={localSettings.smtpUseSsl}
+              onCheckedChange={(checked) =>
+                setLocalSettings((prev) => ({ ...prev, smtpUseSsl: checked }))
+              }
+            />
+            <Label htmlFor="smtp-use-ssl">Use TLS (STARTTLS, port 587)</Label>
+          </div>
+        </div>
+        <TestEmailRow />
+      </div>
     </CardContent>
+  );
+}
+
+// Standalone "send test email" row: uses the SAVED settings on the server,
+// so the surrounding section reminds the user to save before testing.
+function TestEmailRow() {
+  const { toast } = useToast();
+  const [testAddress, setTestAddress] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const handleTest = async () => {
+    if (!testAddress.trim()) return;
+    setSending(true);
+    try {
+      const result = await settingsService.sendTestEmail(testAddress.trim());
+      toast({ title: "Test email sent", description: result.message });
+    } catch (err) {
+      toast({
+        title: "Test email failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="smtp-test-address">Send Test Email</Label>
+      <div className="flex gap-2">
+        <Input
+          id="smtp-test-address"
+          type="email"
+          placeholder="you@example.com"
+          value={testAddress}
+          onChange={(e) => setTestAddress(e.target.value)}
+        />
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={handleTest}
+          disabled={sending || !testAddress.trim()}
+        >
+          {sending ? "Sending…" : "Send Test"}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Uses the last <em>saved</em> SMTP settings — save your changes first.
+      </p>
+    </div>
   );
 }
 

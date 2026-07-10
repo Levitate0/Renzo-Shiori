@@ -37,6 +37,19 @@ public class UserQueryService
         return await _db.Users.FirstOrDefaultAsync(u => u.OpdsPath == opdsPath, token);
     }
 
+    /// <summary>
+    /// Finds a user by username or (case-insensitive) email address.
+    /// Used by the forgot-password flow, which accepts either.
+    /// </summary>
+    public async Task<UserEntity?> GetByUsernameOrEmailAsync(string usernameOrEmail, CancellationToken token = default)
+    {
+        UserEntity? user = await _db.Users.FirstOrDefaultAsync(u => u.Username == usernameOrEmail, token);
+        if (user != null)
+            return user;
+        string lowered = usernameOrEmail.ToLowerInvariant();
+        return await _db.Users.FirstOrDefaultAsync(u => u.Email != null && u.Email.ToLower() == lowered, token);
+    }
+
     public async Task<bool> AnyUsersExistAsync(CancellationToken token = default)
     {
         return await _db.Users.AnyAsync(token);
