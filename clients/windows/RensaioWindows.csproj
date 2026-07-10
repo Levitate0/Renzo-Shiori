@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Rensaio</AssemblyName>
+    <RootNamespace>RensaioWindows</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Allows cross-compiling the Windows-targeted app from Linux/macOS -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationIcon>rensaio.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>Rensaio</Product>
+    <Description>Rensaio desktop client</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2592.51" />
+  </ItemGroup>
+
+</Project>
