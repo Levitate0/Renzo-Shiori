@@ -342,6 +342,12 @@ public class ImportCommandService
                 try
                 {
                     List<string> langs = import.Info.Series.Providers.Select(a => a.Language).Distinct().ToList();
+                    // Title-only imports search broadly, so a provider language parsed from
+                    // the source folder (possibly just "all") must not shrink the source pool
+                    // below the user's preferred languages.
+                    if (import.IsTitleOnly)
+                        langs = langs.Concat(appSettings.PreferredLanguages ?? [])
+                            .Distinct(StringComparer.InvariantCultureIgnoreCase).ToList();
                     if (langs.Count == 0)
                         langs = ["en"];
                     var filteredSources = await _providerCache.GetSourcesForLanguagesAsync(langs, token).ConfigureAwait(false);
