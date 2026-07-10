@@ -197,11 +197,27 @@ public class ImportCommandService
                 bool change = false;
                 if ((k.ArchiveCompare & ArchiveCompare.Equal) != ArchiveCompare.Equal)
                     (change, import.Info) = import.Info.Merge(k);
+                else if (titleOnly && import.Info.Providers.Count == 0 && k.Providers.Count > 0)
+                {
+                    // Title-only stubs registered before source-folder parsing existed have
+                    // no provider info; adopt the one parsed from the Suwayomi folder name
+                    // so matching can target the original source. (The ArchiveCompare gate
+                    // above never fires for title-only stubs — they carry no archives.)
+                    import.Info.Providers = k.Providers;
+                }
                 _db.Touch(import, a => a.Info);
                 if (update)
                     import.Status = ImportStatus.Import;
                 else if (!exists && import.Action!=Action.Skip)
                     import.Status = ImportStatus.Import;
+                else if (titleOnly && import.Action == Action.Skip && (import.Series == null || import.Series.Count == 0))
+                {
+                    // Skip with no candidates means a previous auto-match failed and set it,
+                    // not the user (the review screen only exposes skip on found imports).
+                    // Re-running a title-only scan is an explicit request to retry matching.
+                    import.Status = ImportStatus.Import;
+                    import.Action = Action.Add;
+                }
                 else if (import.Action == Action.Skip)
                 {
                     import.Status = ImportStatus.Skip;
@@ -548,7 +564,11 @@ public class ImportCommandService
                             }
 
                         }
-                        if (left.Count > 0)
+                        // Title-only imports must always broad-search: their provider list is
+                        // empty (or holds a single source parsed from the Suwayomi folder name),
+                        // so gating on leftover providers alone would skip the search entirely
+                        // and prevent the cover/transitive matching from ever seeing candidates.
+                        if (left.Count > 0 || import.IsTitleOnly)
                         {
                             List<string> srcs = existing.Select(a => a.ps.MihonProviderId).Distinct().ToList();
                             List<ProviderStorageEntity> lefts = filteredSources.Where(a => !srcs.Contains(a.MihonProviderId))

@@ -71,6 +71,38 @@ namespace RensaioBackend.Services.Import
             return false;
         }
 
+        // Suwayomi/Mihon lay the library out as .../<Source Name (LANG)>/<Series>/…,
+        // so the series folder's parent carries the original source and language.
+        private static readonly System.Text.RegularExpressions.Regex SourceFolderPattern =
+            new(@"^(.+?)\s+\(([A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?)\)$",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
+        /// Derives a provider snapshot from the series folder's parent when it follows
+        /// the Suwayomi "Source Name (LANG)" convention. This lets the match pipeline
+        /// auto-install that source's extension and search it (with the exact original
+        /// title) first, before falling back to the broad all-providers search.
+        /// </summary>
+        private static List<ImportProviderSnapshot> ParseSourceFolderProvider(string seriesFolder, string title)
+        {
+            string trimmed = seriesFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string? parent = Path.GetFileName(Path.GetDirectoryName(trimmed));
+            if (string.IsNullOrEmpty(parent))
+                return [];
+            var m = SourceFolderPattern.Match(parent);
+            if (!m.Success)
+                return [];
+            return
+            [
+                new ImportProviderSnapshot
+                {
+                    Provider = m.Groups[1].Value.Trim(),
+                    Language = m.Groups[2].Value.ToLowerInvariant(),
+                    Title = title
+                }
+            ];
+        }
+
         private static ImportSeriesSnapshot? BuildTitleOnlyStub(string seriesFolder, string relativePath, SeriesInfo? seriesInfo)
         {
             if (!HasChapterFolderWithImages(seriesFolder))
@@ -85,7 +117,7 @@ namespace RensaioBackend.Services.Import
             return new ImportSeriesSnapshot
             {
                 Title = title,
-                Providers = [],
+                Providers = ParseSourceFolderProvider(seriesFolder, title),
                 Version = 2,
                 Path = relativePath
             };
