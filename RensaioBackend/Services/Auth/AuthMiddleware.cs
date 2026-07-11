@@ -80,6 +80,30 @@ public class AuthMiddleware
                 }
             }
 
+            // SignalR hub connections: browsers cannot set an Authorization header
+            // on a WebSocket upgrade, so the client supplies the same short-lived,
+            // narrowly-scoped token used for <img> requests — as `access_token`
+            // query on the socket, or as a Bearer header on the negotiate POST
+            // (where the full-token validation above already rejected it, since
+            // it carries the image audience). Accepted for hub routes ONLY: an
+            // image-scoped token must never authorize regular API calls, and hub
+            // traffic (job progress events) matches the image token's low-value-
+            // if-leaked threat model.
+            if (principal == null && IsHubRoute(context.Request.Path))
+            {
+                string? hubToken = context.Request.Query["access_token"].FirstOrDefault();
+                if (string.IsNullOrWhiteSpace(hubToken) &&
+                    !string.IsNullOrWhiteSpace(authHeader) &&
+                    authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                {
+                    hubToken = authHeader["Bearer ".Length..].Trim();
+                }
+                if (!string.IsNullOrWhiteSpace(hubToken))
+                {
+                    principal = jwtService.ValidateImageToken(hubToken);
+                }
+            }
+
             if (principal == null)
             {
                 context.Response.StatusCode = 401;
@@ -121,6 +145,9 @@ public class AuthMiddleware
 
         await _next(context);
     }
+
+    private static bool IsHubRoute(PathString path) =>
+        path.StartsWithSegments("/progress");
 
     private static bool IsBypassRoute(PathString path)
     {

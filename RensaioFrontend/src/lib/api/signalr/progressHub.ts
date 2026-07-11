@@ -1,5 +1,6 @@
 import type { ProgressState } from '../types';
 import { buildSignalRUrl } from '../config';
+import { ensureImageToken } from '../imageToken';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -32,7 +33,16 @@ export class ProgressHub {
       if (!signalR) return;
 
       this.connection = new signalR.HubConnectionBuilder()
-        .withUrl(buildSignalRUrl('/progress'))
+        .withUrl(buildSignalRUrl('/progress'), {
+          // When auth is enabled the hub negotiation is a 401 without
+          // credentials, and WebSocket upgrades can't carry an Authorization
+          // header — so authenticate with the short-lived image-scoped token
+          // (same rationale as <img> URLs: keeps the full session token out
+          // of URLs/logs; the backend accepts it for hub routes only). Called
+          // again on every reconnect, so expiry self-heals. Returns '' when
+          // auth is disabled, which SignalR treats as "no token".
+          accessTokenFactory: async () => (await ensureImageToken()) ?? '',
+        })
         .withAutomaticReconnect()
         .build();
 
