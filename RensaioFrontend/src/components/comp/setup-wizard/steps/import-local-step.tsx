@@ -15,6 +15,9 @@ import { JobType, type SetupJobStatusValue } from "@/lib/api/types";
 // and array-index lookups keyed by currentActionIndex.
 const WATCHED_JOB_TYPES: JobType[] = [JobType.ScanLocalFiles, JobType.InstallAdditionalExtensions, JobType.SearchProviders];
 
+const isJobStatusCompleted = (s: SetupJobStatusValue) => s === 'Completed';
+const isJobStatusInFlight = (s: SetupJobStatusValue) => s === 'Running' || s === 'Waiting';
+
 // Custom hook to detect if scrollbar is visible
 function useScrollbarDetection() {
   const [hasScrollbar, setHasScrollbar] = useState(false);
@@ -267,6 +270,35 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
     },
   ];
 
+  /**
+   * If the server reports a scan/install/search job in flight (e.g. another
+   * session — or this one before a reload — already started the pipeline),
+   * mark the earlier steps done and attach to the running one so this wizard
+   * session syncs with the live run instead of trying to start a new one.
+   * Returns true when it attached.
+   */
+  const attachToInFlight = useCallback((status: { scanLocalFiles: SetupJobStatusValue; installAdditionalExtensions: SetupJobStatusValue; searchProviders: SetupJobStatusValue }): boolean => {
+    const order: { index: number; status: SetupJobStatusValue }[] = [
+      { index: 0, status: status.scanLocalFiles },
+      { index: 1, status: status.installAdditionalExtensions },
+      { index: 2, status: status.searchProviders },
+    ];
+    const inFlight = order.find((a) => isJobStatusInFlight(a.status));
+    if (!inFlight) return false;
+
+    const completed = new Set<JobType>();
+    for (const a of order) {
+      if (a.index < inFlight.index && isJobStatusCompleted(a.status)) {
+        completed.add(WATCHED_JOB_TYPES[a.index]!);
+        completedJobsRef.current.add(WATCHED_JOB_TYPES[a.index]!);
+      }
+    }
+    if (completed.size > 0) setServerCompleted((prev) => new Set([...prev, ...completed]));
+    setError(null);
+    setCurrentActionIndex(inFlight.index);
+    return true;
+  }, [setError]);
+
   const triggerAction = useCallback((index: number) => {
     setCurrentActionIndex(index);
     const label = index === 0 ? 'scan' : index === 1 ? 'install' : 'search';
@@ -275,68 +307,77 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
       : index === 1
         ? installMutation.mutateAsync()
         : searchMutation.mutateAsync();
-    promise.catch((error) => {
+    promise.catch(async (error) => {
       console.error(`Failed to start ${label}:`, error);
+      // Before surfacing a failure, re-check the server: the start call can
+      // fail because a pipeline is already live from another session, or
+      // because the server was briefly restarting. Attach to whatever is
+      // actually running rather than stranding the wizard on an error.
+      try {
+        const status = await statusMutation.mutateAsync();
+        if (attachToInFlight(status)) return;
+      } catch { /* server still unreachable — fall through to the error */ }
       setError(`Failed to start ${label} process`);
       setCurrentActionIndex(-1);
       hasStartedRef.current = false; // Reset on error to allow retry
     });
-  }, [scanMutation, installMutation, searchMutation, titleOnly, setError]);
+  }, [scanMutation, installMutation, searchMutation, statusMutation, attachToInFlight, titleOnly, setError]);
 
-  // On mount, reconcile with the server so a page reload resumes the running step instead
-  // of restarting the whole scan/install/search chain from scratch.
+  // On mount, reconcile with the server so a page reload resumes the running step
+  // (and a wizard opened while another session's pipeline is live attaches to it)
+  // instead of restarting the whole scan/install/search chain from scratch.
   useEffect(() => {
     if (hasStartedRef.current) return;
     hasStartedRef.current = true;
     setError(null);
 
-    const isCompleted = (s: SetupJobStatusValue) => s === 'Completed';
-    const isInFlight = (s: SetupJobStatusValue) => s === 'Running' || s === 'Waiting';
+    // The status call can fail transiently (server redeploying, network blip).
+    // Retry a few times before giving up — blindly starting a scan on failure
+    // used to strand the wizard on "Failed to start scan process".
+    const fetchStatusWithRetry = async (retries = 4, delayMs = 3000) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await statusMutation.mutateAsync();
+        } catch (e) {
+          if (attempt >= retries) throw e;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+    };
 
-    statusMutation.mutateAsync()
+    fetchStatusWithRetry()
       .then((status) => {
         onProcessStarted?.();
+
+        // A live pipeline (from this or any other session) takes priority:
+        // sync to it rather than starting anything new.
+        if (attachToInFlight(status)) return;
+
+        // Import wizard: ignore stale "Completed" statuses left over from a previous
+        // import run and kick off a fresh scan from the beginning.
+        if (forceRescan) {
+          triggerAction(0);
+          return;
+        }
+
         const order: { index: number; status: SetupJobStatusValue }[] = [
           { index: 0, status: status.scanLocalFiles },
           { index: 1, status: status.installAdditionalExtensions },
           { index: 2, status: status.searchProviders },
         ];
 
-        const inFlight = order.find((a) => isInFlight(a.status));
-
-        // Import wizard: ignore stale "Completed" statuses left over from a previous import
-        // run. Only resume a scan that is genuinely in-flight (e.g. reloaded mid-scan);
-        // otherwise always kick off a fresh scan from the beginning.
-        if (forceRescan) {
-          if (inFlight) {
-            // Mark earlier steps done so they show 100%, then resume monitoring the running one.
-            const completed = new Set<JobType>();
-            for (const a of order) {
-              if (a.index < inFlight.index && isCompleted(a.status)) {
-                completed.add(actions[a.index]!.jobType);
-                completedJobsRef.current.add(actions[a.index]!.jobType);
-              }
-            }
-            if (completed.size > 0) setServerCompleted(completed);
-            setCurrentActionIndex(inFlight.index);
-          } else {
-            triggerAction(0);
-          }
-          return;
-        }
-
-        // Setup wizard: resume completed/running jobs across a page reload.
+        // Setup wizard: resume completed jobs across a page reload.
         // Mark already-completed jobs as done (so they don't show 0%).
         const completed = new Set<JobType>();
         for (const a of order) {
-          if (isCompleted(a.status)) {
+          if (isJobStatusCompleted(a.status)) {
             completed.add(actions[a.index]!.jobType);
             completedJobsRef.current.add(actions[a.index]!.jobType);
           }
         }
         if (completed.size > 0) setServerCompleted(completed);
 
-        const firstIncomplete = order.find((a) => !isCompleted(a.status));
+        const firstIncomplete = order.find((a) => !isJobStatusCompleted(a.status));
         if (!firstIncomplete) {
           // Everything already finished.
           setAllActionsCompleted(true);
@@ -344,18 +385,14 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
           return;
         }
 
-        if (isInFlight(firstIncomplete.status)) {
-          // Already running/queued on the server - just monitor it, don't restart.
-          setCurrentActionIndex(firstIncomplete.index);
-        } else {
-          // Not started (or previously failed) - (re)start from this step.
-          triggerAction(firstIncomplete.index);
-        }
+        // Not started (or previously failed) - (re)start from this step.
+        // (In-flight jobs were already handled by attachToInFlight above.)
+        triggerAction(firstIncomplete.index);
       })
       .catch(() => {
-        // If the status check fails, fall back to starting from the beginning.
         onProcessStarted?.();
-        triggerAction(0);
+        setError('Could not reach the server to check import status. Close the wizard and try again.');
+        hasStartedRef.current = false; // allow a reopened wizard to retry
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array - only run once on mount
