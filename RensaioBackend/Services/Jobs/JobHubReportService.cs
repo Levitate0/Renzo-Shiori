@@ -33,6 +33,19 @@ public class JobHubReportService : IReportProgress
     }
     */
 
+    // Last broadcast per job type, so pollers (e.g. the import wizard's
+    // fallback status poll) can show progress even when a client's SignalR
+    // connection is unavailable. SignalR has no replay: a client that
+    // (re)connects mid-job would otherwise sit at 0% until the next event.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Models.Enums.JobType, ProgressState> _lastProgress = new();
+
+    /// <summary>
+    /// Returns the most recent progress broadcast for a job type (process
+    /// lifetime), or null when none has been sent yet.
+    /// </summary>
+    public static ProgressState? GetLastProgress(Models.Enums.JobType jobType) =>
+        _lastProgress.TryGetValue(jobType, out ProgressState? state) ? state : null;
+
     /// <summary>
     /// Reports job progress updates to SignalR clients
     /// </summary>
@@ -40,6 +53,7 @@ public class JobHubReportService : IReportProgress
     /// <returns>Task representing the async operation</returns>
     public Task ReportProgressAsync(ProgressState state)
     {
+        _lastProgress[state.JobType] = state;
         return _hub.Clients.All.SendAsync("Progress", state);
     }
 

@@ -9,7 +9,7 @@ import {
   useSetupWizardStatus,
   useSignalRProgress
 } from "@/lib/api/hooks/useSetupWizard";
-import { JobType, type SetupJobStatusValue } from "@/lib/api/types";
+import { JobType, ProgressStatus, type ProgressState, type SetupJobStatusValue, type SetupJobsStatus } from "@/lib/api/types";
 
 // Module-level (not recreated per render) so it's a stable reference for hook dependencies
 // and array-index lookups keyed by currentActionIndex.
@@ -161,6 +161,10 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
   // Jobs that the server reports already completed (e.g. before a page reload) so the UI
   // shows them done instead of resetting to 0% (SignalR has no history after a reload).
   const [serverCompleted, setServerCompleted] = useState<Set<JobType>>(new Set());
+  // Server-side last-known progress per job, refreshed by the fallback status poll.
+  // Covers SignalR gaps (blocked connection, missed events after reconnect): the cards
+  // then still show percentage/message, just at the poll cadence instead of live.
+  const [polledProgress, setPolledProgress] = useState<Partial<Record<JobType, ProgressState>>>({});
   const { hasScrollbar, containerRef } = useScrollbarDetection();
 
   // Use only refs for duplicate prevention - no state
@@ -238,11 +242,24 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
 
     const interval = setInterval(() => {
       statusMutation.mutateAsync()
-        .then((status) => {
+        .then((status: SetupJobsStatus) => {
           const value =
             activeJobType === JobType.ScanLocalFiles ? status.scanLocalFiles :
             activeJobType === JobType.InstallAdditionalExtensions ? status.installAdditionalExtensions :
             status.searchProviders;
+
+          // Fallback progress: keep the cards moving even when this client's
+          // SignalR connection is dead or missed events. Terminal snapshots
+          // (Completed/Failed) are skipped — they can be leftovers from a
+          // previous run and would pin a fresh run's percentage at 100.
+          const polled: Partial<Record<JobType, ProgressState>> = {};
+          const isLive = (p: ProgressState | null | undefined): p is ProgressState =>
+            !!p && (p.progressStatus === ProgressStatus.Started || p.progressStatus === ProgressStatus.InProgress);
+          if (isLive(status.scanLocalFilesProgress)) polled[JobType.ScanLocalFiles] = status.scanLocalFilesProgress;
+          if (isLive(status.installAdditionalExtensionsProgress)) polled[JobType.InstallAdditionalExtensions] = status.installAdditionalExtensionsProgress;
+          if (isLive(status.searchProvidersProgress)) polled[JobType.SearchProviders] = status.searchProvidersProgress;
+          setPolledProgress(polled);
+
           if (value === 'Completed') {
             handleJobComplete(activeJobType);
           } else if (value === 'Failed') {
@@ -420,8 +437,12 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
             const isCompleted = isJobCompleted(action.jobType) || serverCompleted.has(action.jobType);
             const isActive = currentActionIndex === index && !isCompleted;
             const isFailed = isJobFailed(action.jobType);
-            const progress = isCompleted ? 100 : getJobProgress(action.jobType);
-            const progressData = getProgressForJob(action.jobType);
+            // Live SignalR data when available; otherwise the server-side
+            // snapshot from the fallback status poll.
+            const progressData = getProgressForJob(action.jobType) ?? polledProgress[action.jobType] ?? null;
+            const progress = isCompleted
+              ? 100
+              : Math.max(getJobProgress(action.jobType), polledProgress[action.jobType]?.percentage ?? 0);
 
             return (
               <ActionProgress

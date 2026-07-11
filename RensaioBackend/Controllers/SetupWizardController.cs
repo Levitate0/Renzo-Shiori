@@ -329,6 +329,11 @@ namespace RensaioBackend.Controllers
                     installAdditionalExtensions = await GetLatestJobStatusAsync(JobType.InstallAdditionalExtensions, token).ConfigureAwait(false),
                     searchProviders = await GetLatestJobStatusAsync(JobType.SearchProviders, token).ConfigureAwait(false),
                     importSeries = await GetLatestJobStatusAsync(JobType.ImportSeries, token).ConfigureAwait(false),
+                    // Last broadcast progress per job — polling fallback so wizard
+                    // percentages/messages survive a missing SignalR connection.
+                    scanLocalFilesProgress = Services.Jobs.JobHubReportService.GetLastProgress(JobType.ScanLocalFiles),
+                    installAdditionalExtensionsProgress = Services.Jobs.JobHubReportService.GetLastProgress(JobType.InstallAdditionalExtensions),
+                    searchProvidersProgress = Services.Jobs.JobHubReportService.GetLastProgress(JobType.SearchProviders),
                 });
             }
             catch (Exception ex)

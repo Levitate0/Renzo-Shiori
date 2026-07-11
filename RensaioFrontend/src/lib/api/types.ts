@@ -307,6 +307,10 @@ export interface SetupJobsStatus {
   installAdditionalExtensions: SetupJobStatusValue;
   searchProviders: SetupJobStatusValue;
   importSeries: SetupJobStatusValue;
+  /** Last broadcast progress per job — polling fallback when SignalR is unavailable. */
+  scanLocalFilesProgress?: ProgressState | null;
+  installAdditionalExtensionsProgress?: ProgressState | null;
+  searchProvidersProgress?: ProgressState | null;
 }
 
 export enum JobType {
