@@ -327,6 +327,12 @@ public class ImportCommandService
             List<RensaioBackend.Models.Database.ImportEntity> imports = await _db.Imports
                 .Where(a => a.Status == ImportStatus.Import)
                 .ToListAsync(token).ConfigureAwait(false); ;
+            // An interrupted run restarts from the top, so skip imports that already
+            // carry match candidates — re-searching them redoes minutes of provider
+            // fan-out per title for no benefit (their candidates simply await review).
+            // A fresh scan clears/replaces candidates when folders change, so this
+            // only ever skips work that is genuinely already done.
+            imports = imports.Where(a => a.Series == null || a.Series.Count == 0).ToList();
             if (imports.Count == 0)
             {
                 progress.Report(ProgressStatus.Completed, 100, "No series to search, process complete");
