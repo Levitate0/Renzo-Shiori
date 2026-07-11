@@ -115,10 +115,12 @@ function ActionProgress({
     return <Circle />;
   };
 
+  // One decimal while running: long jobs (e.g. searching hundreds of titles)
+  // advance in sub-1% steps that integer rounding would hide entirely.
   const pctLabel = isCompleted
     ? '100%'
     : isActive || isFailed
-      ? `${Math.round(progress)}%`
+      ? `${(Math.round(progress * 10) / 10).toFixed(1)}%`
       : '—';
 
   const statusText = message ?? (isCompleted ? 'Complete' : isActive ? 'Running…' : 'Queued');

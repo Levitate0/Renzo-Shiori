@@ -334,11 +334,19 @@ public class ImportCommandService
             }
             float step = 100 / (float)imports.Count;
             float acum = 0F;
+            int total = imports.Count;
+            int current = 0;
             Dictionary<string, Guid> paths = await _db.GetPathsAsync(token).ConfigureAwait(false);
             var appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
             List<RepositoryGroup> local_repo = _mihon.ListExtensions();
             foreach (RensaioBackend.Models.Database.ImportEntity import in imports)
             {
+                current++;
+                // Report at the start of every title too, so the UI shows live
+                // "n of total" counts instead of appearing stalled while a
+                // single title's provider fan-out (which can take minutes) runs.
+                progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                    $"({current}/{total}) Searching '{import.Info.Title}'…");
                 try
                 {
                     List<string> langs = import.Info.Series.Providers.Select(a => a.Language).Distinct().ToList();
@@ -509,6 +517,9 @@ public class ImportCommandService
                         s.FillSeriesFromProviderSeriesDetails(s.Sources.ToProviderSeriesDetails(),null);
                         s.Sources.CalculateContinueAfterChapter(null);
                         import.Status = ImportStatus.DoNotChange;
+                        acum += step;
+                        progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                            $"({current}/{total}) {import.Info.Title} assigned to existing series.");
                         await _db.SaveChangesAsync(token).ConfigureAwait(false);
                         await _seriesProvider.CheckIfTheStorageFlagsChangedTheInLibraryStatusOfLastSeriesAsync(s.Sources, [], token)
                             .ConfigureAwait(false);
@@ -639,16 +650,16 @@ public class ImportCommandService
                                 import.ContinueAfterChapter = inf.ContinueAfterChapter;
                                 import.ApplyImportSeriesEntry(inf);
                                 acum += step;
-                                progress.Report(ProgressStatus.InProgress, (int)acum,
-                                    $"{import.Info.Title} found in {string.Join(",", series.Select(a => a.Provider).Distinct())}.");
+                                progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                                    $"({current}/{total}) {import.Info.Title} found in {string.Join(",", series.Select(a => a.Provider).Distinct())}.");
                                 success = true;
                             }
                         }
                         if (!success)
                         {
                             acum += step;
-                            progress.Report(ProgressStatus.InProgress, (int)acum,
-                                $"Series {import.Title} not found in available providers");
+                            progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                                $"({current}/{total}) Series {import.Title} not found in available providers");
                             import.Status = ImportStatus.Skip;
                             import.Action = Action.Skip;
                             _logger.LogInformation("Series '{Title}'not found", import.Info.Title);
