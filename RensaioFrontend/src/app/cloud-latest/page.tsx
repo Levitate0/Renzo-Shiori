@@ -25,6 +25,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CloudLatestGrid } from "@/components/comp/series/cloud-latest-grid";
 import { InLibraryStatus, type LatestSeriesInfo, type LatestGenre } from "@/lib/api/types";
 import { useDebounce } from "@/lib/hooks/useDebounce";
+import { isAdultSeries, isAdultTag, useHideAdult } from "@/lib/utils/adult-filter";
 import {
   SpotlightHero,
   type SpotlightItem,
@@ -193,6 +194,7 @@ export default function CloudLatestPage() {
   }, [setSelectedGenres]);
 
   const { debouncedSearchTerm } = useSearch();
+  const [hideAdult] = useHideAdult();
   const { data: sources } = useSearchSources();
   const { data: genresData, isLoading: isGenresLoading } = useLatestGenres();
 
@@ -398,7 +400,9 @@ export default function CloudLatestPage() {
   const spotlightItems = useMemo<SpotlightItem[]>(() => {
     if (!firstPageItems || firstPageItems.length === 0) return [];
     const notInLibrary = firstPageItems.filter(
-      (s) => s.inLibrary === InLibraryStatus.NotInLibrary,
+      (s) =>
+        s.inLibrary === InLibraryStatus.NotInLibrary &&
+        (!hideAdult || !isAdultSeries(s.genre)),
     );
     // Fisher–Yates shuffle on a copy, then take 7. Plain temp-swap (not the
     // destructure idiom) so it cooperates with noUncheckedIndexedAccess.
@@ -422,7 +426,15 @@ export default function CloudLatestPage() {
       provider: s.provider,
       sourceName: s.provider,
     }));
-  }, [firstPageItems]);
+  }, [firstPageItems, hideAdult]);
+
+  // Temporary 18+ view filter (user menu toggle). Purely client-side: the
+  // fetched pages stay intact, so flipping the toggle back restores
+  // everything without refetching.
+  const visibleItems = useMemo<LatestSeriesInfo[]>(
+    () => (hideAdult ? items.filter((s) => !isAdultSeries(s.genre)) : items),
+    [items, hideAdult],
+  );
 
   // Browse spotlight CTA: if the candidate already has a backing seriesId
   // (e.g. became InLibrary mid-session), navigate to its detail page;
@@ -446,13 +458,17 @@ export default function CloudLatestPage() {
   // Filtered tag list for the popover. Backend already sorts by count desc,
   // so we preserve that order and just cap at MAX_VISIBLE_GENRES.
   const filteredGenres = useMemo<LatestGenre[]>(() => {
-    const list = genresData ?? [];
+    let list = genresData ?? [];
+    // Temporary 18+ view filter: keep adult rating tags out of the tag picker too.
+    if (hideAdult) {
+      list = list.filter((g) => !isAdultTag(g.name));
+    }
     const term = tagSearch.trim().toLowerCase();
     const filtered = term
       ? list.filter((g) => g.name.toLowerCase().includes(term))
       : list;
     return filtered.slice(0, MAX_VISIBLE_GENRES);
-  }, [genresData, tagSearch]);
+  }, [genresData, tagSearch, hideAdult]);
 
   // Click-outside + Escape to close the tag popover.
   useEffect(() => {
@@ -776,7 +792,7 @@ export default function CloudLatestPage() {
 
       <div className="pt-4">
         <CloudLatestGrid
-          items={items}
+          items={visibleItems}
           isLoading={isLoading && currentPage === 0}
           isLoadingMore={isLoadingMore}
           hasMore={hasMore}

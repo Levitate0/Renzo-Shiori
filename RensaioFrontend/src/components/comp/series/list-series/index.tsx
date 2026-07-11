@@ -2,6 +2,7 @@
 
 import { useLibrary } from "@/lib/api/hooks/useSeries";
 import { useSearch } from "@/contexts/search-context";
+import { isAdultSeries, useHideAdult } from "@/lib/utils/adult-filter";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -59,6 +60,7 @@ export function ListSeries({ filterFn, sortFn, cardWidth = "w-40", cardWidthOpti
   // Always call hooks at the top level to avoid hook count mismatches
   const { data: hookLibrary, isLoading } = useLibrary();
   const { debouncedSearchTerm } = useSearch();
+  const [hideAdult] = useHideAdult();
   const router = useRouter();
   const gridRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(1);
@@ -72,6 +74,9 @@ export function ListSeries({ filterFn, sortFn, cardWidth = "w-40", cardWidthOpti
   const filteredLibrary = useMemo(() => {
     if (!library) return library;
     let result = library;
+    if (hideAdult) {
+      result = result.filter((series: SeriesInfo) => !isAdultSeries(series.genre));
+    }
     if (debouncedSearchTerm.trim()) {
       result = result.filter((series: SeriesInfo) =>
         series.title.toLowerCase().includes(debouncedSearchTerm.toLowerCase())
@@ -84,7 +89,7 @@ export function ListSeries({ filterFn, sortFn, cardWidth = "w-40", cardWidthOpti
       result = [...result].sort(sortFn);
     }
     return result;
-  }, [library, debouncedSearchTerm, filterFn, sortFn]);
+  }, [library, debouncedSearchTerm, filterFn, sortFn, hideAdult]);
 
   // Calculate columns on resize
   useEffect(() => {

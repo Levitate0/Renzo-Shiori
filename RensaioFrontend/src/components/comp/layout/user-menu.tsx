@@ -6,6 +6,8 @@ import {
   Copy,
   Download,
   Edit,
+  EyeOff,
+  Eye,
   FolderInput,
   KeyRound,
   LogOut,
@@ -37,6 +39,7 @@ import { EditUserDialog } from "@/components/comp/users/user-dialog";
 import { ChangePasswordDialog } from "@/components/comp/users/change-password-dialog";
 import { UserTrackerRequester } from "@/components/comp/scrobbler/user-tracker-requester";
 import { ExternalLinks } from "@/components/comp/layout/external-links";
+import { useHideAdult } from "@/lib/utils/adult-filter";
 import { UserLevel } from "@/lib/api/types";
 
 const LEVEL_LABEL: Record<UserLevel, string> = {
@@ -91,6 +94,7 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
   const { startWizard } = useImportWizard();
   const { data: settings } = useSettings();
   const { theme, setTheme } = useTheme();
+  const [hideAdult, toggleHideAdult] = useHideAdult();
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
@@ -289,6 +293,17 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
           >
             {themeIcon(theme)}
             Theme: {themeLabel(theme)}
+          </DropdownMenuItem>
+
+          {/* Temporary adult-content (18+) view filter — Library and Browse.
+              Kept open on click, like the theme cycle, so the state change is visible. */}
+          <DropdownMenuItem
+            onSelect={(e) => e.preventDefault()}
+            onClick={toggleHideAdult}
+            className="flex items-center gap-2 cursor-pointer"
+          >
+            {hideAdult ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            Adult (18+): {hideAdult ? "Hidden" : "Shown"}
           </DropdownMenuItem>
 
           <DropdownMenuSeparator />
