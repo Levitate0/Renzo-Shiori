@@ -16,6 +16,7 @@ import { PageLayout } from "@/components/comp/layout/page-layout";
 import { RibbonSlot } from "@/components/comp/layout/ribbon";
 import { SeriesStatus, type SeriesInfo } from "@/lib/api/types";
 import { useLibrary } from "@/lib/api/hooks/useSeries";
+import { useFavorites } from "@/lib/api/hooks/useFavorites";
 import { useSettings } from "@/lib/api/hooks/useSettings";
 import { PullToRefresh } from "@/components/ui/pull-to-refresh";
 import { usePermission } from "@/hooks/use-permission";
@@ -28,6 +29,7 @@ const SESSION_KEYS = {
   genre: "ren_genre",
   provider: "ren_provider",
   category: "ren_category",
+  favorites: "ren_favlist",
   orderBy: "ren_orderBy",
   cardWidth: "ren_cardWidth",
 };
@@ -52,6 +54,7 @@ export default function RootPage() {
   const [selectedGenre, setSelectedGenreState] = useState<string | null>(getSessionValue(SESSION_KEYS.genre, null));
   const [selectedProvider, setSelectedProviderState] = useState<string | null>(getSessionValue(SESSION_KEYS.provider, null));
   const [selectedCategory, setSelectedCategoryState] = useState<string | null>(getSessionValue(SESSION_KEYS.category, null));
+  const [selectedFavList, setSelectedFavListState] = useState<string | null>(getSessionValue(SESSION_KEYS.favorites, null));
   const [orderBy, setOrderByState] = useState<string>(getSessionValue(SESSION_KEYS.orderBy, "title")!);
   const [cardWidth, setCardWidthState] = useState<string>(getSessionValue(SESSION_KEYS.cardWidth, getResponsiveCardDefault())!);
 
@@ -60,10 +63,43 @@ export default function RootPage() {
   const setSelectedGenre = (v: string | null) => { setSelectedGenreState(v); sessionStorage.setItem(SESSION_KEYS.genre, v ?? ""); };
   const setSelectedProvider = (v: string | null) => { setSelectedProviderState(v); sessionStorage.setItem(SESSION_KEYS.provider, v ?? ""); };
   const setSelectedCategory = (v: string | null) => { setSelectedCategoryState(v); sessionStorage.setItem(SESSION_KEYS.category, v ?? ""); };
+  const setSelectedFavList = (v: string | null) => { setSelectedFavListState(v); sessionStorage.setItem(SESSION_KEYS.favorites, v ?? ""); };
   const setOrderBy = (v: string) => { setOrderByState(v); sessionStorage.setItem(SESSION_KEYS.orderBy, v); };
   const setCardWidth = (v: string) => { setCardWidthState(v); sessionStorage.setItem(SESSION_KEYS.cardWidth, v); };
 
   const { data: library } = useLibrary();
+  const { data: favoriteLists } = useFavorites();
+
+  // Favourites dropdown entries: each top-level tab followed by its indented
+  // sub-lists. Selecting a tab shows its own series plus every sub-list's
+  // (aggregate view); selecting a sub-list shows just that sub-list.
+  const favoriteOptions = useMemo(() => {
+    const lists = favoriteLists ?? [];
+    const topLevel = lists.filter((l) => !l.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
+    const options: { id: string; label: string; count: number; isSub: boolean }[] = [];
+    for (const tab of topLevel) {
+      const children = lists.filter((l) => l.parentId === tab.id).sort((a, b) => a.sortOrder - b.sortOrder);
+      const aggregate = new Set(tab.seriesIds);
+      children.forEach((c) => c.seriesIds.forEach((id) => aggregate.add(id)));
+      options.push({ id: tab.id, label: tab.name, count: aggregate.size, isSub: false });
+      children.forEach((c) => options.push({ id: c.id, label: c.name, count: c.seriesIds.length, isSub: true }));
+    }
+    return options;
+  }, [favoriteLists]);
+
+  // Membership set for the currently selected favourites entry.
+  const favoriteFilterIds = useMemo<Set<string> | null>(() => {
+    if (!selectedFavList || !favoriteLists) return null;
+    const list = favoriteLists.find((l) => l.id === selectedFavList);
+    if (!list) return null;
+    const ids = new Set(list.seriesIds);
+    if (!list.parentId) {
+      favoriteLists
+        .filter((l) => l.parentId === list.id)
+        .forEach((c) => c.seriesIds.forEach((id) => ids.add(id)));
+    }
+    return ids;
+  }, [selectedFavList, favoriteLists]);
 
   // Debug and deduplicate library data to prevent duplicate keys
   const deduplicatedLibrary = useMemo(() => {
@@ -151,8 +187,9 @@ export default function RootPage() {
     const matchesGenre = selectedGenre ? series.genre?.includes(selectedGenre) : true;
     const matchesProvider = selectedProvider ? series.providers?.some((p) => p.provider === selectedProvider) : true;
     const matchesCategory = selectedCategory ? series.category === selectedCategory : true;
-    return matchesTab && matchesGenre && matchesProvider && matchesCategory;
-  }, [tab, selectedGenre, selectedProvider, selectedCategory]);
+    const matchesFavorites = favoriteFilterIds ? favoriteFilterIds.has(series.id) : true;
+    return matchesTab && matchesGenre && matchesProvider && matchesCategory && matchesFavorites;
+  }, [tab, selectedGenre, selectedProvider, selectedCategory, favoriteFilterIds]);
 
   // Count for each tab (with genre, provider, and category filter applied) - memoized for performance
   const { allCount, activeCount, pausedCount, unassignedCount, completedCount } = useMemo(() => {
@@ -161,7 +198,8 @@ export default function RootPage() {
     const baseFilter = (series: SeriesInfo) =>
       (!selectedGenre || series.genre?.includes(selectedGenre)) &&
       (!selectedProvider || series.providers?.some((p) => p.provider === selectedProvider)) &&
-      (!selectedCategory || series.category === selectedCategory);
+      (!selectedCategory || series.category === selectedCategory) &&
+      (!favoriteFilterIds || favoriteFilterIds.has(series.id));
 
     const baseFiltered = deduplicatedLibrary.filter(baseFilter);
 
@@ -180,7 +218,7 @@ export default function RootPage() {
         series.status === SeriesStatus.PUBLISHING_FINISHED
       ).length,
     };
-  }, [deduplicatedLibrary, selectedGenre, selectedProvider, selectedCategory]);
+  }, [deduplicatedLibrary, selectedGenre, selectedProvider, selectedCategory, favoriteFilterIds]);
 
   return (
     <PageLayout mainClassName="p-2 pb-16 sm:px-6 sm:py-4 sm:pb-4 overflow-y-auto">
@@ -259,6 +297,35 @@ export default function RootPage() {
                   <SelectItem value="__ALL__">All Categories</SelectItem>
                   {categories.filter((category) => category).map((category) => (
                     <SelectItem key={category} value={category}>{category}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {/* Favourites — user-defined tabs and sub-lists; hidden until the
+              first list is created (from a series page's Favourite button) */}
+          {favoriteOptions.length > 0 && (
+            <div className="w-32 sm:w-44 shrink-0">
+              <Select
+                value={selectedFavList ?? "__ALL__"}
+                onValueChange={(value) => setSelectedFavList(value === "__ALL__" ? null : value)}
+              >
+                <SelectTrigger className="w-full !pr-2 caret-transparent h-8 text-xs sm:text-sm">
+                  <SelectValue placeholder="Favourites" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__ALL__">Favourites: All</SelectItem>
+                  {favoriteOptions.map((opt) => (
+                    <SelectItem key={opt.id} value={opt.id}>
+                      <span className="flex items-center gap-2">
+                        {opt.isSub && <span className="text-muted-foreground/60">└</span>}
+                        <span>{opt.label}</span>
+                        {opt.count > 0 && (
+                          <span className="text-white/40 text-[11px]">{opt.count}</span>
+                        )}
+                      </span>
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>

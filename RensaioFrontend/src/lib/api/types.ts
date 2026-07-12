@@ -865,6 +865,19 @@ export interface OAuthAuthorizeResponse {
 }
 
 /**
+ * A user-defined favorites list. Top-level lists (parentId null) are the
+ * broad tabs ("Manhwa favourites"); lists with a parentId are sub-lists
+ * grouped under that tab.
+ */
+export interface FavoriteList {
+  id: string;
+  name: string;
+  parentId?: string | null;
+  sortOrder: number;
+  seriesIds: string[];
+}
+
+/**
  * One row of the "Updates" feed: a series added to the library or a chapter
  * that finished downloading.
  */

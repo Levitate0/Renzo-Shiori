@@ -96,6 +96,8 @@ namespace RensaioBackend.Data
         public DbSet<UserScrobblerConfigEntity> UserScrobblerConfigs { get; set; }
         public DbSet<UserSeriesMappingEntity> UserSeriesMappings { get; set; }
         public DbSet<SeriesMappingEntity> SeriesMappings { get; set; }
+        public DbSet<FavoriteListEntity> FavoriteLists { get; set; }
+        public DbSet<FavoriteItemEntity> FavoriteItems { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -412,6 +414,23 @@ namespace RensaioBackend.Data
                 entity.Property(m => m.UpdateDate).IsRequired();
                 entity.HasIndex(m => new { m.SeriesId, m.Provider }).IsUnique()
                     .HasDatabaseName("IX_SeriesMapping_SeriesId_Provider");
+            });
+
+            modelBuilder.Entity<FavoriteListEntity>(entity =>
+            {
+                entity.HasKey(f => f.Id);
+                entity.Property(f => f.UserId).IsRequired();
+                entity.Property(f => f.Name).UseCollation("BINARY").IsRequired();
+                entity.HasIndex(f => f.UserId).HasDatabaseName("IX_FavoriteList_UserId");
+            });
+
+            modelBuilder.Entity<FavoriteItemEntity>(entity =>
+            {
+                entity.HasKey(f => f.Id);
+                entity.Property(f => f.ListId).IsRequired();
+                entity.Property(f => f.SeriesId).IsRequired();
+                entity.HasIndex(f => new { f.ListId, f.SeriesId }).IsUnique()
+                    .HasDatabaseName("IX_FavoriteItem_ListId_SeriesId");
             });
         }
     }

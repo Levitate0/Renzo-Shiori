@@ -5,6 +5,7 @@ import { Pause, Play, CheckCircle2, Check, Trash2, FolderOpen, Copy, RefreshCw }
 import { Button } from "@/components/ui/button";
 import { SeriesStatus, type SeriesExtendedInfo } from "@/lib/api/types";
 import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
+import { FavoriteButton } from "@/components/comp/series/favorite-button";
 
 // Tiny relative-time helper — no external dependency
 function formatRelative(dateString: string | null | undefined): string {
@@ -302,6 +303,9 @@ export function SeriesHero({
 
             {/* Action toolbar */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
+              {/* Favourites — personal lists, available to every user level */}
+              <FavoriteButton seriesId={series.id} />
+
               {canManageDownloads && !pausedDownloads && (
                 <Button variant="default" onClick={onPauseToggle} className="px-0 w-9 sm:w-auto sm:px-4">
                   <Pause className="h-4 w-4 sm:mr-2" />
