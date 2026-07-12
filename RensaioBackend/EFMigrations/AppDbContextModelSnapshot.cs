@@ -522,6 +522,10 @@ namespace RensaioBackend.Migrations
                         .HasColumnType("TEXT")
                         .HasAnnotation("Relational:JsonPropertyName", "lastChapterDate");
 
+                    b.Property<bool>("Nsfw")
+                        .HasColumnType("INTEGER")
+                        .HasAnnotation("Relational:JsonPropertyName", "nsfw");
+
                     b.Property<bool>("PauseDownloads")
                         .HasColumnType("INTEGER")
                         .HasAnnotation("Relational:JsonPropertyName", "pauseDownloads");

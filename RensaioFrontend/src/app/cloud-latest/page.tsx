@@ -25,7 +25,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CloudLatestGrid } from "@/components/comp/series/cloud-latest-grid";
 import { InLibraryStatus, type LatestSeriesInfo, type LatestGenre } from "@/lib/api/types";
 import { useDebounce } from "@/lib/hooks/useDebounce";
-import { isAdultSeries, isAdultTag, useHideAdult } from "@/lib/utils/adult-filter";
+import { isAdultItem, isAdultTag, useHideAdult } from "@/lib/utils/adult-filter";
 import {
   SpotlightHero,
   type SpotlightItem,
@@ -402,7 +402,7 @@ export default function CloudLatestPage() {
     const notInLibrary = firstPageItems.filter(
       (s) =>
         s.inLibrary === InLibraryStatus.NotInLibrary &&
-        (!hideAdult || !isAdultSeries(s.genre)),
+        (!hideAdult || !isAdultItem(s)),
     );
     // Fisher–Yates shuffle on a copy, then take 7. Plain temp-swap (not the
     // destructure idiom) so it cooperates with noUncheckedIndexedAccess.
@@ -432,7 +432,7 @@ export default function CloudLatestPage() {
   // fetched pages stay intact, so flipping the toggle back restores
   // everything without refetching.
   const visibleItems = useMemo<LatestSeriesInfo[]>(
-    () => (hideAdult ? items.filter((s) => !isAdultSeries(s.genre)) : items),
+    () => (hideAdult ? items.filter((s) => !isAdultItem(s)) : items),
     [items, hideAdult],
   );
 

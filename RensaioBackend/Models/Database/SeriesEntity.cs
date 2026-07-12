@@ -67,6 +67,13 @@ namespace RensaioBackend.Models.Database
         [JsonPropertyName("releaseCadenceDays")]
         public int? ReleaseCadenceDays { get; set; }
 
+        /// <summary>
+        /// Manual 18+ override set by the user (series edit). Complements the
+        /// tag-based detection for content whose sources ship no adult tags.
+        /// </summary>
+        [JsonPropertyName("nsfw")]
+        public bool Nsfw { get; set; }
+
         public virtual ICollection<SeriesProviderEntity> Sources { get; set; } = [];
     }
 }

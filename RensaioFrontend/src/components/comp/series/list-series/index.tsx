@@ -2,7 +2,7 @@
 
 import { useLibrary } from "@/lib/api/hooks/useSeries";
 import { useSearch } from "@/contexts/search-context";
-import { isAdultSeries, useHideAdult } from "@/lib/utils/adult-filter";
+import { isAdultItem, useHideAdult } from "@/lib/utils/adult-filter";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -75,7 +75,7 @@ export function ListSeries({ filterFn, sortFn, cardWidth = "w-40", cardWidthOpti
     if (!library) return library;
     let result = library;
     if (hideAdult) {
-      result = result.filter((series: SeriesInfo) => !isAdultSeries(series.genre));
+      result = result.filter((series: SeriesInfo) => !isAdultItem(series));
     }
     if (debouncedSearchTerm.trim()) {
       result = result.filter((series: SeriesInfo) =>

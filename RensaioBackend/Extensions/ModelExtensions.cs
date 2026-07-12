@@ -307,7 +307,11 @@ namespace RensaioBackend.Extensions
                     .Select(c => c.Number).Distinct()
                     .FormatDecimalRanges(),
                 Providers = new List<ProviderExtendedDto>(),
-                Category = CategoryFromPath(s.StoragePath, settings)
+                Category = CategoryFromPath(s.StoragePath, settings),
+                Nsfw = s.Nsfw,
+                IsNsfw = s.Nsfw
+                         || AdultContentClassifier.IsAdult(s.Genre)
+                         || s.Sources.Any(src => AdultContentClassifier.IsAdult(src.Genre))
             };
             SmallProviderDto? lastChangeProvider = null;
             DateTime dt = DateTime.MinValue;

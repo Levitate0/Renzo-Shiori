@@ -150,14 +150,16 @@ function SeriesPageContent() {
   }, [series, isDeleting]);
   
   // Helper function that allows updating with an explicit pausedDownloads value
-  const updateSeriesWithPausedDownloads = async (overridePausedDownloads: boolean) => {
+  // (and optionally an explicit manual-18+ value; ...series carries it otherwise)
+  const updateSeriesWithPausedDownloads = async (overridePausedDownloads: boolean, overrideNsfw?: boolean) => {
     if (!series || isDeleting) return;
-    
+
     try {
       // Create updated series object with current state
       const updatedSeries = {
         ...series,
         pausedDownloads: overridePausedDownloads,
+        nsfw: overrideNsfw ?? series.nsfw ?? false,
         providers: series.providers.map(provider => {
           const switches = providerSwitches[provider.id];
           const fromChapterValue = providerFromChapters[provider.id];
@@ -771,6 +773,11 @@ function SeriesPageContent() {
     updateSeriesWithPausedDownloads(newPausedDownloadsValue);
   };
 
+  // Handler for the manual 18+ flag toggle
+  const handleNsfwToggle = () => {
+    void updateSeriesWithPausedDownloads(pausedDownloads, !(series?.nsfw ?? false));
+  };
+
   // Handler for delete series button click
   const handleDeleteSeriesClick = () => {
     setShowDeleteDialog(true);
@@ -1133,12 +1140,14 @@ function SeriesPageContent() {
         displayThumbnail={displayThumbnail ?? ''}
         effectiveStatus={effectiveStatus}
         pausedDownloads={pausedDownloads}
+        nsfw={series.nsfw ?? false}
         canEditSeries={canEdit}
         canDeleteSeries={canDelete}
         canManageDownloads={canManageDownloads}
         verifyPending={verifyIntegrity.isPending}
         refreshPending={refreshSeries.isPending}
         onPauseToggle={handlePausedDownloadsToggle}
+        onNsfwToggle={handleNsfwToggle}
         onVerify={handleVerifyIntegrityClick}
         onRefresh={handleRefreshClick}
         onDelete={handleDeleteSeriesClick}

@@ -212,8 +212,10 @@ namespace RensaioBackend.Services.Series
                 if (start > 0)
                     series = series.Skip(start);
 
-                return (await series.Take(count).ToListAsync(token).ConfigureAwait(false))
+                List<LatestSeriesDto> page = (await series.Take(count).ToListAsync(token).ConfigureAwait(false))
                     .Select(a => a.ToSeriesInfo()).ToList();
+                await PopulateNsfwDetectionAsync(page, token).ConfigureAwait(false);
+                return page;
             }
 
             // Genre filtering. Genre is stored as a value-converted CSV column
@@ -267,7 +269,84 @@ namespace RensaioBackend.Services.Series
                     break;
             }
 
-            return taken.Select(a => a.ToSeriesInfo()).ToList();
+            List<LatestSeriesDto> result = taken.Select(a => a.ToSeriesInfo()).ToList();
+            await PopulateNsfwDetectionAsync(result, token).ConfigureAwait(false);
+            return result;
+        }
+
+        /// <summary>
+        /// Fills <see cref="LatestSeriesDto.IsNsfw"/> for a page of Browse rows.
+        /// Detection deliberately looks beyond the row's own tags — many sources
+        /// don't expose adult ratings — by borrowing tags from (a) same-titled
+        /// catalog rows fetched from OTHER sources and (b) the linked/same-titled
+        /// library series, whose flag already aggregates every source's tags plus
+        /// the user's manual 18+ override. Detection only: borrowed tags are never
+        /// added to the row's visible genre list.
+        /// </summary>
+        private async Task PopulateNsfwDetectionAsync(List<LatestSeriesDto> page, CancellationToken token)
+        {
+            if (page.Count == 0)
+                return;
+
+            foreach (LatestSeriesDto row in page)
+            {
+                if (AdultContentClassifier.IsAdult(row.Genre))
+                    row.IsNsfw = true;
+            }
+
+            List<LatestSeriesDto> pending = page.Where(r => !r.IsNsfw).ToList();
+            if (pending.Count == 0)
+                return;
+
+            List<string> titles = pending
+                .Select(r => r.Title.Trim().ToLowerInvariant())
+                .Where(t => t.Length > 0)
+                .Distinct()
+                .ToList();
+            List<Guid> linkedIds = pending
+                .Where(r => r.SeriesId != null && r.SeriesId != Guid.Empty)
+                .Select(r => r.SeriesId!.Value)
+                .Distinct()
+                .ToList();
+
+            // Same-titled rows from other sources in the cached catalog.
+            HashSet<string> adultTitles = new(StringComparer.OrdinalIgnoreCase);
+            var catalogMatches = await _db.LatestSeries
+                .Where(a => titles.Contains(a.Title.ToLower()))
+                .Select(a => new { a.Title, a.Genre })
+                .ToListAsync(token).ConfigureAwait(false);
+            foreach (var m in catalogMatches)
+            {
+                if (AdultContentClassifier.IsAdult(m.Genre))
+                    adultTitles.Add(m.Title.Trim());
+            }
+
+            // Linked or same-titled library series: manual override, series tags,
+            // or any of its sources' tags.
+            HashSet<Guid> adultSeriesIds = new();
+            var libraryMatches = await _db.Series
+                .Include(s => s.Sources)
+                .Where(s => linkedIds.Contains(s.Id) || titles.Contains(s.Title.ToLower()))
+                .ToListAsync(token).ConfigureAwait(false);
+            foreach (var s in libraryMatches)
+            {
+                bool adult = s.Nsfw
+                             || AdultContentClassifier.IsAdult(s.Genre)
+                             || s.Sources.Any(src => AdultContentClassifier.IsAdult(src.Genre));
+                if (!adult)
+                    continue;
+                adultSeriesIds.Add(s.Id);
+                adultTitles.Add(s.Title.Trim());
+            }
+
+            foreach (LatestSeriesDto row in pending)
+            {
+                if ((row.SeriesId != null && adultSeriesIds.Contains(row.SeriesId.Value)) ||
+                    adultTitles.Contains(row.Title.Trim()))
+                {
+                    row.IsNsfw = true;
+                }
+            }
         }
 
         /// <summary>

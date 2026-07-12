@@ -121,12 +121,15 @@ export interface SeriesHeroProps {
   displayThumbnail: string;
   effectiveStatus: SeriesStatus;
   pausedDownloads: boolean;
+  /** Manual 18+ flag (the user-set override, not the tag-derived detection). */
+  nsfw: boolean;
   canEditSeries: boolean;
   canDeleteSeries: boolean;
   canManageDownloads: boolean;
   verifyPending: boolean;
   refreshPending: boolean;
   onPauseToggle: () => void;
+  onNsfwToggle: () => void;
   onVerify: () => void;
   onRefresh: () => void;
   onDelete: () => void;
@@ -138,12 +141,14 @@ export function SeriesHero({
   displayThumbnail,
   effectiveStatus,
   pausedDownloads,
+  nsfw,
   canEditSeries,
   canDeleteSeries,
   canManageDownloads,
   verifyPending,
   refreshPending,
   onPauseToggle,
+  onNsfwToggle,
   onVerify,
   onRefresh,
   onDelete,
@@ -325,6 +330,24 @@ export function SeriesHero({
                 >
                   <RefreshCw className={`h-4 w-4 sm:mr-2 ${refreshPending ? 'animate-spin' : ''}`} />
                   <span className="hidden sm:inline">Refresh</span>
+                </Button>
+              )}
+
+              {/* Manual 18+ tag — feeds the temporary hide-adult view filter,
+                  covering series whose sources ship no adult rating tags. */}
+              {canEditSeries && (
+                <Button
+                  variant="outline"
+                  onClick={onNsfwToggle}
+                  title={nsfw ? "Marked 18+ — hidden when the adult filter is on. Click to unmark." : "Mark this series as 18+ so the adult filter hides it."}
+                  className={`px-0 w-9 sm:w-auto sm:px-4 font-semibold ${
+                    nsfw
+                      ? "border-red-500/60 bg-red-500/15 text-red-500 hover:bg-red-500/25 hover:text-red-400 hover:border-red-500/70"
+                      : ""
+                  }`}
+                >
+                  <span className="text-xs tracking-tight sm:mr-0">18+</span>
+                  <span className="hidden sm:inline sm:ml-2">{nsfw ? "Marked" : "Mark"}</span>
                 </Button>
               )}
 

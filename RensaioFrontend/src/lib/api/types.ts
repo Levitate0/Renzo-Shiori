@@ -447,6 +447,10 @@ export interface BaseSeriesInfo {
   startFromChapter?: number;
   /// Release cadence in days (absolute value, always positive). Null = not yet determined.
   releaseCadenceDays?: number;
+  /** Manual 18+ override, editable in the series detail. */
+  nsfw?: boolean;
+  /** Server-computed 18+ detection: manual flag OR adult tags on the series or any of its sources. */
+  isNsfw?: boolean;
   category?: string;
 }
 
@@ -647,6 +651,8 @@ export interface LatestSeriesInfo {
   status: SeriesStatus;
   inLibrary: InLibraryStatus;
   seriesId?: string; // Guid from backend represented as string
+  /** Server-computed 18+ detection: own tags, same-titled rows from other sources, or the linked library series. */
+  isNsfw?: boolean;
 }
 
 /**

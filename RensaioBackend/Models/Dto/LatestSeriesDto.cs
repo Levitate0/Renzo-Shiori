@@ -23,6 +23,13 @@ public class LatestSeriesDto : IThumb
     public string? Url { get; set; }
     [JsonPropertyName("title")]
     public string Title { get; set; } = "";
+    /// <summary>
+    /// Computed 18+ detection: adult rating tags on this row, on any
+    /// same-titled row from another source in the catalog, or on the linked
+    /// library series (which aggregates all of its sources' tags).
+    /// </summary>
+    [JsonPropertyName("isNsfw")]
+    public bool IsNsfw { get; set; }
     [JsonPropertyName("thumbnailUrl")]
     public string? ThumbnailUrl { get; set; } = null;
     [JsonPropertyName("artist")]

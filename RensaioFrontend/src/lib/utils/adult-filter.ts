@@ -40,6 +40,16 @@ export function isAdultTag(tag: string): boolean {
   return ADULT_TAGS.has(tag.trim().toLowerCase());
 }
 
+/**
+ * Detection for series/catalog items: prefers the server-computed flag —
+ * which aggregates tags across ALL of the item's sources plus the user's
+ * manual 18+ override, catching content whose visible source ships no adult
+ * tags — and falls back to the visible tags for older cached payloads.
+ */
+export function isAdultItem(item: { genre?: string[] | null; isNsfw?: boolean }): boolean {
+  return item.isNsfw === true || isAdultSeries(item.genre);
+}
+
 const STORAGE_KEY = "rensaio_hide_adult";
 const CHANGE_EVENT = "rensaio-hide-adult-changed";
 

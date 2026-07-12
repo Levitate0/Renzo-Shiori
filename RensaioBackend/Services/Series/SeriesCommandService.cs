@@ -180,6 +180,7 @@ namespace RensaioBackend.Services.Series
             dbSeries.Sources.CalculateContinueAfterChapter(series.StartFromChapter);
             bool wasPaused = dbSeries.PauseDownloads;
             dbSeries.PauseDownloads = series.PausedDownloads;
+            dbSeries.Nsfw = series.Nsfw;
             
             // When series gets paused, clear any queued waiting downloads so they're recalculated on resume
             if (series.PausedDownloads && !wasPaused)

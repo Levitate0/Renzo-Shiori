@@ -67,4 +67,16 @@ public class BaseSeriesDto : IThumb
 
     [JsonPropertyName("category")]
     public string? Category { get; set; }
+
+    /// <summary>Manual 18+ override the user can toggle in the series edit.</summary>
+    [JsonPropertyName("nsfw")]
+    public bool Nsfw { get; set; }
+
+    /// <summary>
+    /// Computed 18+ detection: manual override OR adult rating tags on the
+    /// series or on ANY of its sources (aggregated server-side; per-source
+    /// tags are never shipped for display).
+    /// </summary>
+    [JsonPropertyName("isNsfw")]
+    public bool IsNsfw { get; set; }
 }

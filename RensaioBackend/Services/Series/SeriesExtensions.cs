@@ -398,7 +398,11 @@ public static class SeriesExtensions
             PausedDownloads = series.PauseDownloads,
             ChapterCount = series.ChapterCount,
             StoragePath = series.StoragePath,
-            Category = ModelExtensions.CategoryFromPath(series.StoragePath, settings)
+            Category = ModelExtensions.CategoryFromPath(series.StoragePath, settings),
+            Nsfw = series.Nsfw,
+            IsNsfw = series.Nsfw
+                     || AdultContentClassifier.IsAdult(series.Genre)
+                     || (series.Sources?.Any(s => AdultContentClassifier.IsAdult(s.Genre)) ?? false)
         };
 
         if (series.Sources != null && series.Sources.Count > 0)
