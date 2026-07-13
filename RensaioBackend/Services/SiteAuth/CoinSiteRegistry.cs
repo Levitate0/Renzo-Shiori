@@ -48,9 +48,17 @@ public class CoinSiteRegistry
     private readonly string _localFile;
     private readonly string _extensionsDir;
 
-    // Keywords a coin/paid source uses to describe its gated chapters.
-    private static readonly string[] CoinWords =
-        { "coin", "coins", "locked", "premium", "paid", "unlock", "purchase", "subscription" };
+    // A coin/paid source describes gated chapters with these words. Matched on
+    // WORD BOUNDARIES — naive substring matching mis-fired ("bLOCKED uploader",
+    // "genre BLOCK" contain "locked"/"block"). "coin(s)" also requires a
+    // chapter/read context so a stray "coin" in flavor text can't trip it.
+    private static readonly Regex CoinPattern =
+        new(@"\b(locked|premium|paid|unlock|purchase|subscription|coins?)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Preference phrases that are filters/blocklists, not coin gates — skipped.
+    private static readonly Regex FilterPattern =
+        new(@"\b(block|blocked|genre|genres|group|groups|uploader|uploaders|uuid|tag|tags|scanlator)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Field-name hints by login shape, applied when we can only discover the host.
     private static readonly string[] UserFieldGuesses = { "email", "username", "login", "log" };
@@ -164,11 +172,12 @@ public class CoinSiteRegistry
                 return false;
             foreach (var pref in prefs.Preferences)
             {
-                string blob = ((pref.Title ?? "") + " " + (pref.Summary ?? "")).ToLowerInvariant();
-                // "blocked genres" / "block groups" are filters, not coin gates.
-                if (blob.Contains("genre") || blob.Contains("group"))
+                string blob = (pref.Title ?? "") + " " + (pref.Summary ?? "");
+                // A blocklist/filter preference is never a coin gate, even if it
+                // happens to contain a coin word ("bLOCKED", "genre BLOCK").
+                if (FilterPattern.IsMatch(blob))
                     continue;
-                if (CoinWords.Any(w => blob.Contains(w)))
+                if (CoinPattern.IsMatch(blob))
                     return true;
             }
         }
