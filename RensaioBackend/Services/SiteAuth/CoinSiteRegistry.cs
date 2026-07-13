@@ -43,7 +43,6 @@ public class CoinSiteRegistry
 {
     private readonly AppDbContext _db;
     private readonly ProviderCacheService _providerCache;
-    private readonly ProviderPreferencesService _prefs;
     private readonly ILogger _logger;
     private readonly string _localFile;
     private readonly string _extensionsDir;
@@ -65,15 +64,15 @@ public class CoinSiteRegistry
 
     private readonly object _lock = new();
     private Dictionary<string, CoinSiteDefinition> _local = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, (string? web, string? api)> _extractCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, (string? web, string? api)> _extractCache = new(StringComparer.OrdinalIgnoreCase);
+    private static Dictionary<long, string>? _coinScan;
     private bool _loaded;
 
     public CoinSiteRegistry(AppDbContext db, ProviderCacheService providerCache,
-        ProviderPreferencesService prefs, IConfiguration config, ILogger<CoinSiteRegistry> logger)
+        IConfiguration config, ILogger<CoinSiteRegistry> logger)
     {
         _db = db;
         _providerCache = providerCache;
-        _prefs = prefs;
         _logger = logger;
         string runtimeDir = config["runtimeDirectory"] ?? ".";
         _localFile = Path.Combine(runtimeDir, "site-logins.local.json");
@@ -131,24 +130,93 @@ public class CoinSiteRegistry
     public async Task<List<CoinSiteDefinition>> GetCoinSitesAsync(CancellationToken token = default)
     {
         EnsureLoaded();
-        var result = new Dictionary<string, CoinSiteDefinition>(StringComparer.OrdinalIgnoreCase);
 
+        // Coin-detection is read from each extension's on-disk preferences.json
+        // (keyed by SourceId) — NOT by loading every extension through the JVM
+        // bridge, which took ~30s for the whole install and hung the UI.
+        Dictionary<long, string> coinSourceDirs = ScanCoinSourceDirs();
+
+        var result = new Dictionary<string, CoinSiteDefinition>(StringComparer.OrdinalIgnoreCase);
         List<Models.Database.ProviderStorageEntity> providers =
             await _providerCache.GetCachedProvidersAsync(token).ConfigureAwait(false);
 
-        foreach (var p in providers.Where(p => !string.IsNullOrEmpty(p.SourcePackageName)))
+        foreach (var p in providers)
         {
             if (result.ContainsKey(p.Name))
                 continue;
-            if (!await IsCoinSourceAsync(p.SourcePackageName!, token).ConfigureAwait(false))
+            if (!long.TryParse(p.SourceSourceId, out long sid) || !coinSourceDirs.TryGetValue(sid, out string? extDir))
                 continue;
 
-            CoinSiteDefinition def = await BuildDefinitionAsync(p.Name, p.SourcePackageName!, token).ConfigureAwait(false);
+            CoinSiteDefinition def = await BuildDefinitionAsync(p.Name, extDir, token).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(def.Domain))
                 result[p.Name] = def;
         }
 
         return result.Values.OrderBy(d => d.Provider).ToList();
+    }
+
+    /// <summary>
+    /// Scans every extension's on-disk preferences.json for coin/paid-chapter
+    /// language and returns SourceId -> extension directory for the matches.
+    /// Cheap (filesystem + regex) and cached for the process lifetime keyed by
+    /// the extensions dir's last-write time.
+    /// </summary>
+    private Dictionary<long, string> ScanCoinSourceDirs()
+    {
+        lock (_lock)
+        {
+            if (_coinScan != null)
+                return _coinScan;
+        }
+
+        var map = new Dictionary<long, string>();
+        try
+        {
+            if (Directory.Exists(_extensionsDir))
+            {
+                foreach (string prefFile in Directory.EnumerateFiles(_extensionsDir, "preferences.json", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(prefFile));
+                        foreach (JsonElement src in doc.RootElement.EnumerateArray())
+                        {
+                            if (!src.TryGetProperty("SourceId", out JsonElement idEl))
+                                continue;
+                            long sid = idEl.ValueKind == JsonValueKind.Number ? idEl.GetInt64()
+                                : long.TryParse(idEl.GetString(), out long s) ? s : 0;
+                            if (sid == 0 || !src.TryGetProperty("Preferences", out JsonElement prefs))
+                                continue;
+                            if (PrefsLookCoinGated(prefs))
+                                map[sid] = Path.GetDirectoryName(prefFile)!;
+                        }
+                    }
+                    catch { /* skip an unreadable prefs file */ }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Coin-source scan failed");
+        }
+
+        lock (_lock) { _coinScan = map; }
+        return map;
+    }
+
+    private static bool PrefsLookCoinGated(JsonElement prefs)
+    {
+        foreach (JsonElement pref in prefs.EnumerateArray())
+        {
+            string title = pref.TryGetProperty("Title", out var t) ? (t.GetString() ?? "") : "";
+            string summary = pref.TryGetProperty("Summary", out var s) ? (s.GetString() ?? "") : "";
+            string blob = title + " " + summary;
+            if (FilterPattern.IsMatch(blob))
+                continue;
+            if (CoinPattern.IsMatch(blob))
+                return true;
+        }
+        return false;
     }
 
     public async Task<CoinSiteDefinition?> GetDefinitionAsync(string provider, CancellationToken token = default)
@@ -163,32 +231,7 @@ public class CoinSiteRegistry
         return all.FirstOrDefault(d => d.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task<bool> IsCoinSourceAsync(string pkg, CancellationToken token)
-    {
-        try
-        {
-            var prefs = await _prefs.GetProviderPreferencesAsync(pkg, token).ConfigureAwait(false);
-            if (prefs == null)
-                return false;
-            foreach (var pref in prefs.Preferences)
-            {
-                string blob = (pref.Title ?? "") + " " + (pref.Summary ?? "");
-                // A blocklist/filter preference is never a coin gate, even if it
-                // happens to contain a coin word ("bLOCKED", "genre BLOCK").
-                if (FilterPattern.IsMatch(blob))
-                    continue;
-                if (CoinPattern.IsMatch(blob))
-                    return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Coin check failed for {Pkg}", pkg);
-        }
-        return false;
-    }
-
-    private async Task<CoinSiteDefinition> BuildDefinitionAsync(string provider, string pkg, CancellationToken token)
+    private async Task<CoinSiteDefinition> BuildDefinitionAsync(string provider, string extDir, CancellationToken token)
     {
         // Local confirmed definition wins outright.
         lock (_lock)
@@ -197,7 +240,7 @@ public class CoinSiteRegistry
                 return local;
         }
 
-        (string? web, string? api) = ExtractHosts(pkg);
+        (string? web, string? api) = ExtractHosts(extDir);
         // Fall back to the domain of a series URL for this source.
         if (string.IsNullOrEmpty(web))
             web = await DomainFromSeriesUrlAsync(provider, token).ConfigureAwait(false);
@@ -257,18 +300,20 @@ public class CoinSiteRegistry
     /// Pulls the web host and API base URL from the extension APK by scanning
     /// its dex for https URLs. Cached per package (the APK doesn't change).
     /// </summary>
-    private (string? web, string? api) ExtractHosts(string pkg)
+    private (string? web, string? api) ExtractHosts(string extDir)
     {
         lock (_lock)
         {
-            if (_extractCache.TryGetValue(pkg, out var cached))
+            if (_extractCache.TryGetValue(extDir, out var cached))
                 return cached;
         }
 
         string? web = null, api = null;
         try
         {
-            string? apk = FindApk(pkg);
+            string? apk = Directory.Exists(extDir)
+                ? Directory.EnumerateFiles(extDir, "*.apk", SearchOption.AllDirectories).FirstOrDefault()
+                : null;
             if (apk != null)
             {
                 var urls = new List<string>();
@@ -302,24 +347,12 @@ public class CoinSiteRegistry
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Host extraction failed for {Pkg}", pkg);
+            _logger.LogDebug(ex, "Host extraction failed for {Dir}", extDir);
         }
 
         var pair = (web, api);
-        lock (_lock) { _extractCache[pkg] = pair; }
+        lock (_lock) { _extractCache[extDir] = pair; }
         return pair;
-    }
-
-    private string? FindApk(string pkg)
-    {
-        try
-        {
-            string dir = Path.Combine(_extensionsDir, pkg);
-            if (!Directory.Exists(dir))
-                return null;
-            return Directory.EnumerateFiles(dir, "*.apk", SearchOption.AllDirectories).FirstOrDefault();
-        }
-        catch { return null; }
     }
 
     private async Task<string?> DomainFromSeriesUrlAsync(string provider, CancellationToken token)
