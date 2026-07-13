@@ -23,15 +23,18 @@ public class ReaderPreviewService
     private readonly AppDbContext _db;
     private readonly MihonBridgeService _mihon;
     private readonly IMemoryCache _cache;
+    private readonly SiteAuth.SiteAuthService _siteAuth;
     private readonly ILogger _logger;
 
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
 
-    public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache, ILogger<ReaderPreviewService> logger)
+    public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache,
+        SiteAuth.SiteAuthService siteAuth, ILogger<ReaderPreviewService> logger)
     {
         _db = db;
         _mihon = mihon;
         _cache = cache;
+        _siteAuth = siteAuth;
         _logger = logger;
     }
 
@@ -81,15 +84,15 @@ public class ReaderPreviewService
         };
     }
 
-    public async Task<PreviewPagesDto?> GetPagesAsync(string mihonId, int chapterIndex, CancellationToken token = default)
+    public async Task<PreviewPagesDto?> GetPagesAsync(string mihonId, int chapterIndex, Guid? userId = null, CancellationToken token = default)
     {
-        List<Page>? pages = await GetPageListAsync(mihonId, chapterIndex, token).ConfigureAwait(false);
+        List<Page>? pages = await GetPageListAsync(mihonId, chapterIndex, userId, token).ConfigureAwait(false);
         return pages == null ? null : new PreviewPagesDto { PageCount = pages.Count };
     }
 
-    public async Task<(Stream? stream, string contentType)> GetPageImageAsync(string mihonId, int chapterIndex, int pageIndex, CancellationToken token = default)
+    public async Task<(Stream? stream, string contentType)> GetPageImageAsync(string mihonId, int chapterIndex, int pageIndex, Guid? userId = null, CancellationToken token = default)
     {
-        List<Page>? pages = await GetPageListAsync(mihonId, chapterIndex, token).ConfigureAwait(false);
+        List<Page>? pages = await GetPageListAsync(mihonId, chapterIndex, userId, token).ConfigureAwait(false);
         if (pages == null || pageIndex < 0 || pageIndex >= pages.Count)
             return (null, "");
 
@@ -104,7 +107,7 @@ public class ReaderPreviewService
         return (img, string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType);
     }
 
-    private async Task<List<Page>?> GetPageListAsync(string mihonId, int chapterIndex, CancellationToken token)
+    private async Task<List<Page>?> GetPageListAsync(string mihonId, int chapterIndex, Guid? userId, CancellationToken token)
     {
         string key = $"pv:pg:{mihonId}:{chapterIndex}";
         List<Page>? pages = _cache.Get<List<Page>>(key);
@@ -131,6 +134,17 @@ public class ReaderPreviewService
             return null;
 
         pages = await src.GetPagesAsync(chapters[chapterIndex], token).ConfigureAwait(false);
+
+        // A locked/paid chapter comes back empty when the site session has
+        // lapsed. If the user has a login for this source, re-authenticate
+        // (refreshing cookies in the shared jar) and try once more.
+        if ((pages == null || pages.Count == 0) && userId != null)
+        {
+            bool relogged = await _siteAuth.EnsureLoggedInAsync(userId.Value, entity.Provider, token).ConfigureAwait(false);
+            if (relogged)
+                pages = await src.GetPagesAsync(chapters[chapterIndex], token).ConfigureAwait(false);
+        }
+
         if (pages != null)
             _cache.Set(key, pages, CacheTtl);
         return pages;

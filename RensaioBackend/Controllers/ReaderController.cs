@@ -137,7 +137,7 @@ public class ReaderController : ControllerBase
     {
         try
         {
-            var result = await _preview.GetPagesAsync(mihonId, chapter, token).ConfigureAwait(false);
+            var result = await _preview.GetPagesAsync(mihonId, chapter, CurrentUser?.Id, token).ConfigureAwait(false);
             return result == null ? NotFound() : Ok(result);
         }
         catch (Exception ex)
@@ -168,7 +168,7 @@ public class ReaderController : ControllerBase
     {
         try
         {
-            (Stream? stream, string contentType) = await _preview.GetPageImageAsync(mihonId, chapter, page, token).ConfigureAwait(false);
+            (Stream? stream, string contentType) = await _preview.GetPageImageAsync(mihonId, chapter, page, CurrentUser?.Id, token).ConfigureAwait(false);
             if (stream == null)
                 return NotFound();
             Response.Headers.CacheControl = "private, max-age=600";

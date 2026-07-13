@@ -98,6 +98,7 @@ namespace RensaioBackend.Data
         public DbSet<SeriesMappingEntity> SeriesMappings { get; set; }
         public DbSet<FavoriteListEntity> FavoriteLists { get; set; }
         public DbSet<FavoriteItemEntity> FavoriteItems { get; set; }
+        public DbSet<SiteCredentialEntity> SiteCredentials { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -431,6 +432,17 @@ namespace RensaioBackend.Data
                 entity.Property(f => f.SeriesId).IsRequired();
                 entity.HasIndex(f => new { f.ListId, f.SeriesId }).IsUnique()
                     .HasDatabaseName("IX_FavoriteItem_ListId_SeriesId");
+            });
+
+            modelBuilder.Entity<SiteCredentialEntity>(entity =>
+            {
+                entity.HasKey(c => c.Id);
+                entity.Property(c => c.UserId).IsRequired();
+                entity.Property(c => c.Provider).UseCollation("BINARY").IsRequired();
+                entity.Property(c => c.Username).UseCollation("BINARY").IsRequired();
+                entity.Property(c => c.Status).UseCollation("BINARY").IsRequired();
+                entity.HasIndex(c => new { c.UserId, c.Provider }).IsUnique()
+                    .HasDatabaseName("IX_SiteCredential_UserId_Provider");
             });
         }
     }

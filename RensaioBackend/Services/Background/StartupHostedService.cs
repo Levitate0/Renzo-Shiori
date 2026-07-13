@@ -129,6 +129,18 @@ namespace RensaioBackend.Services.Background
                 }
                 scope.ServiceProvider.GetRequiredService<ReadStateService>().PrefetchCache(await db.Series.ToListAsync(cancellationToken).ConfigureAwait(false));
 
+                // Re-inject saved coin-site login cookies into the shared jar so
+                // paid-chapter access survives a restart without a re-login.
+                try
+                {
+                    await scope.ServiceProvider.GetRequiredService<SiteAuth.SiteAuthService>()
+                        .RestoreAllAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not restore site-login cookies at startup");
+                }
+
                 IHostApplicationLifetime lifetime = scope.ServiceProvider.GetRequiredService<IHostApplicationLifetime>();
                 JobManagementService jobManagement = scope.ServiceProvider.GetRequiredService<JobManagementService>();
                 _logger.LogInformation("Checking Storage folder Status...");

@@ -27,6 +27,7 @@ import {
   useUpdateSettings,
 } from "@/lib/api/hooks/useSettings";
 import { settingsService } from "@/lib/api/services/settingsService";
+import { SiteLoginsSection } from "@/components/comp/settings/site-logins-section";
 import { type Settings, NsfwVisibility } from "@/lib/api/types";
 import { useToast } from "@/hooks/use-toast";
 import ReactCountryFlag from "react-country-flag";
@@ -1526,6 +1527,13 @@ const AVAILABLE_SECTIONS: SettingsSection[] = [
     title: "Socks Settings",
     description: "Configure SOCKS proxy settings for sources requests.",
     component: SocksSettingsSection,
+  },
+  {
+    id: "site-logins",
+    title: "Site Logins",
+    description: "Log in to coin/paid sites to read chapters you own.",
+    // Self-contained (its own API); ignores the shared settings props.
+    component: () => <SiteLoginsSection />,
   },
 ];
 
