@@ -7,7 +7,14 @@ using System.Text.RegularExpressions;
 
 namespace RensaioBackend.Services.SiteAuth;
 
-public record SiteLoginResult(bool Success, string Status, string? Detail, int CookiesInjected);
+// Explicit camelCase names: the app sets PropertyNamingPolicy = null, so without
+// these the record would serialize PascalCase and the frontend (reading .success/
+// .detail) would treat every login — even a successful one — as a failure.
+public record SiteLoginResult(
+    [property: System.Text.Json.Serialization.JsonPropertyName("success")] bool Success,
+    [property: System.Text.Json.Serialization.JsonPropertyName("status")] string Status,
+    [property: System.Text.Json.Serialization.JsonPropertyName("detail")] string? Detail,
+    [property: System.Text.Json.Serialization.JsonPropertyName("cookiesInjected")] int CookiesInjected);
 
 /// <summary>
 /// Owns coin/paid-site logins end-to-end: stores credentials (encrypted),
