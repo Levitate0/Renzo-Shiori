@@ -17,7 +17,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Download, Settings2, X,
+  ArrowLeft, Bookmark, Check, ChevronLeft, ChevronRight, Download, List, Settings2, X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/select";
 import { readerService } from "@/lib/api/services/readerService";
 import { seriesService } from "@/lib/api/services/seriesService";
-import { type ReaderChapters, type ReaderChapterInfo, type PreviewChapter } from "@/lib/api/types";
+import { type ReaderChapters, type ReaderChapter, type ReaderChapterInfo, type PreviewChapter } from "@/lib/api/types";
 
 type ReaderMode = "auto" | "paged" | "paged-rtl" | "double" | "webtoon" | "longstrip" | "vertical";
 type FitMode = "width" | "height" | "original";
@@ -104,6 +104,7 @@ function ReaderInner() {
   const [currentPage, setCurrentPage] = useState(0); // 0-based
   const [chromeVisible, setChromeVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chaptersOpen, setChaptersOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // Name of the chapter being switched to — drives the "opening…" overlay so a
@@ -622,10 +623,33 @@ function ReaderInner() {
               <Bookmark className={`h-5 w-5 ${chapter.bookmarked ? "fill-current text-pink-400" : ""}`} />
             </button>
           )}
+          <button onClick={() => setChaptersOpen((v) => !v)} className="rounded p-1.5 hover:bg-white/10" title="Chapters">
+            <List className="h-5 w-5" />
+          </button>
           <button onClick={() => setSettingsOpen((v) => !v)} className="rounded p-1.5 hover:bg-white/10" title="Reader settings">
             <Settings2 className="h-5 w-5" />
           </button>
         </div>
+      )}
+
+      {/* ── Chapter list drawer ── */}
+      {chaptersOpen && (
+        <ChapterListDrawer
+          isPreview={isPreview}
+          previewOrder={previewOrder}
+          previewChapterIndex={previewChapterIndex}
+          libraryChapters={chapters?.chapters ?? null}
+          currentNumber={chapterNumber}
+          onClose={() => setChaptersOpen(false)}
+          onPickLibrary={(num) => {
+            if (num !== chapterNumber) { setOpeningLabel(null); setChapterNumber(num); }
+            setChaptersOpen(false);
+          }}
+          onPickPreview={(idx) => {
+            if (idx !== previewChapterIndex) { setOpeningLabel(null); setPreviewChapterIndex(idx); }
+            setChaptersOpen(false);
+          }}
+        />
       )}
 
       {/* ── Bottom chrome ── */}
@@ -830,6 +854,80 @@ function EndOfChapter({
         )}
       </div>
       {hasNext && <p className="text-xs text-white/35">or press → </p>}
+    </div>
+  );
+}
+
+/**
+ * Slide-in list of every chapter with a Read/jump button and read-state marks.
+ * Works for both library reading (numbered chapters, progress/bookmarks) and
+ * preview reading (source chapter order). Newest chapters at the top.
+ */
+function ChapterListDrawer({
+  isPreview, previewOrder, previewChapterIndex, libraryChapters, currentNumber,
+  onClose, onPickLibrary, onPickPreview,
+}: {
+  isPreview: boolean;
+  previewOrder: PreviewChapter[] | null;
+  previewChapterIndex: number;
+  libraryChapters: ReaderChapter[] | null;
+  currentNumber: number | null;
+  onClose: () => void;
+  onPickLibrary: (num: number) => void;
+  onPickPreview: (idx: number) => void;
+}) {
+  // Newest first for display, regardless of the internal reading order.
+  const libRows = [...(libraryChapters ?? [])].sort((a, b) => b.number - a.number);
+  const pvRows = [...(previewOrder ?? [])].sort((a, b) => b.index - a.index);
+
+  return (
+    <div className="absolute right-0 top-12 bottom-0 z-20 flex w-80 max-w-[90vw] flex-col bg-zinc-900/95 text-white backdrop-blur border-l border-white/10">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+        <h2 className="text-sm font-semibold">Chapters</h2>
+        <button onClick={onClose} className="rounded p-1 hover:bg-white/10"><X className="h-4 w-4" /></button>
+      </div>
+      <div className="flex-1 overflow-y-auto py-1">
+        {isPreview
+          ? pvRows.map((c) => {
+              const active = c.index === previewChapterIndex;
+              return (
+                <button
+                  key={c.index}
+                  onClick={() => onPickPreview(c.index)}
+                  className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-white/[0.06] ${active ? "bg-white/[0.08] font-medium" : ""}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{c.name || `Chapter ${c.index + 1}`}</span>
+                  {active && <span className="shrink-0 text-[11px] text-primary">reading</span>}
+                </button>
+              );
+            })
+          : libRows.map((c) => {
+              const active = c.number === currentNumber;
+              const readable = !!c.filename;
+              return (
+                <button
+                  key={c.number}
+                  onClick={() => readable && onPickLibrary(c.number)}
+                  disabled={!readable}
+                  title={readable ? "" : "Not downloaded"}
+                  className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-white/[0.06] disabled:opacity-35 disabled:hover:bg-transparent ${active ? "bg-white/[0.08]" : ""}`}
+                >
+                  <span className="w-4 shrink-0">
+                    {c.isCompleted
+                      ? <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      : c.progress > 0
+                        ? <span className="text-[10px] tabular-nums text-primary">{Math.round(c.progress * 100)}%</span>
+                        : null}
+                  </span>
+                  <span className={`min-w-0 flex-1 truncate ${c.isCompleted ? "text-white/50" : ""} ${active ? "font-medium" : ""}`}>
+                    {c.name || `Chapter ${c.number}`}
+                  </span>
+                  {c.bookmarked && <Bookmark className="h-3 w-3 shrink-0 fill-pink-500 text-pink-500" />}
+                  {active && <span className="shrink-0 text-[11px] text-primary">reading</span>}
+                </button>
+              );
+            })}
+      </div>
     </div>
   );
 }
