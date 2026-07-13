@@ -556,6 +556,31 @@ function DownloadSettingsSection({
           </p>
         </div>
         <div>
+          <Label htmlFor="download-memory-budget">
+            Download Memory Budget (MB)
+          </Label>
+          <Input
+            id="download-memory-budget"
+            type="number"
+            min="128"
+            max="32768"
+            step="128"
+            value={localSettings.downloadMemoryBudgetMB ?? 2048}
+            onChange={(e) =>
+              setLocalSettings((prev) => ({
+                ...prev,
+                downloadMemoryBudgetMB: parseInt(e.target.value) || 2048,
+              }))
+            }
+          />
+          <p className="text-muted-foreground mt-1 text-sm">
+            Hard ceiling on page images held in memory across all downloads at
+            once. Fetches wait for room instead of piling up, so high concurrency
+            throttles itself rather than exhausting RAM. Keep it comfortably below
+            the container&apos;s memory limit.
+          </p>
+        </div>
+        <div>
           <Label htmlFor="simultaneous-searches">
             Number of Simultaneous Searches
           </Label>

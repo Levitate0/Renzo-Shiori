@@ -317,6 +317,7 @@ namespace RensaioBackend.Services.Settings
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
             _settings = GetFromEditableSettings(set);
             RuntimeSecuritySettings.Update(set);
+            Downloads.PageMemoryBudget.Configure(set.DownloadMemoryBudgetMB);
         }
         
         public async Task SaveSettingsAsync(SettingsDto settings, bool force, CancellationToken token = default)
@@ -329,6 +330,7 @@ namespace RensaioBackend.Services.Settings
                 NumberOfSimultaneousDownloads = settings.NumberOfSimultaneousDownloads,
                 NumberOfSimultaneousDownloadsPerProvider = settings.NumberOfSimultaneousDownloadsPerProvider,
                 PagesInParallelPerChapter = settings.PagesInParallelPerChapter,
+                DownloadMemoryBudgetMB = settings.DownloadMemoryBudgetMB,
                 NumberOfSimultaneousSearches = settings.NumberOfSimultaneousSearches,
                 ChapterDownloadFailRetryTime = settings.ChapterDownloadFailRetryTime,
                 ChapterDownloadFailRetries = settings.ChapterDownloadFailRetries,
@@ -382,6 +384,7 @@ namespace RensaioBackend.Services.Settings
                 NumberOfSimultaneousDownloads = ed.NumberOfSimultaneousDownloads,
                 NumberOfSimultaneousDownloadsPerProvider = ed.NumberOfSimultaneousDownloadsPerProvider,
                 PagesInParallelPerChapter = ed.PagesInParallelPerChapter,
+                DownloadMemoryBudgetMB = ed.DownloadMemoryBudgetMB,
                 NumberOfSimultaneousSearches = ed.NumberOfSimultaneousSearches,
                 ChapterDownloadFailRetryTime = ed.ChapterDownloadFailRetryTime,
                 ChapterDownloadFailRetries = ed.ChapterDownloadFailRetries,
@@ -486,6 +489,7 @@ namespace RensaioBackend.Services.Settings
             if (needSave)
                 await SaveSettingsAsync(_settings, true, token).ConfigureAwait(false);
             RuntimeSecuritySettings.Update(_settings);
+            Downloads.PageMemoryBudget.Configure(_settings.DownloadMemoryBudgetMB);
             return _settings;
         }
     }

@@ -182,26 +182,49 @@ namespace RensaioBackend.Services.Downloads
                         var inFlight = new Queue<(Page page, Task<ContentTypeStream?> task)>();
                         int nextToFetch = 0;
 
-                        Task<ContentTypeStream?> Fetch(Page p) => _mihon.MihonErrorWrapperAsync(
-                            () => src.GetPageImageAsync(p, token),
-                            "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
-                            p.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider);
+                        // Global memory ceiling shared by every concurrent download: the
+                        // per-chapter window alone doesn't bound total memory, since many
+                        // chapters run at once. A slot is taken BEFORE a fetch starts and
+                        // returned once that page has been written and disposed, so held
+                        // bytes can't exceed the configured budget. Snapshot the semaphore
+                        // so a settings change mid-chapter can't unbalance our releases.
+                        SemaphoreSlim memorySlots = PageMemoryBudget.Current;
 
-                        while (nextToFetch < ch.Pages.Count && inFlight.Count < window)
+                        Task<ContentTypeStream?> Fetch(Page target) => _mihon.MihonErrorWrapperAsync(
+                            () => src.GetPageImageAsync(target, token),
+                            "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
+                            target.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider);
+
+                        // Acquire first, then enqueue — if the wait is cancelled nothing is
+                        // queued and no slot is held, keeping acquire/release balanced.
+                        async Task<bool> QueueNextPageAsync()
                         {
-                            Page p = ch.Pages[nextToFetch++];
-                            inFlight.Enqueue((p, Fetch(p)));
+                            if (nextToFetch >= ch.Pages.Count)
+                                return false;
+                            await memorySlots.WaitAsync(token).ConfigureAwait(false);
+                            Page queued = ch.Pages[nextToFetch++];
+                            inFlight.Enqueue((queued, Fetch(queued)));
+                            return true;
+                        }
+
+                        for (int i = 0; i < window; i++)
+                        {
+                            if (!await QueueNextPageAsync().ConfigureAwait(false))
+                                break;
                         }
 
                         while (inFlight.Count > 0)
                         {
                             (Page pag, Task<ContentTypeStream?> task) = inFlight.Dequeue();
+                            bool slotReturned = false;
                             try
                             {
                                 int pageIndex = pag.Index;
                                 ContentTypeStream? image = await task.ConfigureAwait(false);
                                 if (image == null)
                                 {
+                                    memorySlots.Release();
+                                    slotReturned = true;
                                     breaked = true;
                                     break;
                                 }
@@ -218,20 +241,22 @@ namespace RensaioBackend.Services.Downloads
                                                 ch.Chapter.ParsedNumber, ch.ChapterName, maxChap, pageIndex + 1, ch.PageCount) + ext;
                                     await zipWriter.WriteAsync(fileName, image).ConfigureAwait(false);
                                 }
+                                // The image is written and disposed — its memory is free.
+                                memorySlots.Release();
+                                slotReturned = true;
+
                                 pagesWritten++;
                                 acum += step;
                                 message = $"Downloading ({providerName}) {ch.Title} {chapterName} {pageIndex}";
                                 reporter.Report(ProgressStatus.InProgress, (int)acum, message, downloadSummary);
 
                                 // Keep the window full as each page is consumed.
-                                if (nextToFetch < ch.Pages.Count)
-                                {
-                                    Page p = ch.Pages[nextToFetch++];
-                                    inFlight.Enqueue((p, Fetch(p)));
-                                }
+                                await QueueNextPageAsync().ConfigureAwait(false);
                             }
                             catch (Exception)
                             {
+                                if (!slotReturned)
+                                    memorySlots.Release();
                                 _logger.LogError("Failed to download page {Page} for chapter {ChapterNumber} of series {SeriesTitle}",
                                     pag.Index + 1, ch.Chapter.ParsedNumber, ch.Title);
                                 breaked = true;
@@ -240,13 +265,15 @@ namespace RensaioBackend.Services.Downloads
                         }
 
                         // A failure abandons the chapter, so drain whatever is still in
-                        // flight and dispose it — otherwise those streams leak.
+                        // flight: dispose the streams and hand back their memory slots,
+                        // otherwise both leak.
                         if (inFlight.Count > 0)
                         {
                             foreach ((_, Task<ContentTypeStream?> pending) in inFlight)
                             {
                                 try { (await pending.ConfigureAwait(false))?.Dispose(); }
                                 catch { /* already failing; nothing to salvage */ }
+                                finally { memorySlots.Release(); }
                             }
                             inFlight.Clear();
                         }

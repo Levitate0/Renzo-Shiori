@@ -58,6 +58,14 @@ public class EditableSettingsDto
     [JsonPropertyName("pagesInParallelPerChapter")]
     public int PagesInParallelPerChapter { get; set; } = 5;
 
+    /// <summary>
+    /// Ceiling (MB) on page-image data held in memory at once across ALL
+    /// concurrent downloads. Fetches wait for a slot rather than piling up, so
+    /// aggressive concurrency throttles itself instead of exhausting RAM.
+    /// </summary>
+    [JsonPropertyName("downloadMemoryBudgetMB")]
+    public int DownloadMemoryBudgetMB { get; set; } = 2048;
+
     [JsonPropertyName("socksProxyEnabled")]
     public bool SocksProxyEnabled { get; set; } = false;
     [JsonPropertyName("socksProxyVersion")]

@@ -23,6 +23,8 @@ export interface Settings {
   numberOfSimultaneousDownloadsPerProvider: number;
   /** Page images fetched concurrently within one chapter (written in order). */
   pagesInParallelPerChapter: number;
+  /** Ceiling (MB) on page-image memory held across all concurrent downloads. */
+  downloadMemoryBudgetMB: number;
   numberOfSimultaneousSearches: number;
   chapterDownloadFailRetryTime: string; // TimeSpan as string
   chapterDownloadFailRetries: number;
