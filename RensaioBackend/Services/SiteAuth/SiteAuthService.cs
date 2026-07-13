@@ -22,17 +22,23 @@ public class SiteAuthService
     private readonly AppDbContext _db;
     private readonly CookieJarBridge _jar;
     private readonly SiteCredentialProtector _protector;
-    private readonly IHttpClientFactory _httpFactory;
+    private readonly CoinSiteRegistry _registry;
     private readonly ILogger _logger;
 
     public SiteAuthService(AppDbContext db, CookieJarBridge jar, SiteCredentialProtector protector,
-        IHttpClientFactory httpFactory, ILogger<SiteAuthService> logger)
+        CoinSiteRegistry registry, ILogger<SiteAuthService> logger)
     {
         _db = db;
         _jar = jar;
         _protector = protector;
-        _httpFactory = httpFactory;
+        _registry = registry;
         _logger = logger;
+    }
+
+    private async Task<string?> DomainForAsync(string provider, CancellationToken token)
+    {
+        var def = await _registry.GetDefinitionAsync(provider, token).ConfigureAwait(false);
+        return string.IsNullOrEmpty(def?.Domain) ? null : def!.Domain;
     }
 
     public async Task<List<SiteCredentialEntity>> ListAsync(Guid userId, CancellationToken token = default) =>
@@ -63,9 +69,9 @@ public class SiteAuthService
     public async Task<(SiteCredentialEntity entity, SiteLoginResult result)> SaveCookieAsync(
         Guid userId, string provider, string username, string cookieHeader, CancellationToken token = default)
     {
-        string? domain = SiteLoginDefinitions.DomainFor(provider);
+        string? domain = await DomainForAsync(provider, token).ConfigureAwait(false);
         if (domain == null)
-            return (new SiteCredentialEntity(), new SiteLoginResult(false, "failed", "Unknown site — no domain configured.", 0));
+            return (new SiteCredentialEntity(), new SiteLoginResult(false, "failed", "Couldn't determine this site's domain.", 0));
 
         List<HarvestedCookie> cookies = ParseCookieHeader(cookieHeader, domain);
         if (cookies.Count == 0)
@@ -95,7 +101,7 @@ public class SiteAuthService
             .FirstOrDefaultAsync(c => c.Id == id && c.UserId == userId, token).ConfigureAwait(false);
         if (cred == null)
             return;
-        string? domain = SiteLoginDefinitions.DomainFor(cred.Provider);
+        string? domain = await DomainForAsync(cred.Provider, token).ConfigureAwait(false);
         if (domain != null)
             _jar.ClearHost(domain);
         _db.SiteCredentials.Remove(cred);
@@ -109,77 +115,120 @@ public class SiteAuthService
     /// </summary>
     public async Task<SiteLoginResult> LoginAsync(SiteCredentialEntity cred, CancellationToken token = default)
     {
-        SiteLoginDefinition? def = SiteLoginDefinitions.Get(cred.Provider);
+        CoinSiteDefinition? def = await _registry.GetDefinitionAsync(cred.Provider, token).ConfigureAwait(false);
         string? password = _protector.TryDecrypt(cred.EncryptedPassword);
 
-        if (def == null || string.IsNullOrEmpty(password))
+        if (def == null || string.IsNullOrEmpty(def.Domain) || string.IsNullOrEmpty(password))
         {
-            // No automatable login (or cookie-only credential): re-inject the
-            // last known cookies so access survives a restart.
+            // Cookie-only credential (no password), or we couldn't discover the
+            // site: re-inject the last known cookies so access survives a restart.
             int reinjected = ReinjectCached(cred);
             cred.Status = reinjected > 0 ? "manual_cookie" : "needs_login";
             cred.StatusDetail = reinjected > 0
-                ? "Using saved cookies (this site needs a pasted cookie / manual login)."
-                : "This site can't log in automatically — paste a session cookie.";
+                ? "Using saved cookies (paste a fresh cookie if chapters stop loading)."
+                : "Add a username/password to log in, or paste a session cookie.";
             return new SiteLoginResult(reinjected > 0, cred.Status, cred.StatusDetail, reinjected);
         }
 
+        // Try each candidate login URL × each username field guess until one
+        // returns a session; persist the winning combination locally so future
+        // logins go straight to it.
+        List<string> userFields = new() { def.UsernameField };
+        userFields.AddRange(CoinSiteRegistry.UsernameFieldGuesses.Where(f => !userFields.Contains(f)));
+
+        string lastDetail = "No login endpoint responded.";
+        foreach (string loginUrl in _registry.CandidateLoginUrls(def))
+        {
+            foreach (string userField in userFields)
+            {
+                token.ThrowIfCancellationRequested();
+                (bool ok, List<HarvestedCookie> harvested, string detail, bool endpointExists) =
+                    await TryLoginAsync(def, loginUrl, userField, cred.Username, password, token).ConfigureAwait(false);
+                if (ok)
+                {
+                    int injected = _jar.Inject(harvested);
+                    cred.EncryptedCookies = _protector.Encrypt(SerializeCookies(harvested));
+                    cred.LastLoginAt = DateTime.UtcNow;
+                    cred.Status = injected > 0 ? "ok" : "failed";
+                    cred.StatusDetail = injected > 0 ? $"Logged in, {injected} cookies active." : "Logged in but couldn't reach the cookie jar.";
+
+                    // Persist the working endpoint + field as a confirmed local def.
+                    def.LoginUrl = loginUrl;
+                    def.UsernameField = userField;
+                    def.Confirmed = true;
+                    _registry.SaveLocal(def);
+
+                    _logger.LogInformation("Site login {Provider}: ok via {Url} ({Field})", cred.Provider, loginUrl, userField);
+                    return new SiteLoginResult(injected > 0, cred.Status, cred.StatusDetail, injected);
+                }
+                lastDetail = detail;
+                // A wrong endpoint (404) is worth abandoning this URL; a rejected
+                // credential means the endpoint is right but the field/creds are off.
+                if (!endpointExists)
+                    break;
+            }
+        }
+
+        cred.Status = "failed";
+        cred.StatusDetail = lastDetail + " If it keeps failing, paste a session cookie instead.";
+        return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
+    }
+
+    private async Task<(bool ok, List<HarvestedCookie> cookies, string detail, bool endpointExists)> TryLoginAsync(
+        CoinSiteDefinition def, string loginUrl, string userField, string username, string password, CancellationToken token)
+    {
         try
         {
-            var cookieContainer = new CookieContainer();
+            var jar = new CookieContainer();
             using var handler = new HttpClientHandler
             {
-                CookieContainer = cookieContainer,
-                UseCookies = true,
-                AutomaticDecompression = DecompressionMethods.All,
-                AllowAutoRedirect = true
+                CookieContainer = jar, UseCookies = true,
+                AutomaticDecompression = DecompressionMethods.All, AllowAutoRedirect = true
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            http.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
 
-            // Pick up a CSRF token/cookie if the site uses one.
+            // Pick up CSRF cookie/token if present.
             string? csrf = null;
             if (def.CsrfPageUrl != null)
             {
-                string page = await http.GetStringAsync(def.CsrfPageUrl, token).ConfigureAwait(false);
-                csrf = ExtractCsrf(page) ?? ExtractCookieValue(cookieContainer, def.Domain, "XSRF-TOKEN");
+                try
+                {
+                    string page = await http.GetStringAsync(def.CsrfPageUrl, token).ConfigureAwait(false);
+                    csrf = ExtractCsrf(page) ?? ExtractCookieValue(jar, def.Domain, "XSRF-TOKEN");
+                }
+                catch { /* no CSRF page — continue without */ }
             }
 
-            var form = new Dictionary<string, string>
+            var fields = new Dictionary<string, string> { [userField] = username, [def.PasswordField] = password };
+            if (csrf != null) fields[def.CsrfField ?? "_token"] = csrf;
+
+            // Try JSON first (these SPA APIs expect it), then form-encoded.
+            HttpResponseMessage resp = await PostJsonAsync(http, loginUrl, fields, csrf, token).ConfigureAwait(false);
+            if (resp.StatusCode == HttpStatusCode.UnsupportedMediaType || resp.StatusCode == HttpStatusCode.BadRequest)
             {
-                [def.UsernameField] = cred.Username,
-                [def.PasswordField] = password,
+                resp.Dispose();
+                resp = await http.PostAsync(loginUrl, new FormUrlEncodedContent(fields), token).ConfigureAwait(false);
+            }
+
+            bool endpointExists = resp.StatusCode != HttpStatusCode.NotFound && resp.StatusCode != HttpStatusCode.MethodNotAllowed;
+            List<HarvestedCookie> harvested = FromContainer(jar, def.Domain);
+            bool gotSession = harvested.Count > 0 && resp.IsSuccessStatusCode &&
+                (string.IsNullOrEmpty(def.SessionCookieName) ||
+                 harvested.Any(c => c.Name.Equals(def.SessionCookieName, StringComparison.OrdinalIgnoreCase)));
+
+            string detail = resp.StatusCode switch
+            {
+                HttpStatusCode.NotFound => $"{Host(loginUrl)} has no login there.",
+                HttpStatusCode.Unauthorized or HttpStatusCode.UnprocessableEntity => "Login rejected — check the username/password.",
+                _ when !resp.IsSuccessStatusCode => $"Login endpoint returned HTTP {(int)resp.StatusCode}.",
+                _ when !gotSession => "Login didn't set a session cookie.",
+                _ => "ok",
             };
-            if (def.CsrfField != null && csrf != null)
-                form[def.CsrfField] = csrf;
-
-            using var resp = await http.PostAsync(def.LoginUrl, new FormUrlEncodedContent(form), token).ConfigureAwait(false);
-            string body = await resp.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-
-            // Harvest whatever cookies the login set, then inject into the shared jar.
-            List<HarvestedCookie> harvested = FromContainer(cookieContainer, def.Domain);
-            bool looksLoggedIn = harvested.Any(c =>
-                string.IsNullOrEmpty(def.SessionCookieName) ||
-                c.Name.Equals(def.SessionCookieName, StringComparison.OrdinalIgnoreCase))
-                && resp.IsSuccessStatusCode;
-
-            if (!looksLoggedIn)
-            {
-                cred.Status = "failed";
-                cred.StatusDetail = resp.StatusCode == HttpStatusCode.Unauthorized || resp.StatusCode == HttpStatusCode.UnprocessableEntity
-                    ? "Login rejected — check the username/password."
-                    : $"Login didn't return a session (HTTP {(int)resp.StatusCode}). The site may need a pasted cookie instead.";
-                return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
-            }
-
-            int injected = _jar.Inject(harvested);
-            cred.EncryptedCookies = _protector.Encrypt(SerializeCookies(harvested));
-            cred.LastLoginAt = DateTime.UtcNow;
-            cred.Status = injected > 0 ? "ok" : "failed";
-            cred.StatusDetail = injected > 0 ? $"Logged in, {injected} cookies active." : "Logged in but couldn't reach the cookie jar.";
-            _logger.LogInformation("Site login {Provider}: {Status}", cred.Provider, cred.Status);
-            return new SiteLoginResult(injected > 0, cred.Status, cred.StatusDetail, injected);
+            resp.Dispose();
+            return (gotSession, harvested, detail, endpointExists);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -187,12 +236,23 @@ public class SiteAuthService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Site login failed for {Provider}", cred.Provider);
-            cred.Status = "failed";
-            cred.StatusDetail = "Couldn't reach the site: " + ex.Message;
-            return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
+            return (false, new List<HarvestedCookie>(), "Couldn't reach " + Host(loginUrl) + ": " + ex.Message, false);
         }
     }
+
+    private static async Task<HttpResponseMessage> PostJsonAsync(HttpClient http, string url,
+        Dictionary<string, string> fields, string? csrf, CancellationToken token)
+    {
+        var content = new StringContent(JsonSerializer.Serialize(fields), System.Text.Encoding.UTF8, "application/json");
+        if (csrf != null)
+        {
+            content.Headers.TryAddWithoutValidation("X-CSRF-TOKEN", csrf);
+            content.Headers.TryAddWithoutValidation("X-XSRF-TOKEN", csrf);
+        }
+        return await http.PostAsync(url, content, token).ConfigureAwait(false);
+    }
+
+    private static string Host(string url) => Uri.TryCreate(url, UriKind.Absolute, out Uri? u) ? u.Host : url;
 
     /// <summary>
     /// Called when a page comes back locked/empty for a source: if we hold a

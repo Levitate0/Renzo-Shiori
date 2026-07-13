@@ -189,6 +189,7 @@ namespace RensaioBackend.Services
             services.TryAddScoped<UserCommandService>();
             services.TryAddSingleton<SiteAuth.CookieJarBridge>();
             services.TryAddSingleton<SiteAuth.SiteCredentialProtector>();
+            services.TryAddScoped<SiteAuth.CoinSiteRegistry>();
             services.TryAddScoped<SiteAuth.SiteAuthService>();
             return services;
         }

@@ -19,7 +19,8 @@ public class SiteCredentialDto
     {
         Id = c.Id, Provider = c.Provider, Username = c.Username,
         Status = c.Status, StatusDetail = c.StatusDetail, LastLoginAt = c.LastLoginAt,
-        SupportsAutoLogin = SiteLoginDefinitions.SupportsAutoLogin(c.Provider),
+        // Any discovered coin site can attempt auto-login; the paste path always exists too.
+        SupportsAutoLogin = true,
     };
 }
 
@@ -57,24 +58,34 @@ public class SaveCookieRequest
 public class SiteAuthController : ControllerBase
 {
     private readonly SiteAuthService _service;
+    private readonly CoinSiteRegistry _registry;
     private readonly ILogger _logger;
 
-    public SiteAuthController(SiteAuthService service, ILogger<SiteAuthController> logger)
+    public SiteAuthController(SiteAuthService service, CoinSiteRegistry registry, ILogger<SiteAuthController> logger)
     {
         _service = service;
+        _registry = registry;
         _logger = logger;
     }
 
     private Guid CurrentUserId => (HttpContext.Items["User"] as UserEntity)?.Id ?? Guid.Empty;
 
-    /// <summary>Coin sites the user could add a login for.</summary>
+    /// <summary>
+    /// Coin sites the user could add a login for — auto-detected from every
+    /// installed source's own preferences, so newly installed coin sources
+    /// appear here automatically.
+    /// </summary>
     [HttpGet("sites")]
     [ProducesResponseType(typeof(List<SiteInfoDto>), 200)]
-    public ActionResult<List<SiteInfoDto>> GetSites() =>
-        Ok(SiteLoginDefinitions.All.Select(d => new SiteInfoDto
+    public async Task<ActionResult<List<SiteInfoDto>>> GetSites(CancellationToken token = default)
+    {
+        var sites = await _registry.GetCoinSitesAsync(token).ConfigureAwait(false);
+        return Ok(sites.Select(d => new SiteInfoDto
         {
-            Provider = d.Provider, Domain = d.Domain, SupportsAutoLogin = true,
-        }).OrderBy(s => s.Provider).ToList());
+            Provider = d.Provider, Domain = d.Domain,
+            SupportsAutoLogin = !string.IsNullOrEmpty(d.Domain),
+        }).ToList());
+    }
 
     [HttpGet]
     [ProducesResponseType(typeof(List<SiteCredentialDto>), 200)]
