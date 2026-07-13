@@ -106,6 +106,10 @@ function ReaderInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Name of the chapter being switched to — drives the "opening…" overlay so a
+  // chapter change is never a silent blank screen, and the toast shown once it lands.
+  const [openingLabel, setOpeningLabel] = useState<string | null>(null);
+  const [arrivedLabel, setArrivedLabel] = useState<string | null>(null);
   // Client-side strip detection for preview mode (naturalWidth/Height as images load)
   const [detectedMode, setDetectedMode] = useState<"webtoon" | "longstrip" | "paged" | null>(null);
   const loadedDimsRef = useRef<Map<number, { w: number; h: number }>>(new Map());
@@ -256,36 +260,66 @@ function ReaderInner() {
 
   useEffect(() => { reportProgress(currentPage); }, [currentPage, reportProgress]);
 
+  // Once the new chapter's pages are ready, swap the "Opening…" overlay for a
+  // brief confirmation banner so the switch is never ambiguous.
+  useEffect(() => {
+    if (loading || !openingLabel) return;
+    setArrivedLabel(openingLabel);
+    setOpeningLabel(null);
+    const t = setTimeout(() => setArrivedLabel(null), 2000);
+    return () => clearTimeout(t);
+  }, [loading, openingLabel]);
+
   // ── Navigation ────────────────────────────────────────────────────────
   const step = resolvedMode === "double" ? 2 : 1;
+
+  /** True when another chapter exists in that direction (drives the end-of-chapter panel). */
+  const hasChapter = useCallback((direction: 1 | -1): boolean => {
+    if (isPreview) {
+      if (!previewOrder) return false;
+      const pos = previewOrder.findIndex((c) => c.index === previewChapterIndex);
+      return !!previewOrder[pos + direction];
+    }
+    const idx = readableChapters.findIndex((c) => c.number === chapterNumber);
+    return idx >= 0 && !!readableChapters[idx + direction];
+  }, [isPreview, previewOrder, previewChapterIndex, readableChapters, chapterNumber]);
 
   const goToChapter = useCallback((direction: 1 | -1) => {
     if (isPreview) {
       if (!previewOrder) return;
       const pos = previewOrder.findIndex((c) => c.index === previewChapterIndex);
       const next = previewOrder[pos + direction];
-      if (next) setPreviewChapterIndex(next.index);
-      else toast.info(direction > 0 ? "No next chapter." : "This is the first chapter.");
+      if (!next) {
+        toast.info(direction > 0 ? "No next chapter." : "This is the first chapter.");
+        return;
+      }
+      setOpeningLabel(next.name || `Chapter ${next.index + 1}`);
+      setPreviewChapterIndex(next.index);
       return;
     }
     if (!chapters || chapterNumber == null) return;
     const idx = readableChapters.findIndex((c) => c.number === chapterNumber);
     const next = readableChapters[idx + direction];
-    if (next) setChapterNumber(next.number);
-    else toast.info(direction > 0 ? "No next chapter downloaded." : "This is the first downloaded chapter.");
+    if (!next) {
+      toast.info(direction > 0
+        ? "That was the last downloaded chapter."
+        : "This is the first downloaded chapter.");
+      return;
+    }
+    setOpeningLabel(next.name || `Chapter ${next.number}`);
+    setChapterNumber(next.number);
   }, [isPreview, previewOrder, previewChapterIndex, chapters, chapterNumber, readableChapters]);
 
   const advance = useCallback((dir: 1 | -1) => {
-    setCurrentPage((p) => {
-      const next = p + dir * step;
-      if (next >= pageCount) {
-        if (settings.autoAdvance) goToChapter(1);
-        return p;
-      }
-      if (next < 0) return 0;
-      return next;
-    });
-  }, [pageCount, step, settings.autoAdvance, goToChapter]);
+    // Chapter switching must happen here, not inside the setState updater —
+    // React may invoke updaters twice, which would skip a chapter.
+    const atEnd = dir > 0 && currentPage + step >= pageCount;
+    if (atEnd) {
+      if (settings.autoAdvance) goToChapter(1);
+      return;
+    }
+    setCurrentPage((p) => Math.max(0, Math.min(pageCount - 1, p + dir * step)));
+  }, [currentPage, pageCount, step, settings.autoAdvance, goToChapter]);
 
   // Keyboard
   useEffect(() => {
@@ -420,8 +454,16 @@ function ReaderInner() {
           <Button variant="secondary" onClick={() => router.back()}>Go back</Button>
         </div>
       ) : loading ? (
-        <div className="flex h-full items-center justify-center text-white/60">
+        <div className="flex h-full flex-col items-center justify-center gap-4 text-white/70">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/30 border-t-white/90" />
+          {openingLabel ? (
+            <div className="text-center">
+              <div className="text-xs uppercase tracking-[0.15em] text-white/40">Opening</div>
+              <div className="mt-1 text-sm font-medium text-white/90">{openingLabel}</div>
+            </div>
+          ) : (
+            <div className="text-sm text-white/50">Loading chapter…</div>
+          )}
         </div>
       ) : isContinuous ? (
         <div ref={scrollRef} className="h-full overflow-y-auto" onClick={handleTap}>
@@ -443,9 +485,14 @@ function ReaderInner() {
                 />
               </div>
             ))}
-            <div className="py-10 text-center text-sm text-white/50">
-              End of {chapterLabel} — tap a chapter button above, or ←/→ for prev/next.
-            </div>
+            <EndOfChapter
+              chapterLabel={chapterLabel}
+              hasNext={hasChapter(1)}
+              hasPrev={hasChapter(-1)}
+              onNext={() => goToChapter(1)}
+              onPrev={() => goToChapter(-1)}
+              onExit={() => router.back()}
+            />
           </div>
         </div>
       ) : (
@@ -470,6 +517,24 @@ function ReaderInner() {
               <img key={i} src={pageUrl(i)} alt="" />
             ))}
           </div>
+
+          {/* Last page — offer the next chapter explicitly instead of a dead end */}
+          {currentPage + step >= pageCount && hasChapter(1) && (
+            <button
+              onClick={(e) => { e.stopPropagation(); goToChapter(1); }}
+              className="absolute bottom-16 left-1/2 -translate-x-1/2 inline-flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-black shadow-lg transition-colors hover:bg-white"
+            >
+              Next chapter
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Brief confirmation that a new chapter opened */}
+      {arrivedLabel && !loading && (
+        <div className="pointer-events-none absolute left-1/2 top-16 z-10 -translate-x-1/2 rounded-full bg-black/80 px-4 py-1.5 text-sm text-white shadow-lg backdrop-blur">
+          {arrivedLabel}
         </div>
       )}
 
@@ -655,6 +720,52 @@ function ReaderInner() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Footer of a continuous (webtoon / long-strip / vertical) chapter: makes the
+ * next chapter a one-tap action instead of leaving the reader at a dead end.
+ */
+function EndOfChapter({
+  chapterLabel, hasNext, hasPrev, onNext, onPrev, onExit,
+}: {
+  chapterLabel: string;
+  hasNext: boolean;
+  hasPrev: boolean;
+  onNext: () => void;
+  onPrev: () => void;
+  onExit: () => void;
+}) {
+  return (
+    <div
+      className="flex w-full flex-col items-center gap-4 py-14 text-center"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div>
+        <div className="text-xs uppercase tracking-[0.15em] text-white/35">End of</div>
+        <div className="mt-1 text-sm font-medium text-white/80">{chapterLabel}</div>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {hasPrev && (
+          <Button variant="secondary" onClick={onPrev} className="gap-1.5">
+            <ChevronLeft className="h-4 w-4" />
+            Previous
+          </Button>
+        )}
+        {hasNext ? (
+          <Button onClick={onNext} className="gap-1.5">
+            Next chapter
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button variant="secondary" onClick={onExit}>
+            Back to series
+          </Button>
+        )}
+      </div>
+      {hasNext && <p className="text-xs text-white/35">or press → </p>}
     </div>
   );
 }
