@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, Loader2, Search } from "lucide-react";
 import {
   Collapsible,
@@ -14,6 +16,8 @@ import {
   useRedownloadChapter,
   useSeriesChapters,
 } from "@/lib/api/hooks/useSeries";
+import { useSettings } from "@/lib/api/hooks/useSettings";
+import { readerService } from "@/lib/api/services/readerService";
 import { cn } from "@/lib/utils";
 import { ChapterRow } from "./chapter-row";
 
@@ -34,8 +38,28 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
   const [pending, setPending] = useState<Set<number>>(new Set());
 
   const { toast } = useToast();
+  const router = useRouter();
   const redownload = useRedownloadChapter();
   const { data: chapters, isLoading, isError } = useSeriesChapters(seriesId, hasOpened);
+  const { data: settings } = useSettings();
+  const readerEnabled = settings?.readerEnabled !== false;
+
+  // Read states from the built-in reader (progress, completion, bookmarks)
+  const { data: readerChapters } = useQuery({
+    queryKey: ["reader", "chapters", seriesId],
+    queryFn: () => readerService.getChapters(seriesId),
+    enabled: hasOpened && readerEnabled,
+    staleTime: 30 * 1000,
+  });
+  const readStateByNumber = useMemo(() => {
+    const map = new Map<number, { progress: number; isCompleted: boolean; bookmarked: boolean }>();
+    readerChapters?.chapters.forEach((c) => map.set(c.number, c));
+    return map;
+  }, [readerChapters]);
+
+  const handleRead = (chapterNumber: number) => {
+    router.push(`/reader?seriesId=${seriesId}&chapter=${chapterNumber}`);
+  };
 
   const total = chapters?.length ?? 0;
   const downloadedCount = chapters?.filter((c) => c.downloaded).length ?? 0;
@@ -180,16 +204,23 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
               {filtered.length > 0 ? (
                 <TooltipProvider delayDuration={200}>
                   <div className="space-y-2">
-                    {filtered.map((chapter, index) => (
-                      <ChapterRow
-                        key={chapter.number ?? `idx-${index}`}
-                        chapter={chapter}
-                        paused={paused}
-                        canManage={canManage}
-                        isPending={chapter.number != null && pending.has(chapter.number)}
-                        onRedownload={handleRedownload}
-                      />
-                    ))}
+                    {filtered.map((chapter, index) => {
+                      const rs = chapter.number != null ? readStateByNumber.get(chapter.number) : undefined;
+                      return (
+                        <ChapterRow
+                          key={chapter.number ?? `idx-${index}`}
+                          chapter={chapter}
+                          paused={paused}
+                          canManage={canManage}
+                          isPending={chapter.number != null && pending.has(chapter.number)}
+                          onRedownload={handleRedownload}
+                          onRead={readerEnabled ? handleRead : undefined}
+                          readProgress={rs?.progress}
+                          readCompleted={rs?.isCompleted}
+                          readBookmarked={rs?.bookmarked}
+                        />
+                      );
+                    })}
                   </div>
                 </TooltipProvider>
               ) : (

@@ -59,6 +59,64 @@ export interface Settings {
   smtpPassword: string;
   smtpUseSsl: boolean;
   smtpFromAddress: string;
+  /** Enables the built-in web reader (library reading + Browse preview). */
+  readerEnabled: boolean;
+}
+
+// ── Built-in reader ────────────────────────────────────────────────────
+
+export interface ReaderChapter {
+  number: number;
+  name: string;
+  /** Archive filename when downloaded; null = not readable locally. */
+  filename?: string | null;
+  pageCount?: number | null;
+  progress: number;
+  isCompleted: boolean;
+  bookmarked: boolean;
+  lastReadAt?: string | null;
+}
+
+export interface ReaderChapters {
+  seriesId: string;
+  title: string;
+  type?: string | null;
+  chapters: ReaderChapter[];
+}
+
+export interface ReaderPageDims {
+  index: number;
+  width?: number | null;
+  height?: number | null;
+  isStrip: boolean;
+}
+
+export interface ReaderChapterInfo {
+  filename: string;
+  pageCount: number;
+  suggestedMode: 'webtoon' | 'longstrip' | 'paged';
+  pages: ReaderPageDims[];
+}
+
+export interface PreviewChapter {
+  index: number;
+  name: string;
+  number?: number | null;
+  dateUpload?: string | null;
+}
+
+export interface PreviewChapters {
+  mihonId: string;
+  title: string;
+  chapters: PreviewChapter[];
+}
+
+export interface BackupImportResult {
+  backupSeries: number;
+  matchedSeries: number;
+  updatedChapters: number;
+  bookmarks: number;
+  unmatched: string[];
 }
 
 export interface LinkedSeries {

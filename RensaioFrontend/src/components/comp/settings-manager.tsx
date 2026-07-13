@@ -383,6 +383,24 @@ function ContentPreferencesSection({
           </div>
         </RadioGroup>
       </div>
+
+      <div className="space-y-2 border-t pt-4">
+        <div className="flex items-center space-x-2">
+          <Switch
+            id="reader-enabled"
+            checked={localSettings.readerEnabled !== false}
+            onCheckedChange={(checked) =>
+              setLocalSettings((prev) => ({ ...prev, readerEnabled: checked }))
+            }
+          />
+          <Label htmlFor="reader-enabled">Built-in Reader</Label>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Read downloaded chapters in the browser (smart webtoon/long-strip/paged
+          modes, progress tracking, bookmarks) and preview Browse series without
+          downloading. Turning this off hides all Read buttons.
+        </p>
+      </div>
     </CardContent>
   );
 }

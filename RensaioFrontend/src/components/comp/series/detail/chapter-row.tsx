@@ -2,6 +2,8 @@
 
 import {
   AlertTriangle,
+  Bookmark,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -32,6 +34,12 @@ export interface ChapterRowProps {
   isPending: boolean;
   /** Omit providerId for the priority default; pass it to force a specific source. */
   onRedownload: (chapterNumber: number, providerId?: string) => void;
+  /** Built-in reader: open this chapter. Undefined when the reader is disabled. */
+  onRead?: (chapterNumber: number) => void;
+  /** Read-state overlay from the reader API (progress 0..1). */
+  readProgress?: number;
+  readCompleted?: boolean;
+  readBookmarked?: boolean;
 }
 
 function formatChapter(n: number | undefined): string {
@@ -45,6 +53,10 @@ export function ChapterRow({
   canManage,
   isPending,
   onRedownload,
+  onRead,
+  readProgress,
+  readCompleted,
+  readBookmarked,
 }: ChapterRowProps) {
   const num = chapter.number;
   const label = chapter.downloaded ? "Re-download" : "Download";
@@ -74,10 +86,21 @@ export function ChapterRow({
       {/* Chapter number + title */}
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium tabular-nums">{formatChapter(num)}</span>
+          <span className={cn("text-sm font-medium tabular-nums", readCompleted && "text-muted-foreground/60")}>
+            {formatChapter(num)}
+          </span>
           {chapter.name && (
-            <span className="truncate text-sm text-muted-foreground" title={chapter.name}>
+            <span
+              className={cn("truncate text-sm text-muted-foreground", readCompleted && "text-muted-foreground/50")}
+              title={chapter.name}
+            >
               {chapter.name}
+            </span>
+          )}
+          {readBookmarked && <Bookmark className="h-3 w-3 shrink-0 self-center fill-pink-500 text-pink-500" />}
+          {!readCompleted && (readProgress ?? 0) > 0 && (
+            <span className="shrink-0 self-center rounded bg-primary/15 px-1 text-[10px] font-medium text-primary">
+              {Math.round((readProgress ?? 0) * 100)}%
             </span>
           )}
         </div>
@@ -96,6 +119,22 @@ export function ChapterRow({
           )}
         </div>
       </div>
+
+      {/* Read (built-in reader) — only for downloaded chapters */}
+      {onRead && chapter.downloaded && num != null && (
+        <Button
+          size="sm"
+          variant={readCompleted ? "ghost" : "secondary"}
+          onClick={() => onRead(num)}
+          className="h-8 shrink-0 gap-1.5"
+          title={readCompleted ? "Read again" : (readProgress ?? 0) > 0 ? "Continue reading" : "Read"}
+        >
+          <BookOpen className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">
+            {readCompleted ? "Reread" : (readProgress ?? 0) > 0 ? "Continue" : "Read"}
+          </span>
+        </Button>
+      )}
 
       {/* Re-download split button */}
       {canManage && (

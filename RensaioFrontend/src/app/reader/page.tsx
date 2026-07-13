@@ -1,0 +1,677 @@
+"use client";
+
+/*
+ * Built-in reader. Two data modes:
+ *  - Library:  /reader?seriesId=…&chapter=<number>      (archives on disk; full progress tracking)
+ *  - Preview:  /reader?mihonId=…&chapter=<index>&preview=1  (live pages via the source; nothing stored)
+ *
+ * Reading modes (Suwayomi-style):
+ *  - auto      pick from the chapter's page shapes (server-side dims for library,
+ *              client-side natural sizes for preview): mostly strip images → webtoon;
+ *              >3 strip images mixed into normal pages (a converted long strip) →
+ *              longstrip; otherwise paged (RTL when the series type is manga).
+ *  - paged / paged-rtl / double / webtoon (continuous, no gaps) / longstrip
+ *    (continuous, no gaps, width-matched) / vertical (continuous, with gaps)
+ */
+
+import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Download, Settings2, X,
+} from "lucide-react";
+import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { readerService } from "@/lib/api/services/readerService";
+import { seriesService } from "@/lib/api/services/seriesService";
+import { type ReaderChapters, type ReaderChapterInfo, type PreviewChapter } from "@/lib/api/types";
+
+type ReaderMode = "auto" | "paged" | "paged-rtl" | "double" | "webtoon" | "longstrip" | "vertical";
+type FitMode = "width" | "height" | "original";
+
+interface ReaderSettings {
+  mode: ReaderMode;
+  fit: FitMode;
+  maxWidthPct: number;     // % of viewport width cap in continuous modes
+  background: "black" | "gray" | "white";
+  preload: number;
+  gapPx: number;           // vertical mode gap
+  showPageNumber: boolean;
+  tapNavigation: boolean;
+  autoAdvance: boolean;    // jump to next chapter at the end
+  autoMarkRead: boolean;
+}
+
+const DEFAULT_SETTINGS: ReaderSettings = {
+  mode: "auto",
+  fit: "width",
+  maxWidthPct: 60,
+  background: "black",
+  preload: 4,
+  gapPx: 12,
+  showPageNumber: true,
+  tapNavigation: true,
+  autoAdvance: true,
+  autoMarkRead: true,
+};
+
+const SETTINGS_KEY = "rensaio_reader_settings";
+const seriesModeKey = (id: string) => `rensaio_reader_mode_${id}`;
+
+function loadSettings(): ReaderSettings {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw ? { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<ReaderSettings>) } : DEFAULT_SETTINGS;
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+const BG: Record<ReaderSettings["background"], string> = {
+  black: "#000",
+  gray: "#18181b",
+  white: "#fafafa",
+};
+
+function ReaderInner() {
+  const params = useSearchParams();
+  const router = useRouter();
+
+  const isPreview = params.get("preview") === "1";
+  const seriesId = params.get("seriesId");
+  const mihonId = params.get("mihonId");
+  const chapterParam = params.get("chapter");
+  const previewTitle = params.get("title") ?? "Preview";
+
+  const [settings, setSettings] = useState<ReaderSettings>(loadSettings);
+  const [seriesModeOverride, setSeriesModeOverride] = useState<ReaderMode | null>(null);
+  const [chapters, setChapters] = useState<ReaderChapters | null>(null);
+  const [chapterNumber, setChapterNumber] = useState<number | null>(!isPreview && chapterParam ? parseFloat(chapterParam) : null);
+  // Preview: source chapter lists are usually newest-first, so we keep a
+  // reading-order (oldest-first) view and navigate through that. -1 = start
+  // at the first chapter once the list arrives.
+  const [previewChapterIndex, setPreviewChapterIndex] = useState<number>(isPreview && chapterParam ? parseInt(chapterParam) : 0);
+  const [previewOrder, setPreviewOrder] = useState<PreviewChapter[] | null>(null);
+  const [info, setInfo] = useState<ReaderChapterInfo | null>(null);
+  const [pageCount, setPageCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(0); // 0-based
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  // Client-side strip detection for preview mode (naturalWidth/Height as images load)
+  const [detectedMode, setDetectedMode] = useState<"webtoon" | "longstrip" | "paged" | null>(null);
+  const loadedDimsRef = useRef<Map<number, { w: number; h: number }>>(new Map());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const progressSentRef = useRef<{ page: number; at: number }>({ page: -1, at: 0 });
+  const markedReadRef = useRef(false);
+
+  const persistSettings = useCallback((next: ReaderSettings) => {
+    setSettings(next);
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(next)); } catch { /* private mode */ }
+  }, []);
+
+  // ── Data loading ──────────────────────────────────────────────────────
+  const chapter = useMemo(() => {
+    if (!chapters || chapterNumber == null) return null;
+    return chapters.chapters.find((c) => c.number === chapterNumber) ?? null;
+  }, [chapters, chapterNumber]);
+
+  const readableChapters = useMemo(
+    () => (chapters?.chapters ?? []).filter((c) => !!c.filename),
+    [chapters],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+      setCurrentPage(0);
+      setInfo(null);
+      setDetectedMode(null);
+      loadedDimsRef.current.clear();
+      markedReadRef.current = false;
+      try {
+        if (isPreview && mihonId) {
+          let order = previewOrder;
+          if (!order) {
+            const list = await readerService.getPreviewChapters(mihonId);
+            if (cancelled) return;
+            const hasNumbers = list.chapters.some((c) => c.number != null);
+            order = hasNumbers
+              ? [...list.chapters].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
+              : [...list.chapters].reverse();
+            setPreviewOrder(order);
+          }
+          let idx = previewChapterIndex;
+          if (idx < 0) {
+            idx = order[0]?.index ?? 0;
+            setPreviewChapterIndex(idx);
+            return; // effect re-runs with the resolved index
+          }
+          const pages = await readerService.getPreviewPages(mihonId, idx);
+          if (cancelled) return;
+          setPageCount(pages.pageCount);
+        } else if (seriesId && chapterNumber != null) {
+          const ch = chapters ?? (await readerService.getChapters(seriesId));
+          if (cancelled) return;
+          if (!chapters) setChapters(ch);
+          const target = ch.chapters.find((c) => c.number === chapterNumber);
+          if (!target?.filename) {
+            setError("This chapter is not downloaded.");
+            setLoading(false);
+            return;
+          }
+          const ci = await readerService.getChapterInfo(seriesId, target.filename);
+          if (cancelled) return;
+          setInfo(ci);
+          setPageCount(ci.pageCount);
+          // Resume where the user left off (not at 100%)
+          if (target.progress > 0 && target.progress < 1 && ci.pageCount > 0) {
+            setCurrentPage(Math.min(ci.pageCount - 1, Math.floor(target.progress * ci.pageCount)));
+          }
+          try {
+            setSeriesModeOverride((localStorage.getItem(seriesModeKey(seriesId)) as ReaderMode) || null);
+          } catch { /* ignore */ }
+        } else {
+          setError("Missing reader parameters.");
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load chapter.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPreview, mihonId, seriesId, chapterNumber, previewChapterIndex]);
+
+  // ── Mode resolution ───────────────────────────────────────────────────
+  const resolvedMode: Exclude<ReaderMode, "auto"> = useMemo(() => {
+    const chosen = seriesModeOverride ?? settings.mode;
+    if (chosen !== "auto") return chosen;
+    // Library: server-computed suggestion from archive page dimensions.
+    if (info) {
+      if (info.suggestedMode === "webtoon") return "webtoon";
+      if (info.suggestedMode === "longstrip") return "longstrip";
+      const isManga = (chapters?.type ?? "").toLowerCase().includes("manga");
+      return isManga ? "paged-rtl" : "paged";
+    }
+    // Preview: decided from image natural sizes as they load.
+    if (detectedMode === "webtoon") return "webtoon";
+    if (detectedMode === "longstrip") return "longstrip";
+    return "paged";
+  }, [settings.mode, seriesModeOverride, info, detectedMode, chapters]);
+
+  const isContinuous = resolvedMode === "webtoon" || resolvedMode === "longstrip" || resolvedMode === "vertical";
+  const isRtl = resolvedMode === "paged-rtl";
+
+  // Preview smart detection: after enough images report natural sizes, classify.
+  const onImageLoaded = useCallback((index: number, w: number, h: number) => {
+    if (!isPreview || detectedMode) return;
+    loadedDimsRef.current.set(index, { w, h });
+    const dims = [...loadedDimsRef.current.values()];
+    if (dims.length >= Math.min(4, pageCount)) {
+      const strips = dims.filter((d) => d.w > 0 && d.h / d.w >= 3).length;
+      if (strips * 2 >= dims.length) setDetectedMode("webtoon");
+      else if (strips > 3) setDetectedMode("longstrip");
+      else setDetectedMode("paged");
+    }
+  }, [isPreview, detectedMode, pageCount]);
+
+  // ── Page URLs ─────────────────────────────────────────────────────────
+  const pageUrl = useCallback((i: number): string => {
+    if (isPreview && mihonId) return readerService.previewPageUrl(mihonId, previewChapterIndex, i);
+    if (seriesId && chapter?.filename) return readerService.pageUrl(seriesId, chapter.filename, i);
+    return "";
+  }, [isPreview, mihonId, previewChapterIndex, seriesId, chapter]);
+
+  // ── Progress reporting (library only) ─────────────────────────────────
+  const reportProgress = useCallback((page0: number) => {
+    if (isPreview || !seriesId || chapterNumber == null || pageCount === 0) return;
+    const page1 = page0 + 1;
+    const now = Date.now();
+    if (progressSentRef.current.page >= page1 && now - progressSentRef.current.at < 30000) return;
+    progressSentRef.current = { page: page1, at: now };
+    void readerService.setProgress(seriesId, chapterNumber, page1, pageCount, chapter?.filename ?? undefined)
+      .catch(() => { /* transient */ });
+    if (settings.autoMarkRead && page1 >= pageCount && !markedReadRef.current) {
+      markedReadRef.current = true;
+      setChapters((prev) => prev && {
+        ...prev,
+        chapters: prev.chapters.map((c) => c.number === chapterNumber ? { ...c, isCompleted: true, progress: 1 } : c),
+      });
+    }
+  }, [isPreview, seriesId, chapterNumber, pageCount, chapter, settings.autoMarkRead]);
+
+  useEffect(() => { reportProgress(currentPage); }, [currentPage, reportProgress]);
+
+  // ── Navigation ────────────────────────────────────────────────────────
+  const step = resolvedMode === "double" ? 2 : 1;
+
+  const goToChapter = useCallback((direction: 1 | -1) => {
+    if (isPreview) {
+      if (!previewOrder) return;
+      const pos = previewOrder.findIndex((c) => c.index === previewChapterIndex);
+      const next = previewOrder[pos + direction];
+      if (next) setPreviewChapterIndex(next.index);
+      else toast.info(direction > 0 ? "No next chapter." : "This is the first chapter.");
+      return;
+    }
+    if (!chapters || chapterNumber == null) return;
+    const idx = readableChapters.findIndex((c) => c.number === chapterNumber);
+    const next = readableChapters[idx + direction];
+    if (next) setChapterNumber(next.number);
+    else toast.info(direction > 0 ? "No next chapter downloaded." : "This is the first downloaded chapter.");
+  }, [isPreview, previewOrder, previewChapterIndex, chapters, chapterNumber, readableChapters]);
+
+  const advance = useCallback((dir: 1 | -1) => {
+    setCurrentPage((p) => {
+      const next = p + dir * step;
+      if (next >= pageCount) {
+        if (settings.autoAdvance) goToChapter(1);
+        return p;
+      }
+      if (next < 0) return 0;
+      return next;
+    });
+  }, [pageCount, step, settings.autoAdvance, goToChapter]);
+
+  // Keyboard
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (isContinuous) {
+        if (e.key === "ArrowLeft") goToChapter(-1);
+        else if (e.key === "ArrowRight") goToChapter(1);
+        return; // vertical scrolling handles the rest natively
+      }
+      const fwd = isRtl ? "ArrowLeft" : "ArrowRight";
+      const back = isRtl ? "ArrowRight" : "ArrowLeft";
+      if (e.key === fwd || e.key === " " || e.key === "PageDown") { e.preventDefault(); advance(1); }
+      else if (e.key === back || e.key === "PageUp") { e.preventDefault(); advance(-1); }
+      else if (e.key === "Home") setCurrentPage(0);
+      else if (e.key === "End") setCurrentPage(Math.max(0, pageCount - 1));
+      else if (e.key === "Escape") setChromeVisible((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isContinuous, isRtl, advance, pageCount, goToChapter]);
+
+  // Continuous mode: track the visible page + restore position on load
+  useEffect(() => {
+    if (!isContinuous || pageCount === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const idx = Number((entry.target as HTMLElement).dataset.page);
+            if (!Number.isNaN(idx)) setCurrentPage((p) => (idx > p || entry.intersectionRatio > 0.5 ? idx : p));
+          }
+        }
+      },
+      { threshold: [0.01, 0.5] },
+    );
+    pageRefs.current.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [isContinuous, pageCount, loading]);
+
+  const handleTap = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!settings.tapNavigation) { setChromeVisible((v) => !v); return; }
+    const x = e.clientX / window.innerWidth;
+    if (isContinuous) { setChromeVisible((v) => !v); return; }
+    if (x < 0.3) advance(isRtl ? 1 : -1);
+    else if (x > 0.7) advance(isRtl ? -1 : 1);
+    else setChromeVisible((v) => !v);
+  }, [settings.tapNavigation, isContinuous, isRtl, advance]);
+
+  // ── Actions ───────────────────────────────────────────────────────────
+  const toggleBookmark = useCallback(async () => {
+    if (isPreview || !seriesId || chapterNumber == null || !chapter) return;
+    const next = !chapter.bookmarked;
+    try {
+      await readerService.setBookmark(seriesId, chapterNumber, next);
+      setChapters((prev) => prev && {
+        ...prev,
+        chapters: prev.chapters.map((c) => c.number === chapterNumber ? { ...c, bookmarked: next } : c),
+      });
+      toast.success(next ? "Bookmarked" : "Bookmark removed");
+    } catch {
+      toast.error("Failed to update bookmark");
+    }
+  }, [isPreview, seriesId, chapterNumber, chapter]);
+
+  const downloadPreviewChapter = useCallback(async () => {
+    // Downloading a specific chapter requires the series in the library —
+    // the redownload endpoint then fetches exactly this one chapter.
+    if (!seriesId) {
+      toast.info("Add this series to your library first, then chapters can be downloaded individually.");
+      return;
+    }
+    const num = previewOrder?.find((c) => c.index === previewChapterIndex)?.number;
+    if (num == null) {
+      toast.info("This chapter has no recognizable number — download it from the series page instead.");
+      return;
+    }
+    try {
+      await seriesService.redownloadChapter(seriesId, num);
+      toast.success(`Chapter ${num} queued for download`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to queue download");
+    }
+  }, [seriesId, previewOrder, previewChapterIndex]);
+
+  // ── Rendering ─────────────────────────────────────────────────────────
+  const containerWidthStyle = isContinuous
+    ? { width: `min(100%, ${settings.maxWidthPct}vw)` }
+    : undefined;
+
+  const fitClass = settings.fit === "height"
+    ? "max-h-screen w-auto"
+    : settings.fit === "original"
+      ? ""
+      : "w-full h-auto";
+
+  const gap = resolvedMode === "vertical" ? settings.gapPx : 0;
+
+  const pagesToRender: number[] = useMemo(() => {
+    if (isContinuous) return Array.from({ length: pageCount }, (_, i) => i);
+    if (resolvedMode === "double") {
+      const second = currentPage + 1 < pageCount ? [currentPage + 1] : [];
+      return [currentPage, ...second];
+    }
+    return [currentPage];
+  }, [isContinuous, resolvedMode, currentPage, pageCount]);
+
+  const preloadPages: number[] = useMemo(() => {
+    if (isContinuous) return [];
+    const out: number[] = [];
+    for (let i = 1; i <= settings.preload; i++) {
+      const n = currentPage + i;
+      if (n < pageCount) out.push(n);
+    }
+    return out;
+  }, [isContinuous, currentPage, settings.preload, pageCount]);
+
+  const previewChapter = useMemo(
+    () => previewOrder?.find((c) => c.index === previewChapterIndex) ?? null,
+    [previewOrder, previewChapterIndex],
+  );
+  const chapterLabel = isPreview
+    ? (previewChapter?.name || `Chapter ${previewChapterIndex + 1}`)
+    : chapter ? (chapter.name || `Chapter ${chapter.number}`) : "";
+
+  return (
+    <div className="fixed inset-0 z-50 select-none" style={{ background: BG[settings.background] }}>
+      {/* ── Content ── */}
+      {error ? (
+        <div className="flex h-full flex-col items-center justify-center gap-4 text-white/80">
+          <p>{error}</p>
+          <Button variant="secondary" onClick={() => router.back()}>Go back</Button>
+        </div>
+      ) : loading ? (
+        <div className="flex h-full items-center justify-center text-white/60">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/30 border-t-white/90" />
+        </div>
+      ) : isContinuous ? (
+        <div ref={scrollRef} className="h-full overflow-y-auto" onClick={handleTap}>
+          <div className="mx-auto flex flex-col items-center" style={{ ...containerWidthStyle, rowGap: gap }}>
+            {pagesToRender.map((i) => (
+              <div
+                key={i}
+                data-page={i}
+                ref={(el) => { if (el) pageRefs.current.set(i, el); else pageRefs.current.delete(i); }}
+                className="w-full"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={pageUrl(i)}
+                  alt={`Page ${i + 1}`}
+                  loading="lazy"
+                  className="block w-full h-auto"
+                  onLoad={(e) => onImageLoaded(i, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+                />
+              </div>
+            ))}
+            <div className="py-10 text-center text-sm text-white/50">
+              End of {chapterLabel} — tap a chapter button above, or ←/→ for prev/next.
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex h-full items-center justify-center overflow-hidden" onClick={handleTap}>
+          <div className={`flex h-full items-center justify-center ${isRtl ? "flex-row-reverse" : ""}`}>
+            {pagesToRender.map((i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={i}
+                src={pageUrl(i)}
+                alt={`Page ${i + 1}`}
+                className={`${fitClass} max-h-screen object-contain`}
+                style={resolvedMode === "double" ? { maxWidth: "50vw" } : { maxWidth: "100vw" }}
+                onLoad={(e) => onImageLoaded(i, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+              />
+            ))}
+          </div>
+          {/* Preload upcoming pages invisibly */}
+          <div className="hidden">
+            {preloadPages.map((i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={i} src={pageUrl(i)} alt="" />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Top chrome ── */}
+      {chromeVisible && !loading && (
+        <div className="absolute inset-x-0 top-0 flex items-center gap-2 bg-black/70 px-3 py-2 text-white backdrop-blur">
+          <button onClick={() => router.back()} className="rounded p-1.5 hover:bg-white/10" title="Back">
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">{chapters?.title ?? previewTitle}</div>
+            <div className="truncate text-xs text-white/60">{chapterLabel}{isPreview ? " · Preview" : ""}</div>
+          </div>
+          {isPreview && (
+            <button onClick={() => void downloadPreviewChapter()} className="rounded p-1.5 hover:bg-white/10" title="Download this chapter (requires the series in your library)">
+              <Download className="h-5 w-5" />
+            </button>
+          )}
+          {!isPreview && chapter && (
+            <button onClick={() => void toggleBookmark()} className="rounded p-1.5 hover:bg-white/10" title={chapter.bookmarked ? "Remove bookmark" : "Bookmark chapter"}>
+              <Bookmark className={`h-5 w-5 ${chapter.bookmarked ? "fill-current text-pink-400" : ""}`} />
+            </button>
+          )}
+          <button onClick={() => setSettingsOpen((v) => !v)} className="rounded p-1.5 hover:bg-white/10" title="Reader settings">
+            <Settings2 className="h-5 w-5" />
+          </button>
+        </div>
+      )}
+
+      {/* ── Bottom chrome ── */}
+      {chromeVisible && !loading && !error && pageCount > 0 && (
+        <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-black/70 px-4 py-2.5 text-white backdrop-blur">
+          <button onClick={() => goToChapter(-1)} className="rounded p-1.5 hover:bg-white/10" title="Previous chapter">
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <div className="flex-1" dir={isRtl && !isContinuous ? "rtl" : "ltr"}>
+            <Slider
+              value={[currentPage]}
+              min={0}
+              max={Math.max(0, pageCount - 1)}
+              step={1}
+              onValueChange={(v) => {
+                const target = v[0] ?? 0;
+                setCurrentPage(target);
+                if (isContinuous) pageRefs.current.get(target)?.scrollIntoView();
+              }}
+            />
+          </div>
+          {settings.showPageNumber && (
+            <span className="shrink-0 text-xs tabular-nums text-white/70">
+              {Math.min(currentPage + 1, pageCount)} / {pageCount}
+            </span>
+          )}
+          <button onClick={() => goToChapter(1)} className="rounded p-1.5 hover:bg-white/10" title="Next chapter">
+            <ChevronRight className="h-5 w-5" />
+          </button>
+        </div>
+      )}
+
+      {/* ── Settings panel ── */}
+      {settingsOpen && (
+        <div className="absolute right-0 top-12 bottom-0 w-80 max-w-[90vw] overflow-y-auto bg-zinc-900/95 p-4 text-white backdrop-blur border-l border-white/10">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Reader Settings</h2>
+            <button onClick={() => setSettingsOpen(false)} className="rounded p-1 hover:bg-white/10"><X className="h-4 w-4" /></button>
+          </div>
+          <div className="space-y-4 text-sm">
+            <div className="space-y-1.5">
+              <Label>Reading mode {settings.mode === "auto" && !seriesModeOverride ? `(auto → ${resolvedMode})` : ""}</Label>
+              <Select
+                value={seriesModeOverride ?? settings.mode}
+                onValueChange={(v) => {
+                  const mode = v as ReaderMode;
+                  if (!isPreview && seriesId) {
+                    // Per-series override; "auto" clears it.
+                    setSeriesModeOverride(mode === "auto" ? null : mode);
+                    try {
+                      if (mode === "auto") localStorage.removeItem(seriesModeKey(seriesId));
+                      else localStorage.setItem(seriesModeKey(seriesId), mode);
+                    } catch { /* ignore */ }
+                  } else {
+                    persistSettings({ ...settings, mode });
+                  }
+                }}
+              >
+                <SelectTrigger className="bg-zinc-800 border-white/10"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto (smart detect)</SelectItem>
+                  <SelectItem value="paged">Paged — left to right</SelectItem>
+                  <SelectItem value="paged-rtl">Paged — right to left</SelectItem>
+                  <SelectItem value="double">Double page</SelectItem>
+                  <SelectItem value="webtoon">Webtoon (no gaps)</SelectItem>
+                  <SelectItem value="longstrip">Long strip (width-matched)</SelectItem>
+                  <SelectItem value="vertical">Vertical (with gaps)</SelectItem>
+                </SelectContent>
+              </Select>
+              {!isPreview && <p className="text-[11px] text-white/50">Choice is remembered per series; “Auto” follows the chapter’s detected layout.</p>}
+            </div>
+
+            {!isContinuous && (
+              <div className="space-y-1.5">
+                <Label>Page fit</Label>
+                <Select value={settings.fit} onValueChange={(v) => persistSettings({ ...settings, fit: v as FitMode })}>
+                  <SelectTrigger className="bg-zinc-800 border-white/10"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="width">Fit width</SelectItem>
+                    <SelectItem value="height">Fit height</SelectItem>
+                    <SelectItem value="original">Original size</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {isContinuous && (
+              <div className="space-y-1.5">
+                <Label>Page width — {settings.maxWidthPct}% of screen</Label>
+                <Slider
+                  value={[settings.maxWidthPct]}
+                  min={20} max={100} step={5}
+                  onValueChange={(v) => persistSettings({ ...settings, maxWidthPct: v[0] ?? 60 })}
+                />
+                <p className="text-[11px] text-white/50">
+                  Auto-resize: every page is scaled to this same width, so mixed-size pages line up.
+                </p>
+              </div>
+            )}
+
+            {resolvedMode === "vertical" && (
+              <div className="space-y-1.5">
+                <Label>Gap between pages — {settings.gapPx}px</Label>
+                <Slider value={[settings.gapPx]} min={0} max={48} step={4}
+                  onValueChange={(v) => persistSettings({ ...settings, gapPx: v[0] ?? 12 })} />
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label>Background</Label>
+              <Select value={settings.background} onValueChange={(v) => persistSettings({ ...settings, background: v as ReaderSettings["background"] })}>
+                <SelectTrigger className="bg-zinc-800 border-white/10"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="black">Black</SelectItem>
+                  <SelectItem value="gray">Dark gray</SelectItem>
+                  <SelectItem value="white">White</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Preload pages — {settings.preload}</Label>
+              <Slider value={[settings.preload]} min={0} max={10} step={1}
+                onValueChange={(v) => persistSettings({ ...settings, preload: v[0] ?? 4 })} />
+            </div>
+
+            <ToggleRow label="Tap zones (left/right to turn pages)" checked={settings.tapNavigation}
+              onChange={(v) => persistSettings({ ...settings, tapNavigation: v })} />
+            <ToggleRow label="Show page number" checked={settings.showPageNumber}
+              onChange={(v) => persistSettings({ ...settings, showPageNumber: v })} />
+            <ToggleRow label="Auto-advance to next chapter" checked={settings.autoAdvance}
+              onChange={(v) => persistSettings({ ...settings, autoAdvance: v })} />
+            {!isPreview && (
+              <ToggleRow label="Mark read on last page" checked={settings.autoMarkRead}
+                onChange={(v) => persistSettings({ ...settings, autoMarkRead: v })} />
+            )}
+
+            {!isPreview && chapter && (
+              <div className="border-t border-white/10 pt-3">
+                <Button
+                  variant="secondary" size="sm" className="w-full"
+                  onClick={() => {
+                    if (!seriesId || chapterNumber == null) return;
+                    void readerService.markChapters(seriesId, [chapterNumber], !chapter.isCompleted).then(() => {
+                      setChapters((prev) => prev && {
+                        ...prev,
+                        chapters: prev.chapters.map((c) => c.number === chapterNumber ? { ...c, isCompleted: !chapter.isCompleted, progress: chapter.isCompleted ? 0 : 1 } : c),
+                      });
+                    });
+                  }}
+                >
+                  {chapter.isCompleted ? "Mark chapter unread" : "Mark chapter read"}
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToggleRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <Label className="text-sm font-normal">{label}</Label>
+      <Switch checked={checked} onCheckedChange={onChange} />
+    </div>
+  );
+}
+
+export default function ReaderPage() {
+  return (
+    <Suspense fallback={<div className="fixed inset-0 bg-black" />}>
+      <ReaderInner />
+    </Suspense>
+  );
+}

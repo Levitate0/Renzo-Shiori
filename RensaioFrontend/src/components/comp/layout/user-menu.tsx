@@ -37,6 +37,7 @@ import { useSettings } from "@/lib/api/hooks/useSettings";
 import { useImportWizard } from "@/components/providers/import-wizard-provider";
 import { EditUserDialog } from "@/components/comp/users/user-dialog";
 import { ChangePasswordDialog } from "@/components/comp/users/change-password-dialog";
+import { ImportBackupDialog } from "@/components/comp/users/import-backup-dialog";
 import { UserTrackerRequester } from "@/components/comp/scrobbler/user-tracker-requester";
 import { ExternalLinks } from "@/components/comp/layout/external-links";
 import { useHideAdult } from "@/lib/utils/adult-filter";
@@ -99,6 +100,7 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isTrackerOpen, setIsTrackerOpen] = useState(false);
+  const [isBackupImportOpen, setIsBackupImportOpen] = useState(false);
   const [isImportPickerOpen, setIsImportPickerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -242,6 +244,15 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
             Trackers...
           </DropdownMenuItem>
 
+          {/* Suwayomi backup read-state import */}
+          <DropdownMenuItem
+            onClick={() => setIsBackupImportOpen(true)}
+            className="flex items-center gap-2 cursor-pointer"
+          >
+            <FolderInput className="h-4 w-4" />
+            Import Suwayomi Backup...
+          </DropdownMenuItem>
+
           <DropdownMenuSeparator />
 
           {canAdmin && (
@@ -342,6 +353,9 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
 
       {/* Tracker / scrobbler management dialog */}
       <UserTrackerRequester open={isTrackerOpen} onOpenChange={setIsTrackerOpen} />
+
+      {/* Suwayomi backup read-state import */}
+      <ImportBackupDialog open={isBackupImportOpen} onOpenChange={setIsBackupImportOpen} />
 
       {/* Import Series: choose regular local-file import vs. title-only (e.g. Suwayomi) */}
       <ResponsiveModal

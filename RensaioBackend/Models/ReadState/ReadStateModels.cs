@@ -21,6 +21,8 @@ public class ChapterReadState
     public string? LastReadDeviceName { get; set; }
     public string? LastReadFilename { get; set; }
     public DateTime LastReadAt { get; set; }
+    /// <summary>Chapter bookmark (built-in reader / Suwayomi import). Additive JSON field — absent in older files.</summary>
+    public bool Bookmarked { get; set; }
 }
 
 /// <summary>

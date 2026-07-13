@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { SeriesStatus, type SeriesExtendedInfo } from "@/lib/api/types";
 import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
 import { FavoriteButton } from "@/components/comp/series/favorite-button";
+import { ReadSeriesButton } from "@/components/comp/series/read-series-button";
 
 // Tiny relative-time helper — no external dependency
 function formatRelative(dateString: string | null | undefined): string {
@@ -303,6 +304,9 @@ export function SeriesHero({
 
             {/* Action toolbar */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
+              {/* Built-in reader — primary action; resumes where the user left off */}
+              <ReadSeriesButton seriesId={series.id} />
+
               {/* Favourites — personal lists, available to every user level */}
               <FavoriteButton seriesId={series.id} />
 

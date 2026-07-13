@@ -177,6 +177,55 @@ public class ReadStateService
 
 
     /// <summary>
+    /// Force-sets a chapter's completion state (built-in reader "mark read/unread").
+    /// Unlike SetReadState's monotonic progress rules, this sets exactly what the
+    /// user asked for, in both directions.
+    /// </summary>
+    public void SetCompleted(string username, Guid userId, Guid seriesId, string seriesStoragePath, decimal chapterNumber, bool completed, string? filename = null)
+    {
+        var states = GetSeriesReadStates(username, seriesStoragePath);
+        (_, ChapterReadState chapterState) = GetOrCreateChapterState(states, chapterNumber);
+        chapterState.IsCompleted = completed;
+        chapterState.Progress = completed ? 1f : 0f;
+        chapterState.LastReadDeviceName = "Rensaiō Reader";
+        if (filename != null)
+            chapterState.LastReadFilename = filename;
+        chapterState.LastReadAt = DateTime.UtcNow;
+        PersistStates(username, seriesStoragePath, states);
+        _changeNotifier.Notify(userId, seriesId);
+    }
+
+    /// <summary>
+    /// Toggles/sets a chapter bookmark. Bookmarks live alongside read state in
+    /// rensaio.json and never affect progress or scrobbling.
+    /// </summary>
+    public void SetBookmark(string username, string seriesStoragePath, decimal chapterNumber, bool bookmarked)
+    {
+        var states = GetSeriesReadStates(username, seriesStoragePath);
+        (_, ChapterReadState chapterState) = GetOrCreateChapterState(states, chapterNumber);
+        chapterState.Bookmarked = bookmarked;
+        PersistStates(username, seriesStoragePath, states);
+    }
+
+    private void PersistStates(string username, string seriesStoragePath, List<ChapterReadState> states)
+    {
+        _rensaioJsonService.Modify(seriesStoragePath, snapshot =>
+        {
+            var current = snapshot ?? new ImportSeriesSnapshot { Version = 2, UserReadStates = [] };
+            current.UserReadStates ??= [];
+            UserReadStateSnapshot? ushot = current.UserReadStates.FirstOrDefault(a => a.Username == username);
+            if (ushot == null)
+            {
+                ushot = new UserReadStateSnapshot { Username = username, Chapters = [] };
+                current.UserReadStates.Add(ushot);
+            }
+            ushot.Chapters = states;
+            current.Version = 2;
+            return current;
+        });
+    }
+
+    /// <summary>
     /// Calculates the number of unread chapters for a user in a series.
     /// </summary>
     public int GetUnreadChaptersCount(string username, string seriesStoragePath, int totalChapters)

@@ -125,6 +125,12 @@ public class EditableSettingsDto
 
     [JsonPropertyName("smtpFromAddress")]
     public string SmtpFromAddress { get; set; } = string.Empty;
+
+    // --- Reader ---
+
+    /// <summary>Enables the built-in web reader (library reading + Browse preview).</summary>
+    [JsonPropertyName("readerEnabled")]
+    public bool ReaderEnabled { get; set; } = true;
 }
 public enum NsfwVisibility
 {

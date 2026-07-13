@@ -366,6 +366,7 @@ namespace RensaioBackend.Services.Settings
                 SmtpPassword = settings.SmtpPassword,
                 SmtpUseSsl = settings.SmtpUseSsl,
                 SmtpFromAddress = settings.SmtpFromAddress,
+                ReaderEnabled = settings.ReaderEnabled,
             };
 
             await SaveSettingsAsync(editableSettings, force, token).ConfigureAwait(false);
@@ -417,6 +418,7 @@ namespace RensaioBackend.Services.Settings
                 SmtpPassword = ed.SmtpPassword,
                 SmtpUseSsl = ed.SmtpUseSsl,
                 SmtpFromAddress = ed.SmtpFromAddress,
+                ReaderEnabled = ed.ReaderEnabled,
             };
             set.StorageFolder = _config["StorageFolder"] ?? string.Empty;
             set.ImportFolder = _config["ImportFolder"] ?? string.Empty;
