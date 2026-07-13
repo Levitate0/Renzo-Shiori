@@ -233,6 +233,24 @@ function ReaderInner() {
     }
   }, [isPreview, detectedMode, pageCount]);
 
+  /**
+   * Height reservation for a page box in continuous mode, so the scroll height
+   * is correct before any image has loaded. Library chapters carry exact
+   * dimensions from the server; for preview we use whatever the image reported
+   * once it loaded, and a tall-ish placeholder until then.
+   */
+  const pageAspect = useCallback((index: number): React.CSSProperties => {
+    const dims = info?.pages.find((p) => p.index === index);
+    if (dims?.width && dims?.height) {
+      return { aspectRatio: `${dims.width} / ${dims.height}` };
+    }
+    const loaded = loadedDimsRef.current.get(index);
+    if (loaded?.w && loaded?.h) {
+      return { aspectRatio: `${loaded.w} / ${loaded.h}` };
+    }
+    return { minHeight: "70vh" };
+  }, [info]);
+
   // ── Page URLs ─────────────────────────────────────────────────────────
   const pageUrl = useCallback((i: number): string => {
     if (isPreview && mihonId) return readerService.previewPageUrl(mihonId, previewChapterIndex, i);
@@ -342,23 +360,58 @@ function ReaderInner() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isContinuous, isRtl, advance, pageCount, goToChapter]);
 
-  // Continuous mode: track the visible page + restore position on load
+  // Continuous mode: derive the current page from scroll position.
+  //
+  // This used to use an IntersectionObserver that took the highest intersecting
+  // index. Lazy images have zero height until they load, so on open every page
+  // box sits stacked at the top and they ALL intersect at once — which latched
+  // the counter to the last page ("14/14") and, because progress follows the
+  // page, instantly marked the chapter read. Measuring against a probe line
+  // instead is immune to that, and the aspect-ratio boxes below mean the page
+  // heights are right before a single image has loaded.
   useEffect(() => {
-    if (!isContinuous || pageCount === 0) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            const idx = Number((entry.target as HTMLElement).dataset.page);
-            if (!Number.isNaN(idx)) setCurrentPage((p) => (idx > p || entry.intersectionRatio > 0.5 ? idx : p));
-          }
-        }
-      },
-      { threshold: [0.01, 0.5] },
-    );
-    pageRefs.current.forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
+    if (!isContinuous || pageCount === 0 || loading) return;
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const box = scroller.getBoundingClientRect();
+      // A third of the way down the viewport: the page you'd say you're "on".
+      const probe = box.top + scroller.clientHeight / 3;
+      let current = 0;
+      for (const [index, node] of pageRefs.current) {
+        const rect = node.getBoundingClientRect();
+        if (rect.top <= probe && rect.bottom > probe) { current = index; break; }
+        if (rect.top > probe) break;      // past the probe — keep the last one below it
+        current = index;
+      }
+      setCurrentPage(current);
+    };
+    const onScroll = () => {
+      if (frame) return;                  // coalesce to one measure per frame
+      frame = requestAnimationFrame(update);
+    };
+
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    update();
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, [isContinuous, pageCount, loading]);
+
+  // Continuous mode: jump to the resume position once the pages are laid out.
+  const restoredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isContinuous || loading || pageCount === 0) return;
+    const key = `${seriesId ?? mihonId}:${chapterNumber ?? previewChapterIndex}`;
+    if (restoredRef.current === key) return;
+    restoredRef.current = key;
+    if (currentPage > 0) pageRefs.current.get(currentPage)?.scrollIntoView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isContinuous, loading, pageCount, seriesId, mihonId, chapterNumber, previewChapterIndex]);
 
   const handleTap = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!settings.tapNavigation) { setChromeVisible((v) => !v); return; }
@@ -474,6 +527,12 @@ function ReaderInner() {
                 data-page={i}
                 ref={(el) => { if (el) pageRefs.current.set(i, el); else pageRefs.current.delete(i); }}
                 className="w-full"
+                // Reserve each page's real height up front. Without this, lazy
+                // images are zero-height until they load, every page stacks at
+                // the top, and page tracking (and therefore progress) is
+                // nonsense. Library chapters ship exact dimensions from the
+                // server; preview falls back to a sane placeholder height.
+                style={pageAspect(i)}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
