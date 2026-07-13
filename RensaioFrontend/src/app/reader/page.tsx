@@ -225,10 +225,15 @@ function ReaderInner() {
     if (!isPreview || detectedMode) return;
     loadedDimsRef.current.set(index, { w, h });
     const dims = [...loadedDimsRef.current.values()];
-    if (dims.length >= Math.min(4, pageCount)) {
+    // Mirrors the server-side rule (ReaderService): tall panels are native
+    // webtoon artwork; short wide slivers are off-cuts left by slicing a long
+    // strip into "pages", and enough of either means the chapter must be read
+    // as a continuous, width-matched strip rather than page-by-page.
+    if (dims.length >= Math.min(6, pageCount)) {
       const strips = dims.filter((d) => d.w > 0 && d.h / d.w >= 3).length;
+      const slivers = dims.filter((d) => d.w > 0 && d.h / d.w <= 0.5).length;
       if (strips * 2 >= dims.length) setDetectedMode("webtoon");
-      else if (strips > 3) setDetectedMode("longstrip");
+      else if (strips + slivers > 4) setDetectedMode("longstrip");
       else setDetectedMode("paged");
     }
   }, [isPreview, detectedMode, pageCount]);

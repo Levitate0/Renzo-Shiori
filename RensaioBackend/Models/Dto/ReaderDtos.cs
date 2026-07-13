@@ -73,8 +73,17 @@ public class ReaderPageDimsDto
     [JsonPropertyName("height")]
     public int? Height { get; set; }
 
+    /// <summary>Tall panel (≥3× taller than wide) — native webtoon artwork.</summary>
     [JsonPropertyName("isStrip")]
     public bool IsStrip { get; set; }
+
+    /// <summary>
+    /// Short horizontal band (≥2× wider than tall) — an off-cut left behind when
+    /// a long strip was sliced into "pages". Only reads correctly when stitched
+    /// edge-to-edge at a matched width.
+    /// </summary>
+    [JsonPropertyName("isSliver")]
+    public bool IsSliver { get; set; }
 }
 
 public class ReaderProgressRequestDto

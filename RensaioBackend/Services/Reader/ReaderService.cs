@@ -34,8 +34,22 @@ public class ReaderService
         _logger = logger;
     }
 
-    /// <summary>A page is "strip-shaped" when it's ≥3× taller than wide.</summary>
+    /// <summary>A page is "strip-shaped" when it's ≥3× taller than wide — a native webtoon panel.</summary>
     private const double StripAspectThreshold = 3.0;
+
+    /// <summary>
+    /// A page is a "sliver" when it's at least 2× wider than tall — a short
+    /// horizontal band, e.g. the leftover bottom of a long strip that was sliced
+    /// into pages. Normal pages are portrait and even a double-page spread is
+    /// only ~1.4× wider than tall, so this can't catch ordinary artwork.
+    /// </summary>
+    private const double SliverAspectThreshold = 0.5;
+
+    /// <summary>
+    /// How many strip/sliver pages must appear among otherwise normal pages
+    /// before the chapter is treated as a cut-up long strip.
+    /// </summary>
+    private const int CutStripPageThreshold = 4;
 
     public async Task<ReaderChaptersDto?> GetChaptersAsync(Guid seriesId, string username, CancellationToken token = default)
     {
@@ -101,6 +115,7 @@ public class ReaderService
         info.PageCount = entries.Count;
 
         int strips = 0;
+        int slivers = 0;
         for (int i = 0; i < entries.Count; i++)
         {
             token.ThrowIfCancellationRequested();
@@ -113,10 +128,19 @@ public class ReaderService
                 using Image img = Image.NewFromBuffer(ms.ToArray());
                 dims.Width = img.Width;
                 dims.Height = img.Height;
-                if (img.Width > 0 && (double)img.Height / img.Width >= StripAspectThreshold)
+                if (img.Width > 0)
                 {
-                    dims.IsStrip = true;
-                    strips++;
+                    double aspect = (double)img.Height / img.Width;
+                    if (aspect >= StripAspectThreshold)
+                    {
+                        dims.IsStrip = true;
+                        strips++;
+                    }
+                    else if (aspect <= SliverAspectThreshold)
+                    {
+                        dims.IsSliver = true;
+                        slivers++;
+                    }
                 }
             }
             catch
@@ -126,13 +150,18 @@ public class ReaderService
             info.Pages.Add(dims);
         }
 
-        // Smart mode: mostly strip images → webtoon (continuous, no gaps);
-        // several strip images mixed into normal pages (a converted long strip)
-        // → long-strip; otherwise plain paged.
+        // Smart mode:
+        //  - mostly tall strip images  -> webtoon (native long strip)
+        //  - a handful of tall strips OR wide slivers mixed into otherwise normal
+        //    pages -> longstrip: that's a continuous strip that was cut into
+        //    "pages", and the cut leaves short horizontal off-cuts. Those only
+        //    read correctly stitched edge-to-edge at a matched width.
+        //  - otherwise plain paged.
         int known = info.Pages.Count(p => p.Width != null);
+        int cutMarkers = strips + slivers;
         if (known > 0 && strips * 2 >= known)
             info.SuggestedMode = "webtoon";
-        else if (strips > 3)
+        else if (cutMarkers > CutStripPageThreshold)
             info.SuggestedMode = "longstrip";
         else
             info.SuggestedMode = "paged";

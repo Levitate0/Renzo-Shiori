@@ -92,7 +92,10 @@ export interface ReaderPageDims {
   index: number;
   width?: number | null;
   height?: number | null;
+  /** Tall panel (>=3x taller than wide) — native webtoon artwork. */
   isStrip: boolean;
+  /** Short horizontal band (>=2x wider than tall) — off-cut of a sliced long strip. */
+  isSliver: boolean;
 }
 
 export interface ReaderChapterInfo {
