@@ -532,6 +532,30 @@ function DownloadSettingsSection({
           </p>
         </div>
         <div>
+          <Label htmlFor="pages-in-parallel">
+            Pages In Parallel (per chapter)
+          </Label>
+          <Input
+            id="pages-in-parallel"
+            type="number"
+            min="1"
+            max="16"
+            value={localSettings.pagesInParallelPerChapter ?? 5}
+            onChange={(e) =>
+              setLocalSettings((prev) => ({
+                ...prev,
+                pagesInParallelPerChapter: parseInt(e.target.value) || 1,
+              }))
+            }
+          />
+          <p className="text-muted-foreground mt-1 text-sm">
+            How many page images are fetched at once within a single chapter.
+            Pages are still saved in order. This is the biggest lever on download
+            speed — 1 is the old one-page-at-a-time behaviour. Lower it for
+            sources that rate-limit or return errors under load.
+          </p>
+        </div>
+        <div>
           <Label htmlFor="simultaneous-searches">
             Number of Simultaneous Searches
           </Label>

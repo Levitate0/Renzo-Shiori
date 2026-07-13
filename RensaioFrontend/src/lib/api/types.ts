@@ -21,6 +21,8 @@ export interface Settings {
   mihonRepositories: string[];
   numberOfSimultaneousDownloads: number;
   numberOfSimultaneousDownloadsPerProvider: number;
+  /** Page images fetched concurrently within one chapter (written in order). */
+  pagesInParallelPerChapter: number;
   numberOfSimultaneousSearches: number;
   chapterDownloadFailRetryTime: string; // TimeSpan as string
   chapterDownloadFailRetries: number;

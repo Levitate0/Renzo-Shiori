@@ -171,33 +171,64 @@ namespace RensaioBackend.Services.Downloads
                 {
                     await using (var zipWriter = await WriterFactory.OpenAsyncWriter(zipStream, ArchiveType.Zip, new ZipWriterOptions(CompressionType.None)).ConfigureAwait(false))
                     {
-                        foreach (Page pag in ch.Pages)
+                        // Pages are fetched with a bounded look-ahead window instead of one
+                        // at a time: a chapter is dozens-to-hundreds of independent HTTP
+                        // GETs, and doing them serially made a big chapter take minutes of
+                        // almost pure round-trip latency. The window caps how many requests
+                        // are in flight (and therefore peak memory ≈ window × page size),
+                        // while pages are still WRITTEN in order, so the archive is
+                        // byte-for-byte what the serial path produced.
+                        int window = Math.Clamp(appSettings.PagesInParallelPerChapter, 1, 16);
+                        var inFlight = new Queue<(Page page, Task<ContentTypeStream?> task)>();
+                        int nextToFetch = 0;
+
+                        Task<ContentTypeStream?> Fetch(Page p) => _mihon.MihonErrorWrapperAsync(
+                            () => src.GetPageImageAsync(p, token),
+                            "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
+                            p.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider);
+
+                        while (nextToFetch < ch.Pages.Count && inFlight.Count < window)
                         {
+                            Page p = ch.Pages[nextToFetch++];
+                            inFlight.Enqueue((p, Fetch(p)));
+                        }
+
+                        while (inFlight.Count > 0)
+                        {
+                            (Page pag, Task<ContentTypeStream?> task) = inFlight.Dequeue();
                             try
                             {
                                 int pageIndex = pag.Index;
-                                ContentTypeStream? image = await _mihon.MihonErrorWrapperAsync(
-                                    () => src.GetPageImageAsync(pag, token),
-                                    "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}", pageIndex + 1, ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                                ContentTypeStream? image = await task.ConfigureAwait(false);
                                 if (image == null)
                                 {
                                     breaked = true;
                                     break;
                                 }
 
-                                (_, string? ext) = image.GetImageMimeTypeAndExtension();
-                                if (ext == null)
+                                using (image)
                                 {
-                                    _logger.LogWarning("Page {Page} of chapter {ChapterNumber} of series {SeriesTitle} is not a valid image", pageIndex + 1, ch.Chapter.ParsedNumber, ch.Title);
-                                    ext = ".unk";
+                                    (_, string? ext) = image.GetImageMimeTypeAndExtension();
+                                    if (ext == null)
+                                    {
+                                        _logger.LogWarning("Page {Page} of chapter {ChapterNumber} of series {SeriesTitle} is not a valid image", pageIndex + 1, ch.Chapter.ParsedNumber, ch.Title);
+                                        ext = ".unk";
+                                    }
+                                    string fileName = ArchiveHelperService.MakeFileNameSafe(ch.ProviderName, ch.Scanlator, ch.SeriesTitle, ch.Language,
+                                                ch.Chapter.ParsedNumber, ch.ChapterName, maxChap, pageIndex + 1, ch.PageCount) + ext;
+                                    await zipWriter.WriteAsync(fileName, image).ConfigureAwait(false);
                                 }
-                                string fileName = ArchiveHelperService.MakeFileNameSafe(ch.ProviderName, ch.Scanlator, ch.SeriesTitle, ch.Language,
-                                            ch.Chapter.ParsedNumber, ch.ChapterName, maxChap, pageIndex + 1, ch.PageCount) + ext;
-                                await zipWriter.WriteAsync(fileName, image).ConfigureAwait(false);
                                 pagesWritten++;
                                 acum += step;
                                 message = $"Downloading ({providerName}) {ch.Title} {chapterName} {pageIndex}";
                                 reporter.Report(ProgressStatus.InProgress, (int)acum, message, downloadSummary);
+
+                                // Keep the window full as each page is consumed.
+                                if (nextToFetch < ch.Pages.Count)
+                                {
+                                    Page p = ch.Pages[nextToFetch++];
+                                    inFlight.Enqueue((p, Fetch(p)));
+                                }
                             }
                             catch (Exception)
                             {
@@ -206,9 +237,18 @@ namespace RensaioBackend.Services.Downloads
                                 breaked = true;
                                 break;
                             }
+                        }
 
-                            if (breaked)
-                                break;
+                        // A failure abandons the chapter, so drain whatever is still in
+                        // flight and dispose it — otherwise those streams leak.
+                        if (inFlight.Count > 0)
+                        {
+                            foreach ((_, Task<ContentTypeStream?> pending) in inFlight)
+                            {
+                                try { (await pending.ConfigureAwait(false))?.Dispose(); }
+                                catch { /* already failing; nothing to salvage */ }
+                            }
+                            inFlight.Clear();
                         }
 
                         if (pagesWritten == 0)

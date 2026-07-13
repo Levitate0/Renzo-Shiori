@@ -49,6 +49,15 @@ public class EditableSettingsDto
     [JsonPropertyName("numberOfSimultaneousDownloadsPerProvider")]
     public int NumberOfSimultaneousDownloadsPerProvider { get; set; } = 3;
 
+    /// <summary>
+    /// How many page images are fetched concurrently within a single chapter.
+    /// Pages are still written to the archive in order. 1 = the old strictly
+    /// serial behavior; higher is much faster on high-latency sources but hits
+    /// them harder, so sources that rate-limit may prefer a low value.
+    /// </summary>
+    [JsonPropertyName("pagesInParallelPerChapter")]
+    public int PagesInParallelPerChapter { get; set; } = 5;
+
     [JsonPropertyName("socksProxyEnabled")]
     public bool SocksProxyEnabled { get; set; } = false;
     [JsonPropertyName("socksProxyVersion")]
