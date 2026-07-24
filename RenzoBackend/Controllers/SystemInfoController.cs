@@ -29,7 +29,13 @@ public class SystemInfoController : ControllerBase
         string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
         return Ok(new
         {
-            product = "Renzo",
+            // Internal client-handshake identifier (NOT user-facing branding — the UI,
+            // logos, and repo are all Renzo). Kept as "Rensaio" so previously-installed
+            // desktop/APK builds, which probe this endpoint and match the literal
+            // "Rensaio", still recognize this server after the rebrand. New Renzo clients
+            // accept both names. `productName` carries the current brand for anything new.
+            product = "Rensaio",
+            productName = "Renzo",
             version,
             authenticationRequired = settings.AuthenticationEnabled
         });

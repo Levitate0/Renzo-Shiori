@@ -128,10 +128,15 @@ public partial class MainWindow : Window
                 if (!resp.IsSuccessStatusCode)
                     continue;
                 using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-                if (doc.RootElement.TryGetProperty("product", out JsonElement product) &&
-                    string.Equals(product.GetString(), "Renzo", StringComparison.OrdinalIgnoreCase))
+                if (doc.RootElement.TryGetProperty("product", out JsonElement product))
                 {
-                    return baseUrl;
+                    string? p = product.GetString();
+                    // Accept both the current brand and the legacy handshake id.
+                    if (string.Equals(p, "Renzo", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p, "Rensaio", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return baseUrl;
+                    }
                 }
             }
             catch
