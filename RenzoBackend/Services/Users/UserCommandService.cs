@@ -100,27 +100,46 @@ public class UserCommandService
         if (level == UserLevel.Owner && await _userQueryService.OwnerExistsAsync(token))
             throw new InvalidOperationException("An owner already exists. Only one owner is allowed.");
 
+        // Operate on an entity TRACKED by this DbContext so SaveChanges persists.
+        // Callers such as PUT /api/auth/me pass the HttpContext.Items["User"] entity,
+        // which the auth middleware loaded in a different DI scope — modifying that
+        // directly saved nothing (email/avatar edits silently no-op'd).
+        UserEntity target = _db.Users.Local.FirstOrDefault(u => u.Id == user.Id)
+                            ?? await _db.Users.FirstOrDefaultAsync(u => u.Id == user.Id, token)
+                            ?? user;
+
         if (level.HasValue)
-            user.Level = level.Value;
+            target.Level = level.Value;
 
         if (isActive.HasValue)
-            user.IsActive = isActive.Value;
+            target.IsActive = isActive.Value;
 
         if (email != null)
-            user.Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim();
+            target.Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim();
 
         if (removeAvatar == true)
         {
-            user.AvatarBlob = null;
-            user.AvatarContentType = null;
+            target.AvatarBlob = null;
+            target.AvatarContentType = null;
         }
         else if (avatarBlob != null)
         {
-            user.AvatarBlob = avatarBlob;
-            user.AvatarContentType = avatarContentType;
+            target.AvatarBlob = avatarBlob;
+            target.AvatarContentType = avatarContentType;
         }
 
         await _db.SaveChangesAsync(token);
+
+        // Mirror the saved values back onto the caller's instance so its response
+        // DTO reflects the update even when it passed a detached entity.
+        if (!ReferenceEquals(target, user))
+        {
+            user.Level = target.Level;
+            user.IsActive = target.IsActive;
+            user.Email = target.Email;
+            user.AvatarBlob = target.AvatarBlob;
+            user.AvatarContentType = target.AvatarContentType;
+        }
     }
 
     /// <summary>
