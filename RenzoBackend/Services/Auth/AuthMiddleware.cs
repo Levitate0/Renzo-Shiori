@@ -199,6 +199,11 @@ public class AuthMiddleware
         // MCP: /{opdsPath}/mcp/sse or /{opdsPath}/mcp/message
         if (segments.Length >= 2 && segments[1].Equals("mcp", StringComparison.OrdinalIgnoreCase))
             return true;
+        // Container-hosted OAuth: the provider redirects the user's browser to
+        // /oauth/{provider}/callback with no Renzo JWT — it must be reachable
+        // unauthenticated. The forwarder + bundled proxy validate state/instance-key.
+        if (path.StartsWithSegments("/oauth"))
+            return true;
         // OPDS: anything that doesn't start with /api/ is treated as OPDS
         // Since we can't distinguish easily, we handle OPDS routes in the middleware below
         // by allowing all routes through if auth is disabled or if the route doesn't start with /api/
