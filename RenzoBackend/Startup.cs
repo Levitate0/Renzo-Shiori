@@ -285,6 +285,21 @@ namespace RenzoBackend
                 context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
                 context.Response.Headers.Append("X-Frame-Options", "SAMEORIGIN");
                 context.Response.Headers.Append("Referrer-Policy", "strict-origin-when-cross-origin");
+                // API responses must never be cached by the browser. Without this, GETs
+                // like /api/auth/status and /api/settings have no Cache-Control, so
+                // browsers heuristically cache them — a stale response (e.g. captured
+                // while the DB was empty: authenticationEnabled=false / setup incomplete)
+                // then gets replayed forever, wedging the login flow and re-showing the
+                // setup wizard. no-store guarantees the client always sees live auth state.
+                if (context.Request.Path.StartsWithSegments("/api"))
+                {
+                    context.Response.OnStarting(() =>
+                    {
+                        context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+                        context.Response.Headers.Pragma = "no-cache";
+                        return Task.CompletedTask;
+                    });
+                }
                 await next();
             });
 
