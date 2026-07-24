@@ -566,7 +566,10 @@
   overflow: hidden;
   position: relative;
   padding: 20px 24px;
-  max-height: 84vh;
+  /* Dynamic viewport height so the modal never exceeds the visible window
+     (accounts for mobile browser chrome); capped so it can't get absurdly tall
+     on large monitors. Inner .iw-content scrolls. */
+  max-height: min(88dvh, 900px);
   display: flex;
   flex-direction: column;
 }

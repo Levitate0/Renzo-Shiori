@@ -58,7 +58,13 @@ export function SetupWizardProvider({ children }: { children: React.ReactNode })
     if (saved) {
       try {
         const parsedState = JSON.parse(saved) as WizardState;
-        setWizardState(parsedState);
+        // Never resurrect an ACTIVE wizard from localStorage. Whether the wizard
+        // should be open is decided solely by the server (isWizardSetupComplete)
+        // in the effect below. Restoring isActive:true here made the wizard stick
+        // even after setup was complete — e.g. when the settings fetch is 401
+        // (auth enabled, not logged in yet) it can't run the corrective effect,
+        // so a stale isActive:true left the user trapped on the wizard.
+        setWizardState({ ...parsedState, isActive: false });
       } catch {
         // If parsing fails, keep default state
       }
