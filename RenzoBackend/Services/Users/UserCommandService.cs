@@ -66,14 +66,23 @@ public class UserCommandService
     /// </summary>
     public async Task<bool> ChangePasswordAsync(UserEntity user, string currentPassword, string newPassword, CancellationToken token = default)
     {
-        if (string.IsNullOrWhiteSpace(user.PasswordHash) || string.IsNullOrWhiteSpace(user.Salt))
+        // The passed-in entity is loaded by the auth middleware in a SEPARATE DI
+        // scope, so it isn't tracked by this request-scoped _db — modifying it and
+        // calling SaveChanges here persisted nothing (the change silently no-op'd and
+        // the old password kept working). Re-load the user in THIS context so the
+        // update actually writes.
+        UserEntity? dbUser = await _db.Users.FirstOrDefaultAsync(u => u.Id == user.Id, token);
+        if (dbUser == null)
             return false;
 
-        if (!_passwordService.VerifyPassword(currentPassword, user.PasswordHash, user.Salt))
+        if (string.IsNullOrWhiteSpace(dbUser.PasswordHash) || string.IsNullOrWhiteSpace(dbUser.Salt))
             return false;
 
-        user.PasswordHash = _passwordService.HashPassword(newPassword, out string salt);
-        user.Salt = salt;
+        if (!_passwordService.VerifyPassword(currentPassword, dbUser.PasswordHash, dbUser.Salt))
+            return false;
+
+        dbUser.PasswordHash = _passwordService.HashPassword(newPassword, out string salt);
+        dbUser.Salt = salt;
         await _db.SaveChangesAsync(token);
         return true;
     }
