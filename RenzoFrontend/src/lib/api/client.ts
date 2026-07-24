@@ -11,6 +11,7 @@ async function trySilentRefresh(baseUrl: string): Promise<boolean> {
       const response = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
+        cache: 'no-store',
       });
       if (!response.ok) return false;
       const body = (await response.json()) as { token?: string };
@@ -77,6 +78,11 @@ class RenzoApiClient {
     const response = await fetch(url, {
       headers,
       credentials: 'include', // Include cookies for session management
+      // Always bypass the browser HTTP cache for API calls. Without this, a GET
+      // like /api/auth/status can be served from a stale cached copy (e.g. one
+      // captured while the DB was empty: authenticationEnabled=false), which wedges
+      // the whole auth flow even though the server now returns the correct value.
+      cache: 'no-store',
       ...options,
     });
 

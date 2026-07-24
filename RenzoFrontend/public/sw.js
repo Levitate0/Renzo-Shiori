@@ -7,7 +7,7 @@
  *   - everything else (API, images, SignalR): untouched — straight to network
  */
 
-const CACHE_NAME = 'renzo-v1';
+const CACHE_NAME = 'renzo-v2';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
