@@ -242,7 +242,7 @@ namespace RenzoBackend
                     // stale JS) for up to a day after a redeploy.
                     if (context.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
                     {
-                        headers.CacheControl = "no-cache";
+                        headers.CacheControl = "no-store, no-cache, must-revalidate";
                     }
                     // Service worker + manifest control the PWA update cycle — a cached
                     // copy here delays every future frontend update reaching clients.

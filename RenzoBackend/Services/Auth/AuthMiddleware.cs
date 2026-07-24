@@ -143,8 +143,14 @@ public class AuthMiddleware
                 }
             }
 
+            var authLogger = scope.ServiceProvider.GetRequiredService<ILogger<AuthMiddleware>>();
+            bool hadHeader = !string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
+            bool hadQueryToken = !string.IsNullOrWhiteSpace(context.Request.Query["token"].FirstOrDefault());
+
             if (principal == null)
             {
+                authLogger.LogWarning("AUTH 401 (no principal) path={Path} bearer={Bearer} queryToken={QT}",
+                    context.Request.Path, hadHeader, hadQueryToken);
                 context.Response.StatusCode = 401;
                 return;
             }
@@ -152,6 +158,7 @@ public class AuthMiddleware
             Guid? userId = jwtService.GetUserIdFromPrincipal(principal);
             if (userId == null)
             {
+                authLogger.LogWarning("AUTH 401 (no userId claim) path={Path}", context.Request.Path);
                 context.Response.StatusCode = 401;
                 return;
             }
@@ -159,6 +166,7 @@ public class AuthMiddleware
             UserEntity? user = await db.Users.FindAsync(userId.Value);
             if (user == null || !user.IsActive)
             {
+                authLogger.LogWarning("AUTH 401 (user {UserId} null/inactive) path={Path}", userId, context.Request.Path);
                 context.Response.StatusCode = 401;
                 return;
             }

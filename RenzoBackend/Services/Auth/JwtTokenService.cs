@@ -27,9 +27,12 @@ public class JwtTokenService
     /// </summary>
     private const string ImageAudience = "RenzoImages";
 
-    public JwtTokenService(IConfiguration configuration)
+    private readonly ILogger<JwtTokenService>? _logger;
+
+    public JwtTokenService(IConfiguration configuration, ILogger<JwtTokenService>? logger = null)
     {
         _configuration = configuration;
+        _logger = logger;
     }
 
     /// <summary>
@@ -206,8 +209,9 @@ public class JwtTokenService
 
             return result;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger?.LogWarning("ValidateToken (session) FAILED: {Type}: {Msg}", ex.GetType().Name, ex.Message);
             return null;
         }
     }
@@ -240,8 +244,9 @@ public class JwtTokenService
 
             return result;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger?.LogWarning("ValidateImageToken FAILED: {Type}: {Msg}", ex.GetType().Name, ex.Message);
             return null;
         }
     }
