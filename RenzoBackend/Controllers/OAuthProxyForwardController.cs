@@ -14,7 +14,7 @@ namespace RenzoBackend.Controllers;
 /// tokens are later retrieved by the authenticated user via the scrobbler callback.
 /// </summary>
 [ApiController]
-[Route("api/oauth")]
+[Route("oauth")]
 [AllowAnonymous]
 public class OAuthProxyForwardController : ControllerBase
 {

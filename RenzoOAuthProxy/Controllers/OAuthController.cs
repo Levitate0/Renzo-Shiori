@@ -47,7 +47,10 @@ public class OAuthController : ControllerBase
         try
         {
             var state = Guid.NewGuid().ToString("N");
-            var redirectUri = $"{ResolvePublicBase(publicBase)}/api/oauth/{provider}/callback";
+            // Public callback lives at /oauth/... on the Renzo domain (the backend
+            // forwards /oauth/* to this proxy's /api/oauth/*). This is the URL the admin
+            // registers as the provider redirect_uri.
+            var redirectUri = $"{ResolvePublicBase(publicBase)}/oauth/{provider}/callback";
             var authUrl = await _providerApi.GenerateAuthUrlAsync(provider, redirectUri, state);
 
             _tokenStore.Store(state, instanceKey, provider, redirectUri);
