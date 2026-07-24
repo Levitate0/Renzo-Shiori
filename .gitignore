@@ -307,9 +307,9 @@ next-env.d.ts
 
 /runtime/
 
-RensaioBackend/runtime/rensaio.schedule.db-wal
-/RensaioBackend/wwwroot.sha256
-/RensaioBackend/wwwroot.zip
+RenzoBackend/runtime/renzo.schedule.db-wal
+/RenzoBackend/wwwroot.sha256
+/RenzoBackend/wwwroot.zip
 
 # Kaizoku-branded build output (generated, not source)
 /KaizokuFrontend/
@@ -320,3 +320,8 @@ RensaioBackend/runtime/rensaio.schedule.db-wal
 /uploads
 /.claude/
 /plans
+
+# Local session/build artifacts (not part of the project)
+backup_chat.txt
+/dotnet-install.sh
+/wwwroot.sha256

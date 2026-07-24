@@ -14,11 +14,11 @@ val keyProps = Properties().apply {
 }
 
 android {
-    namespace = "app.rensaio.client"
+    namespace = "app.renzo.client"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "app.rensaio.client"
+        applicationId = "app.renzo.client"
         minSdk = 24
         targetSdk = 34
         versionCode = 1

@@ -1,0 +1,877 @@
+using RenzoBackend.Data;
+using RenzoBackend.Extensions;
+using RenzoBackend.Models;
+using RenzoBackend.Models.Database;
+using RenzoBackend.Models.Dto;
+using RenzoBackend.Models.Enums;
+using RenzoBackend.Services.Bridge;
+using RenzoBackend.Services.Images;
+using RenzoBackend.Services.Import;
+using RenzoBackend.Services.Jobs;
+using RenzoBackend.Services.Jobs.Models;
+using RenzoBackend.Services.Jobs.Report;
+using RenzoBackend.Services.Providers;
+using RenzoBackend.Services.Search;
+using RenzoBackend.Services.Series;
+using RenzoBackend.Services.Settings;
+using Microsoft.EntityFrameworkCore;
+using Mihon.ExtensionsBridge.Core.Extensions;
+using Mihon.ExtensionsBridge.Models;
+using System.Collections.Generic;
+using System.Linq.Expressions;
+using static System.Net.Mime.MediaTypeNames;
+using Action = RenzoBackend.Models.Action;
+
+namespace RenzoBackend.Services.Import;
+
+public class ImportCommandService
+{
+    private readonly ILogger _logger;
+    private readonly AppDbContext _db;
+    private readonly JobHubReportService _reportingService;
+    private readonly JobManagementService _jobManagementService;
+    private readonly SearchQueryService _searchQuery;
+    private readonly SearchCommandService _searchCommand;
+    private readonly SeriesCommandService _seriesCommand;
+    private readonly SeriesProviderService _seriesProvider;
+    private readonly ProviderCacheService _providerCache;
+    private readonly ProviderManagerService _providerManagerService;
+    private readonly MihonBridgeService _mihon;
+    private readonly SettingsService _settings;
+    private readonly SeriesScanner _scanner;
+    private readonly ThumbCacheService _thumb;
+    private readonly CoverHashService _coverHash;
+    private readonly Series.SeriesStateService _stateService;
+    public ImportCommandService(
+        ILogger<ImportCommandService> logger,
+        SearchQueryService searchQuery,
+        SearchCommandService searchCommand,
+        SettingsService settings,
+        AppDbContext db,
+        JobHubReportService reportingService,
+        JobManagementService jobManagementService,
+        MihonBridgeService mihon,
+        SeriesCommandService seriesCommand,
+        SeriesProviderService seriesProvider,
+        ProviderCacheService providerCache,
+        ProviderManagerService provicerManagerService,
+        ThumbCacheService thumb,
+        CoverHashService coverHash,
+        SeriesScanner scanner,
+        Series.SeriesStateService stateService)
+    {
+        _logger = logger;
+        _settings = settings;
+        _db = db;
+        _providerManagerService = provicerManagerService;
+        _searchQuery = searchQuery;
+        _searchCommand = searchCommand;
+        _reportingService = reportingService;
+        _jobManagementService = jobManagementService;
+        _providerCache = providerCache;
+        _seriesCommand = seriesCommand;
+        _seriesProvider = seriesProvider;
+        _mihon = mihon;
+        _scanner = scanner;
+        _thumb = thumb;
+        _coverHash = coverHash;
+        _stateService = stateService;
+    }
+
+    /// <param name="titleOnly">
+    /// When true, folders with no directly-contained CBZ/archive files are not
+    /// silently skipped — a folder that looks like an actual series (a chapter
+    /// subfolder containing images directly, per SeriesScanner's heuristic) is
+    /// registered as a bare title-only import instead. Intended for migrating
+    /// libraries laid out by other downloaders (e.g. Suwayomi, which stores each
+    /// chapter as a folder of loose images rather than a CBZ) where the goal is
+    /// just getting the series titles registered so they can be auto-matched to
+    /// real providers via the normal SearchSeriesAsync pipeline, without needing
+    /// the original files to be readable by Renzo at all.
+    /// </param>
+    public async Task<JobResult> ScanAsync(string directoryPath, JobInfo jobInfo, bool titleOnly = false, CancellationToken token = default)
+    {
+        _logger.LogInformation("Starting directory scan job for path: {directoryPath} (titleOnly={titleOnly})", directoryPath, titleOnly);
+        ProgressReporter progress = _reportingService.CreateReporter(jobInfo);
+        if ((await _jobManagementService.IsJobTypeRunningAsync(JobType.SearchProviders, token).ConfigureAwait(false))
+            || (await _jobManagementService.IsJobTypeRunningAsync(JobType.InstallAdditionalExtensions, token).ConfigureAwait(false)))
+        {
+            progress.Report(ProgressStatus.Completed, 100, "Scanning completed successfully.");
+            return JobResult.Success;
+        }
+
+        List<RenzoBackend.Models.Database.SeriesEntity> allseries = await _db.Series.Include(a => a.Sources).ToListAsync(token).ConfigureAwait(false);
+        List<TachiyomiRepository> repos = _mihon.ListOnlineRepositories();
+        if (!Directory.Exists(directoryPath))
+        {
+            _logger.LogError("Directory not found: {directoryPath}", directoryPath);
+            return JobResult.Failed;
+        }
+        progress.Report(ProgressStatus.Started, 0, "Scanning Directories...");
+        var seriesDict = new List<ImportSeriesSnapshot>();
+        await _scanner.RecurseDirectoryAsync(allseries, repos, seriesDict, directoryPath, directoryPath, progress, titleOnly, token).ConfigureAwait(false);
+        HashSet<string> folders = seriesDict.Select(a => a.Path).ToHashSet();
+        await SaveImportsAsync(folders, seriesDict, titleOnly, token).ConfigureAwait(false);
+        progress.Report(ProgressStatus.Completed, 100, "Scanning completed successfully.");
+        _logger.LogInformation("Directory scan job completed successfully for path: {directoryPath}", directoryPath);
+        return JobResult.Success;
+    }
+
+    private async Task ReconcileLanguagesFromImportAsync(List<RenzoBackend.Models.Database.ImportEntity> imports)
+    {
+        string[] languages = imports
+            .SelectMany(a => a.Info.Series.Providers.Select(b => b.Language))
+            .Where(a => !string.IsNullOrEmpty(a))
+            .Distinct()
+            .ToArray();
+        string[] avail = await _settings.GetAvailableLanguagesAsync().ConfigureAwait(false);
+        languages = languages.Where(a => avail.Contains(a)).ToArray();
+        SettingsDto settings = await _settings.GetSettingsAsync().ConfigureAwait(false);
+        int cnt = settings.PreferredLanguages.Length;
+        languages = settings.PreferredLanguages.Concat(languages.Where(a => !settings.PreferredLanguages.Contains(a))).ToArray();
+        if (languages.Length != cnt)
+        {
+            settings.PreferredLanguages = languages;
+            await _settings.SaveSettingsAsync(settings, true).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SaveImportsAsync(HashSet<string> existingFolders, List<ImportSeriesSnapshot> newSeries, bool titleOnly, CancellationToken token = default)
+    {
+        // Scoped by IsTitleOnly: title-only scans are rooted at ImportFolder and regular scans at
+        // StorageFolder, two disjoint path namespaces. Without this scope, either scan's "not seen
+        // this pass" cleanup would delete the other's still-pending rows.
+        var imports = await _db.Imports.Where(a => a.IsTitleOnly == titleOnly).ToListAsync(token).ConfigureAwait(false);
+        foreach (RenzoBackend.Models.Database.ImportEntity a in imports)
+        {
+            if (!existingFolders.Contains(a.Path, StringComparer.InvariantCultureIgnoreCase) && a.Status != ImportStatus.DoNotChange)
+            {
+                _db.Imports.Remove(a);
+            }
+        }
+        Dictionary<string, Guid> paths = await _db.GetPathsAsync(token).ConfigureAwait(false);
+        foreach (ImportSeriesSnapshot k in newSeries)
+        {
+            RenzoBackend.Models.Database.SeriesEntity? s = null;
+            if (!titleOnly && !string.IsNullOrEmpty(k.Path) && paths.TryGetValue(k.Path, out Guid id))
+            {
+                s = await _db.Series.Include(a => a.Sources)
+                    .Where(a => a.Id == id)
+                    .FirstOrDefaultAsync(token).ConfigureAwait(false);
+            }
+            bool update = false;
+            bool exists = false;
+            if (s != null)
+            {
+                exists = true;
+                Dictionary<Chapter, SeriesProviderEntity> chapters = s.Sources.SelectMany(a => a.Chapters, (p, c) => new { Provider = p, Chapter = c }).Where(a=>!string.IsNullOrEmpty(a.Chapter.Filename)).ToDictionary(x => x.Chapter, x => x.Provider);
+                Dictionary<ProviderArchiveSnapshot, ImportProviderSnapshot> archives = k.Series.Providers
+                    .SelectMany(a => a.Archives, (p, c) => new { Provider = p, Chapter = c })
+                    .Where(a => !string.IsNullOrEmpty(a.Chapter.ArchiveName))
+                    .ToDictionary(a => a.Chapter, a => a.Provider);
+                foreach (ProviderArchiveSnapshot archive in archives.Keys)
+                {
+                    Chapter? c = chapters.Keys.FirstOrDefault(a => a.Filename!.Equals(archive.ArchiveName!, StringComparison.InvariantCultureIgnoreCase));
+                    if (c != null)
+                    {
+                        chapters.Remove(c);
+                    }
+                    else
+                    {
+                        update = true;
+                    }
+                }
+                if (chapters.Count > 0)
+                {
+                    foreach (Chapter c in chapters.Keys)
+                    {
+                        chapters[c].Chapters.Remove(c);
+                        _db.Touch(chapters[c],c=>c.Chapters);
+                    }
+                    await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                }
+            }
+            RenzoBackend.Models.Database.ImportEntity? import = imports.FirstOrDefault(a => a.Path.Equals(k.Path, StringComparison.InvariantCultureIgnoreCase));
+            if (import != null)
+            {
+                bool change = false;
+                if ((k.ArchiveCompare & ArchiveCompare.Equal) != ArchiveCompare.Equal)
+                    (change, import.Info) = import.Info.Merge(k);
+                else if (titleOnly && import.Info.Providers.Count == 0 && k.Providers.Count > 0)
+                {
+                    // Title-only stubs registered before source-folder parsing existed have
+                    // no provider info; adopt the one parsed from the Suwayomi folder name
+                    // so matching can target the original source. (The ArchiveCompare gate
+                    // above never fires for title-only stubs — they carry no archives.)
+                    import.Info.Providers = k.Providers;
+                }
+                _db.Touch(import, a => a.Info);
+                if (update)
+                    import.Status = ImportStatus.Import;
+                else if (!exists && import.Action!=Action.Skip)
+                    import.Status = ImportStatus.Import;
+                else if (titleOnly && import.Action == Action.Skip && (import.Series == null || import.Series.Count == 0))
+                {
+                    // Skip with no candidates means a previous auto-match failed and set it,
+                    // not the user (the review screen only exposes skip on found imports).
+                    // Re-running a title-only scan is an explicit request to retry matching.
+                    import.Status = ImportStatus.Import;
+                    import.Action = Action.Add;
+                }
+                else if (import.Action == Action.Skip)
+                {
+                    import.Status = ImportStatus.Skip;
+                }
+                else
+                    import.Status = ImportStatus.DoNotChange;
+            }
+            else
+            {
+                RenzoBackend.Models.Database.ImportEntity imp = new RenzoBackend.Models.Database.ImportEntity
+                {
+                    Title = k.Title,
+                    Path = k.Path,
+                    Status = ImportStatus.Import,
+                    Action = Action.Add,
+                    Info = k,
+                    IsTitleOnly = titleOnly
+                };
+                _db.Imports.Add(imp);
+            }
+        }
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+    }
+
+    public async Task<JobResult> AddExtensionsAsync(JobInfo jobInfo, int startPercentage, int maxPercentage, CancellationToken token = default)
+    {
+        try
+        {
+            _logger.LogInformation("Starting extension installation job...");
+            ProgressReporter progress = _reportingService.CreateReporter(jobInfo);
+            if ((await _jobManagementService.IsJobTypeRunningAsync(JobType.SearchProviders, token).ConfigureAwait(false)))
+            {
+                progress.Report(ProgressStatus.Completed, maxPercentage, "Extensions installed successfully.");
+                return JobResult.Success;
+            }
+            progress.Report(ProgressStatus.InProgress, startPercentage, null);
+            List<RenzoBackend.Models.Database.ImportEntity> imports = await _db.Imports.Where(a => a.Status == ImportStatus.Import).ToListAsync(token).ConfigureAwait(false);
+            await ReconcileLanguagesFromImportAsync(imports).ConfigureAwait(false);
+        List<ImportProviderSnapshot> importProviderSnapshots = imports.SelectMany(i => i.Info.Series.Providers).ToList();
+            Dictionary<TachiyomiExtension, TachiyomiRepository> requiredExtensions = await _providerManagerService.GetRequiredExtensionsAsync(importProviderSnapshots, token).ConfigureAwait(false);
+            if (requiredExtensions.Count > 0)
+            {
+                float step = (maxPercentage - startPercentage) / (float)requiredExtensions.Count;
+                float acum = startPercentage;
+                foreach ((TachiyomiExtension text, TachiyomiRepository trepo) in requiredExtensions)
+                {
+                    progress.Report(ProgressStatus.InProgress, (decimal)acum, text.ParsedName() + " " + text.Version);
+                    await _providerManagerService.InstallProviderAsync(text.Package, trepo.Name, false, token).ConfigureAwait(false);
+                    acum += step;
+                }
+            }
+            progress.Report(ProgressStatus.Completed, maxPercentage, "Extensions installed successfully.");
+            _logger.LogInformation("Extension installation job completed successfully.");
+            return JobResult.Success;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Error adding extensions: {Message}", e.Message);
+            return JobResult.Failed;
+        }
+    }
+
+    private ProviderStorageEntity? GetSource(ImportProviderSnapshot info, IEnumerable<ProviderStorageEntity> sources)
+    {
+        if (info.Provider == "Unknown")
+            return null;
+        if (string.IsNullOrEmpty(info.Language))
+        {
+            List<ProviderStorageEntity> filtered2 = sources.Where(a => a.Name.Equals(info.Provider, StringComparison.InvariantCultureIgnoreCase)).ToList();
+            if (filtered2.Count>0)
+            {
+                ProviderStorageEntity? ps = filtered2.FirstOrDefault(a => a.Language.Equals("all", StringComparison.InvariantCultureIgnoreCase));
+                if (ps==null)
+                    ps = filtered2.First();
+            }
+            return null;
+        }
+        List<ProviderStorageEntity> filtered = sources.Where(a => a.Name.Equals(info.Provider, StringComparison.InvariantCultureIgnoreCase) && a.Language.Equals(info.Language, StringComparison.InvariantCultureIgnoreCase)).ToList();
+        if (filtered.Count == 0)
+        {
+            filtered = sources.Where(a => a.Name.Equals(info.Provider, StringComparison.InvariantCultureIgnoreCase) && a.Language.Equals("all", StringComparison.InvariantCultureIgnoreCase)).ToList();
+        }
+        if (filtered.Count > 0)
+            return filtered.First();
+        return null;
+    }
+
+
+    public async Task UpdateImportSeriesEntryAsync(ImportSeriesEntry info, CancellationToken token = default)
+    {
+        RenzoBackend.Models.Database.ImportEntity? import = await _db.Imports.FirstOrDefaultAsync(a => a.Path == info.Path, token).ConfigureAwait(false);
+        if (import == null)
+            return;
+        import.ApplyImportSeriesEntry(info);
+        _db.Touch(import, e => e.Series);
+        _db.Touch(import, e => e.Info);
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+    }
+
+    public async Task<JobResult> SearchSeriesAsync(JobInfo jobInfo, CancellationToken token = default)
+    {
+        _logger.LogInformation("Starting series search job...");
+        ProgressReporter progress = _reportingService.CreateReporter(jobInfo);
+        progress.Report(ProgressStatus.Started, 0, "Starting series search...");
+        try
+        {
+            List<RenzoBackend.Models.Database.ImportEntity> imports = await _db.Imports
+                .Where(a => a.Status == ImportStatus.Import)
+                .ToListAsync(token).ConfigureAwait(false); ;
+            // An interrupted run restarts from the top, so skip imports that already
+            // carry match candidates — re-searching them redoes minutes of provider
+            // fan-out per title for no benefit (their candidates simply await review).
+            // A fresh scan clears/replaces candidates when folders change, so this
+            // only ever skips work that is genuinely already done.
+            imports = imports.Where(a => a.Series == null || a.Series.Count == 0).ToList();
+            if (imports.Count == 0)
+            {
+                progress.Report(ProgressStatus.Completed, 100, "No series to search, process complete");
+                return JobResult.Success;
+            }
+            float step = 100 / (float)imports.Count;
+            float acum = 0F;
+            int total = imports.Count;
+            int current = 0;
+            Dictionary<string, Guid> paths = await _db.GetPathsAsync(token).ConfigureAwait(false);
+            var appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            List<RepositoryGroup> local_repo = _mihon.ListExtensions();
+            foreach (RenzoBackend.Models.Database.ImportEntity import in imports)
+            {
+                current++;
+                // Report at the start of every title too, so the UI shows live
+                // "n of total" counts instead of appearing stalled while a
+                // single title's provider fan-out (which can take minutes) runs.
+                progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                    $"({current}/{total}) Searching '{import.Info.Title}'…");
+                try
+                {
+                    List<string> langs = import.Info.Series.Providers.Select(a => a.Language).Distinct().ToList();
+                    // Title-only imports search broadly, so a provider language parsed from
+                    // the source folder (possibly just "all") must not shrink the source pool
+                    // below the user's preferred languages.
+                    if (import.IsTitleOnly)
+                        langs = langs.Concat(appSettings.PreferredLanguages ?? [])
+                            .Distinct(StringComparer.InvariantCultureIgnoreCase).ToList();
+                    if (langs.Count == 0)
+                        langs = ["en"];
+                    var filteredSources = await _providerCache.GetSourcesForLanguagesAsync(langs, token).ConfigureAwait(false);
+                    RenzoBackend.Models.Database.SeriesEntity? s = null;
+                    if (!string.IsNullOrEmpty(import.Info.Path) && paths.TryGetValue(import.Info.Path, out Guid id))
+                    {
+                        s = await _db.Series.Include(a => a.Sources)
+                            .Where(a => a.Id == id)
+                            .FirstOrDefaultAsync(token).ConfigureAwait(false);
+                    }
+                    if (s != null)
+                    {
+                        _logger.LogInformation("Assigning '{Title}' to existing Series", import.Info.Title);
+                        string seriesBasePath = Path.Combine(appSettings.StorageFolder, s.StoragePath);
+                        Dictionary<Chapter, SeriesProviderEntity> chapters = s.Sources
+                            .SelectMany(a => a.Chapters, (p, c) => new { Provider = p, Chapter = c })
+                            .Where(a => !string.IsNullOrEmpty(a.Chapter.Filename))
+                            .ToDictionary(x => x.Chapter, x => x.Provider);
+                        Dictionary<ProviderArchiveSnapshot, ImportProviderSnapshot> archives = import.Info.Series.Providers
+                            .SelectMany(a => a.Archives, (p, c) => new { Provider = p, Chapter = c })
+                            .Where(a => !string.IsNullOrEmpty(a.Chapter.ArchiveName))
+                            .ToDictionary(a => a.Chapter, a => a.Provider);
+                        foreach (Chapter c in chapters.Keys)
+                        {
+                            ProviderArchiveSnapshot? info = archives.Keys.FirstOrDefault(a =>
+                                string.Equals(a.ArchiveName, c.Filename, StringComparison.InvariantCultureIgnoreCase));
+                            if (info != null)
+                                archives.Remove(info);
+                        }
+                        Dictionary<ImportProviderSnapshot, List<ProviderArchiveSnapshot>> left = archives
+                            .GroupBy(a => a.Value).ToDictionary(a => a.Key,
+                                g => g.Select(b => b.Key).ToList());
+                        foreach (ImportProviderSnapshot p in left.Keys.ToList())
+                        {
+                            if (p.Provider != "Unknown")
+                            {
+                                var baseQuery = s.Sources.Where(a =>
+                                    a.Provider.Equals(p.Provider, StringComparison.InvariantCultureIgnoreCase));
+                                if (!string.IsNullOrEmpty(p.Scanlator))
+                                    baseQuery = baseQuery.Where(a =>
+                                        a.Scanlator.Equals(p.Scanlator, StringComparison.InvariantCultureIgnoreCase));
+                                if (!string.IsNullOrEmpty(p.Language))
+                                    baseQuery = baseQuery.Where(a =>
+                                        a.Language.Equals(p.Language, StringComparison.InvariantCultureIgnoreCase));
+                                SeriesProviderEntity? existing = baseQuery.FirstOrDefault();
+                                if (existing != null)
+                                {
+                                    existing.AssignArchives(left[p]);
+                                    existing.PopulateChapterPageCounts(seriesBasePath);
+                                    _db.Touch(existing, c => c.Chapters);
+                                }
+                                else
+                                {
+                                    ProviderStorageEntity k = filteredSources.BestMatch(local_repo, p.Provider, p.Language);
+                                    if (k != null)
+                                    {
+                                        List<LinkedSeriesDto> linked2 = await _searchQuery
+                                            .SearchSeriesAsync(p.Title, new List<ProviderStorageEntity> { k }, appSettings, 0, token).ConfigureAwait(false);
+                                        if (linked2.Count > 0)
+                                        {
+                                            AugmentedResponseDto augmented = await _searchCommand
+                                                .AugmentSeriesAsync(linked2, token)
+                                                .ConfigureAwait(false);
+                                            List<ProviderSeriesDetails> series = augmented.Series;
+                                            if (series.Count > 0)
+                                            {
+                                                if (!string.IsNullOrEmpty(p.Scanlator))
+                                                    series = series.Where(a => a.Scanlator.Equals(p.Scanlator,
+                                                        StringComparison.InvariantCultureIgnoreCase)).ToList();
+                                                if (series.Count > 0)
+                                                {
+                                                    foreach (ProviderSeriesDetails f in series)
+                                                    {
+                                                        List<decimal?> chaps = f.Chapters.Select(a => a.Number)
+                                                            .Distinct().ToList();
+                                                        List<ProviderArchiveSnapshot> workToDo = [];
+                                                        foreach (ProviderArchiveSnapshot i in left[p].ToList())
+                                                        {
+                                                            if (chaps.Contains(i.ChapterNumber))
+                                                            {
+                                                                workToDo.Add(i);
+                                                                left[p].Remove(i);
+                                                            }
+                                                        }
+                                                        if (workToDo.Count > 0)
+                                                        {
+                                                            SeriesProviderEntity prov = await f.CreateOrUpdateAsync(_thumb,null, token).ConfigureAwait(false);
+                                                            prov.SeriesId = s.Id;
+                                                            _db.SeriesProviders.Add(prov);
+                                                            s.Sources.Add(prov);
+                                                            prov.AssignArchives(workToDo);
+                                                            prov.PopulateChapterPageCounts(seriesBasePath);
+                                                        }
+                                                    }
+                                                    if (left.Count == 0)
+                                                        left.Remove(p);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // If no Mihon extension matched and provider has a real name,
+                                    // create a user-based (non-Mihon) provider to preserve the metadata
+                                    if (left.ContainsKey(p))
+                                    {
+                                        // Check if a user-based provider already exists for this provider+language+scanlator
+                                        var existingUserProvider = s.Sources.FirstOrDefault(a =>
+                                            a.Provider.Equals(p.Provider, StringComparison.InvariantCultureIgnoreCase) &&
+                                            a.Language.Equals(p.Language, StringComparison.InvariantCultureIgnoreCase) &&
+                                            (string.IsNullOrEmpty(p.Scanlator) || a.Scanlator.Equals(p.Scanlator, StringComparison.InvariantCultureIgnoreCase)));
+
+                                        if (existingUserProvider != null)
+                                        {
+                                            _logger.LogInformation("User-based provider already exists for provider {Provider} ({Lang}/{Scanlator}). Updating chapters.",
+                                                p.Provider, p.Language, p.Scanlator);
+                                            existingUserProvider.AssignArchives(left[p]);
+                                            existingUserProvider.PopulateChapterPageCounts(seriesBasePath);
+                                            _db.Touch(existingUserProvider, c => c.Chapters);
+                                            left.Remove(p);
+                                        }
+                                        else
+                                        {
+                                            _logger.LogInformation("Creating user-based source for '{Title}' provider {Provider} ({Lang}/{Scanlator}) as no matching extension was found.",
+                                                p.Title, p.Provider, p.Language, p.Scanlator);
+                                            SeriesProviderEntity userProvider = SeriesProviderEntity.CreateUserBased(
+                                                p.Provider, p.Scanlator, p.Language, p.Title);
+                                            userProvider.SeriesId = s.Id;
+                                            userProvider.AssignArchives(left[p]);
+                                            userProvider.PopulateChapterPageCounts(seriesBasePath);
+                                            _db.SeriesProviders.Add(userProvider);
+                                            s.Sources.Add(userProvider);
+                                            left.Remove(p);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (left.Count > 0)
+                        {
+                            SeriesProviderEntity? p = s.Sources.FirstOrDefault(a => a.IsUnknown);
+                            if (p == null)
+                            {
+                                ImportProviderSnapshot? pinfo = left.Keys.FirstOrDefault(a => a.Provider == "Unknown");
+                                if (pinfo == null)
+                                {
+                                    pinfo = left.Keys.First();
+                                    pinfo.Provider = "Unknown";
+                                    pinfo.Scanlator = "";
+                                }
+                                p = pinfo.ToSeriesProvider();
+                                p.SeriesId = s.Id;
+                                _db.SeriesProviders.Add(p);
+                                s.Sources.Add(p);
+                                List<ProviderArchiveSnapshot> arcs2 = left.SelectMany(a => a.Value).ToList();
+                                p.AssignArchives(arcs2);
+                                p.PopulateChapterPageCounts(seriesBasePath);
+                            }
+                        }
+                        s.FillSeriesFromProviderSeriesDetails(s.Sources.ToProviderSeriesDetails(),null);
+                        s.Sources.CalculateContinueAfterChapter(null);
+                        import.Status = ImportStatus.DoNotChange;
+                        acum += step;
+                        progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                            $"({current}/{total}) {import.Info.Title} assigned to existing series.");
+                        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                        await _seriesProvider.CheckIfTheStorageFlagsChangedTheInLibraryStatusOfLastSeriesAsync(s.Sources, [], token)
+                            .ConfigureAwait(false);
+                        await _seriesProvider.RescheduleIfNeededAsync(s.Sources, false, s.PauseDownloads, token)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+
+
+                        List<(ImportProviderSnapshot pinfo, ProviderStorageEntity ps)> existing = new List<(ImportProviderSnapshot, ProviderStorageEntity)>();
+                        foreach (ImportProviderSnapshot i in import.Info.Series.Providers)
+                        {
+                            ProviderStorageEntity? ps = GetSource(i, filteredSources);
+                            if (ps!=null)
+                            {
+                                existing.Add((i, ps));
+                            }
+                        }
+                        string langstr = langs.Count == 0 ? "all" : string.Join(",", langs);
+                        List<ImportProviderSnapshot> fnd = existing.Select(a => a.Item1).Distinct().ToList();
+                        List<ImportProviderSnapshot> left = import.Info.Series.Providers.Where(a => !fnd.Contains(a)).ToList();
+                        List<LinkedSeriesDto> linked = new List<LinkedSeriesDto>();
+                        // Results that fail the strict title check are kept as candidates for the
+                        // cover-image / transitive-title second pass instead of being discarded.
+                        List<LinkedSeriesDto> unmatched = new List<LinkedSeriesDto>();
+                        List<string> referenceTitles = new List<string> { import.Info.Title };
+                        if (existing.Count > 0)
+                        {
+                            _logger.LogInformation("Searching for '{Title}' across {Count} matched providers in languages: {langstr}", import.Info.Title, existing.Count, langstr);
+                            List<LinkedSeriesDto> list = [];
+                            List<(string keyword, ProviderStorageEntity pstorage)> searchlist = new List<(string keyword, ProviderStorageEntity pstorage)>();
+                            foreach (var n in existing)
+                            {
+                                if (searchlist.Any(a => a.keyword == n.pinfo.Title && a.pstorage.MihonProviderId == n.ps.MihonProviderId))
+                                    continue; // Avoid duplicates
+                                searchlist.Add((n.pinfo.Title, n.ps));
+                            }
+                            list = await _searchQuery.SearchSeriesAsync(searchlist, appSettings!, 0, token).ConfigureAwait(false);
+                            Dictionary<string, List<string>> sourceTitles = new Dictionary<string, List<string>>();
+                            foreach (var n in existing)
+                            {
+                                if (!sourceTitles.ContainsKey(n.ps.MihonProviderId))
+                                    sourceTitles.Add(n.ps.MihonProviderId, new List<string>());
+                                if (!sourceTitles[n.ps.MihonProviderId].Contains(n.pinfo.Title))
+                                    sourceTitles[n.ps.MihonProviderId].Add(n.pinfo.Title);
+                            }
+                            if (list.Count==0)
+                                left.AddRange(existing.Select(a=>a.Item1));
+                            referenceTitles.AddRange(sourceTitles.Values.SelectMany(a => a));
+
+                            foreach (LinkedSeriesDto l in list)
+                            {
+                                List<string> lss = sourceTitles[l.MihonProviderId];
+                                if (lss.Any(n => l.Title.AreStringSimilar(n)))
+                                    linked.Add(l);
+                                else
+                                    unmatched.Add(l);
+                            }
+
+                        }
+                        // Title-only imports must always broad-search: their provider list is
+                        // empty (or holds a single source parsed from the Suwayomi folder name),
+                        // so gating on leftover providers alone would skip the search entirely
+                        // and prevent the cover/transitive matching from ever seeing candidates.
+                        if (left.Count > 0 || import.IsTitleOnly)
+                        {
+                            List<string> srcs = existing.Select(a => a.ps.MihonProviderId).Distinct().ToList();
+                            List<ProviderStorageEntity> lefts = filteredSources.Where(a => !srcs.Contains(a.MihonProviderId))
+                                .ToList();
+                            _logger.LogInformation("Searching for '{Title}' across {Count} providers in languages: {langstr}",
+                                import.Info.Title, lefts.Count, langstr);
+                            List<LinkedSeriesDto> list = await _searchQuery
+                                .SearchSeriesAsync(import.Info.Title, lefts, appSettings, 0, token)
+                                .ConfigureAwait(false);
+                            List<string> titles = new List<string> { import.Info.Title };
+                            {
+                                foreach (var n in left)
+                                {
+                                    bool fnda = false;
+                                    foreach (string x in titles)
+                                    {
+                                        if (x.Equals(n.Title, StringComparison.InvariantCultureIgnoreCase))
+                                        {
+                                            fnda = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if (!fnda)
+                                    {
+                                        titles.Add(n.Title);
+                                    }
+                                }
+                            }
+                            referenceTitles.AddRange(titles);
+                            foreach (LinkedSeriesDto l in list)
+                            {
+                                if (titles.Any(title => l.Title.AreStringSimilar(title, 0.1)))
+                                    linked.Add(l);
+                                else
+                                    unmatched.Add(l);
+                            }
+                        }
+                        linked = await ExpandMatchesByCoverAsync(referenceTitles, linked, unmatched, token)
+                            .ConfigureAwait(false);
+                        bool success = false;
+                        if (linked.Count > 0)
+                        {
+                            AugmentedResponseDto augmented =
+                                await _searchCommand.AugmentSeriesAsync(linked, token).ConfigureAwait(false);
+                            List<ProviderSeriesDetails> series = augmented.Series;
+                            if (series.Count > 0)
+                            {
+                                import.Series = series;
+                                if (import.IsTitleOnly && string.IsNullOrEmpty(import.Info.Type))
+                                {
+                                    string? derivedType = series.Select(a => a.Type).FirstOrDefault(a => !string.IsNullOrEmpty(a));
+                                    if (!string.IsNullOrEmpty(derivedType))
+                                    {
+                                        import.Info.Type = derivedType;
+                                        _db.Touch(import, a => a.Info);
+                                    }
+                                }
+                                ImportSeriesEntry inf = import.ToImportSeriesEntry();
+                                import.Action = inf.Action;
+                                import.Status = inf.Status;
+                                import.ContinueAfterChapter = inf.ContinueAfterChapter;
+                                import.ApplyImportSeriesEntry(inf);
+                                acum += step;
+                                progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                                    $"({current}/{total}) {import.Info.Title} found in {string.Join(",", series.Select(a => a.Provider).Distinct())}.");
+                                success = true;
+                            }
+                        }
+                        if (!success)
+                        {
+                            acum += step;
+                            progress.Report(ProgressStatus.InProgress, (decimal)acum,
+                                $"({current}/{total}) Series {import.Title} not found in available providers");
+                            import.Status = ImportStatus.Skip;
+                            import.Action = Action.Skip;
+                            _logger.LogInformation("Series '{Title}'not found", import.Info.Title);
+                        }
+                        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error searching for series: {Title}", import.Info.Title);
+                }
+            }
+            progress.Report(ProgressStatus.Completed, 100, $"Search completed for {imports.Count} series");
+            _logger.LogInformation("Series search job completed successfully for {count} series.", imports.Count);
+            return JobResult.Success;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during series search");
+            progress.Report(ProgressStatus.Failed, 100, $"Series search failed: {ex.Message}");
+            return JobResult.Failed;
+        }
+    }
+
+    // Cover-assisted matching thresholds, calibrated against this instance's real
+    // thumbnail cache: the same artwork served by different providers (other
+    // format/resolution/crop) lands at Hamming distance 0-12, while unrelated
+    // covers start around 16. <=8 is safely "same artwork" on its own; 9-12 needs
+    // a loosely similar title to corroborate. All accepted results still require
+    // manual confirmation in the import review screen.
+    private const int ExactCoverMaxDistance = 8;
+    private const int SimilarCoverMaxDistance = 12;
+    private const double LooseTitleThreshold = 0.35;
+    private const int MaxCoverHashesPerImport = 80;
+    private const int MaxExpansionRounds = 4;
+
+    /// <summary>
+    /// Second-chance matching for search results that failed the strict title
+    /// check. Every accepted result contributes its title and cover art to the
+    /// reference set, so a source matched by title can vouch for the same series
+    /// on other sources even when those use a completely different (e.g.
+    /// localized) title. A candidate is accepted when: its title is similar to a
+    /// reference title (transitive title match), OR its cover is a near-exact
+    /// match of a reference cover, OR a loosely similar title agrees with a
+    /// looser cover match. Runs until no new candidates are accepted, bounded by
+    /// a round limit and a per-import cover-download budget.
+    /// </summary>
+    private async Task<List<LinkedSeriesDto>> ExpandMatchesByCoverAsync(
+        List<string> referenceTitles,
+        List<LinkedSeriesDto> linked,
+        List<LinkedSeriesDto> unmatched,
+        CancellationToken token)
+    {
+        // Without at least one title-matched source there is no reference cover
+        // to compare against (title-only imports have no local artwork).
+        if (unmatched.Count == 0 || linked.Count == 0)
+            return linked;
+
+        List<string> titles = referenceTitles
+            .Concat(linked.Select(a => a.Title))
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Distinct(StringComparer.InvariantCultureIgnoreCase)
+            .ToList();
+
+        int hashBudget = MaxCoverHashesPerImport;
+        List<ulong> referenceHashes = new List<ulong>();
+        foreach (LinkedSeriesDto l in linked)
+        {
+            if (hashBudget <= 0)
+                break;
+            hashBudget--;
+            ulong? h = await _coverHash.ComputeHashAsync(l.ThumbnailUrl, token).ConfigureAwait(false);
+            if (h != null)
+                referenceHashes.Add(h.Value);
+        }
+        if (referenceHashes.Count == 0)
+            return linked;
+
+        // Spend the download budget on the most plausible candidates first.
+        List<LinkedSeriesDto> pending = unmatched
+            .OrderByDescending(c => titles.Any(t => c.Title.AreStringSimilar(t, LooseTitleThreshold)))
+            .ToList();
+        Dictionary<LinkedSeriesDto, ulong?> candidateHashes = new Dictionary<LinkedSeriesDto, ulong?>();
+
+        bool changed = true;
+        int rounds = 0;
+        while (changed && rounds++ < MaxExpansionRounds)
+        {
+            changed = false;
+            foreach (LinkedSeriesDto candidate in pending.ToList())
+            {
+                bool accept = titles.Any(t => candidate.Title.AreStringSimilar(t));
+                ulong? hash = null;
+                if (!accept)
+                {
+                    if (!candidateHashes.TryGetValue(candidate, out hash))
+                    {
+                        if (hashBudget <= 0)
+                            continue;
+                        hashBudget--;
+                        hash = await _coverHash.ComputeHashAsync(candidate.ThumbnailUrl, token).ConfigureAwait(false);
+                        candidateHashes[candidate] = hash;
+                    }
+                    if (hash != null)
+                    {
+                        int best = referenceHashes.Min(r => CoverHashService.HammingDistance(r, hash.Value));
+                        accept = best <= ExactCoverMaxDistance ||
+                                 (best <= SimilarCoverMaxDistance &&
+                                  titles.Any(t => candidate.Title.AreStringSimilar(t, LooseTitleThreshold)));
+                    }
+                }
+                if (!accept)
+                    continue;
+
+                linked.Add(candidate);
+                pending.Remove(candidate);
+                changed = true;
+                if (!string.IsNullOrWhiteSpace(candidate.Title) &&
+                    !titles.Contains(candidate.Title, StringComparer.InvariantCultureIgnoreCase))
+                    titles.Add(candidate.Title);
+                if (hash == null && hashBudget > 0)
+                {
+                    hashBudget--;
+                    hash = await _coverHash.ComputeHashAsync(candidate.ThumbnailUrl, token).ConfigureAwait(false);
+                }
+                if (hash != null)
+                    referenceHashes.Add(hash.Value);
+                _logger.LogInformation("Cover/transitive match accepted '{Title}' from {Provider} ({Lang})",
+                    candidate.Title, candidate.Provider, candidate.Lang);
+            }
+        }
+        return linked;
+    }
+
+    public async Task<JobResult> ImportSeriesAsync(JobInfo jobInfo, bool disableJob, CancellationToken token = default)
+    {
+        ProgressReporter progress = _reportingService.CreateReporter(jobInfo);
+        _logger.LogInformation("Starting series import job...");
+        progress.Report(ProgressStatus.Started, 0, "Starting series import...");
+        SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+        List<RenzoBackend.Models.Database.ImportEntity> imports = await _db.Imports
+            .Where(a => a.Status != ImportStatus.DoNotChange)
+            .AsNoTracking()
+            .ToListAsync(token).ConfigureAwait(false);
+        // The import wizard is a setup-time/admin action with no per-request user
+        // context (it's a background job) — imported series are owned by the
+        // instance's Owner-level account, the same convention used to backfill
+        // pre-existing series when per-user libraries were introduced.
+        Guid importOwnerId = await _db.Users
+            .Where(u => u.Level == RenzoBackend.Models.Enums.UserLevel.Owner)
+            .OrderBy(u => u.CreatedAt)
+            .Select(u => u.Id)
+            .FirstOrDefaultAsync(token).ConfigureAwait(false);
+        float step = 100 / (float)imports.Count;
+        float acum = 0F;
+        try
+        {
+            foreach (RenzoBackend.Models.Database.ImportEntity import in imports)
+            {
+                if (import.Series != null && import.Series.Count > 0 && import.Action == Action.Add)
+                {
+                    AugmentedResponseDto augmented = new AugmentedResponseDto();
+                    augmented.DisableJobs = disableJob;
+                    // Title-only imports have no real files at import.Path (it's an ImportFolder-relative
+                    // Suwayomi-style folder, not a StorageFolder subpath) — compute a fresh storage
+                    // location from the matched title/type instead of reusing it. When the source
+                    // shipped no usable Type, best-effort classify it (from the matched providers'
+                    // genres + names, biased to Manga) so the import still lands in a category folder
+                    // instead of loose at the library root.
+                    string? effectiveType = import.Info.Type;
+                    if (import.IsTitleOnly && string.IsNullOrWhiteSpace(effectiveType))
+                    {
+                        IEnumerable<string> impGenres = import.Series?.SelectMany(s => s.Genre ?? new List<string>()) ?? [];
+                        IEnumerable<string> impProviders = import.Series?.Select(s => s.Provider).Where(p => !string.IsNullOrWhiteSpace(p))! ?? [];
+                        effectiveType = SeriesTypeClassifier.Classify(impGenres, impProviders, settings.Categories);
+                    }
+                    augmented.StorageFolderPath = import.IsTitleOnly
+                        ? import.Info.Title.BuildStoragePath(effectiveType, settings)
+                        : import.Path;
+                    ImportSeriesEntry info = import.ToImportSeriesEntry();
+                    import.ApplyImportSeriesEntry(info);
+                    augmented.Series = import.Series.Where(a => a.IsSelected).ToList();
+                    augmented.LocalInfo = import.Info;
+                    augmented.Action = import.Action;
+                    augmented.Status = import.Status;
+                    // AddSeriesAsync already calls _stateService.SyncToRenzoJsonAsync() internally,
+                    // so no separate renzo.json sync is needed here.
+                    Guid seriesid = await _seriesCommand.AddSeriesAsync(augmented, importOwnerId, token).ConfigureAwait(false);
+                }
+                acum += step;
+                progress.Report(ProgressStatus.InProgress, (int)acum, $"{import.Info.Title} imported.");
+            }
+            SettingsDto finishedSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            finishedSettings.IsWizardSetupComplete = true;
+            finishedSettings.WizardSetupStepCompleted = 0;
+            await _settings.SaveSettingsAsync(finishedSettings, false, token).ConfigureAwait(false);
+            progress.Report(ProgressStatus.Completed, 100, $"Import completed for {imports.Count} series");
+            _logger.LogInformation("Import completed for {count} series.", imports.Count);
+            return JobResult.Success;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error importing series");
+            progress.Report(ProgressStatus.Failed, 100, "Error importing series");
+            return JobResult.Failed;
+        }
+    }
+}
+

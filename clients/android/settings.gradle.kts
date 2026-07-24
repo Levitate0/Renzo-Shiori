@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Rensaio"
+rootProject.name = "Renzo"
 include(":app")

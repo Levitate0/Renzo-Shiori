@@ -6,7 +6,7 @@ using System.Windows;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
 
-namespace RensaioWindows;
+namespace RenzoWindows;
 
 public partial class MainWindow : Window
 {
@@ -67,7 +67,7 @@ public partial class MainWindow : Window
         if (server == null)
         {
             SetBusy(false, null);
-            ShowError("Could not reach a Rensaiō server at that address. Check the address (including port) and that the server is running.");
+            ShowError("Could not reach a Renzō server at that address. Check the address (including port) and that the server is running.");
             return;
         }
 
@@ -101,7 +101,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Probes {address}/api/system/info/public and returns the working base URL,
-    /// or null when no Rensaio server answers. When the user omitted a scheme,
+    /// or null when no Renzo server answers. When the user omitted a scheme,
     /// https is tried first, then http (for LAN addresses).
     /// </summary>
     private static async Task<string?> ValidateServerAsync(string input)
@@ -129,7 +129,7 @@ public partial class MainWindow : Window
                     continue;
                 using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
                 if (doc.RootElement.TryGetProperty("product", out JsonElement product) &&
-                    string.Equals(product.GetString(), "Rensaio", StringComparison.OrdinalIgnoreCase))
+                    string.Equals(product.GetString(), "Renzo", StringComparison.OrdinalIgnoreCase))
                 {
                     return baseUrl;
                 }
@@ -150,7 +150,7 @@ public partial class MainWindow : Window
         // A fixed user-data folder makes cookies (incl. the refresh-token cookie)
         // survive restarts, so login is permanent until the server expires it.
         string dataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Rensaio", "WebView2");
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Renzo", "WebView2");
         CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(userDataFolder: dataDir);
         await WebView.EnsureCoreWebView2Async(env);
 

@@ -1,17 +1,17 @@
 using System.IO;
 using System.Text.Json;
 
-namespace RensaioWindows;
+namespace RenzoWindows;
 
 /// <summary>
-/// Persists the configured server address under %AppData%\Rensaio\settings.json.
+/// Persists the configured server address under %AppData%\Renzo\settings.json.
 /// </summary>
 public class ServerConfig
 {
     public string? ServerUrl { get; set; }
 
     private static string ConfigDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Rensaio");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Renzo");
 
     private static string ConfigPath => Path.Combine(ConfigDir, "settings.json");
 

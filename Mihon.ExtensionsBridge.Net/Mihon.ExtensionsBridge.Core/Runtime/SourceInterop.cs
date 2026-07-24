@@ -291,9 +291,19 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
                 var response = await Task.Run(() => _httpSource.getClient().newCall(r).execute(), token).ConfigureAwait(false);
                 if (response == null)
                     throw new HttpRequestException("Image response was null.");
-                if (response.code() != 200)
-                    throw new HttpRequestException($"Request error! {response.code()}",null, (HttpStatusCode)response.code());
-                return new ContentTypeStreamImplementation(response);
+                // Close the response on any non-success path so the OkHttp
+                // connection isn't leaked (see GetPageImageAsync).
+                try
+                {
+                    if (response.code() != 200)
+                        throw new HttpRequestException($"Request error! {response.code()}", null, (HttpStatusCode)response.code());
+                    return new ContentTypeStreamImplementation(response);
+                }
+                catch
+                {
+                    try { response.close(); } catch { /* already closed */ }
+                    throw;
+                }
             }).ConfigureAwait(false);
         }
         public async Task<ContentTypeStream> GetPageImageAsync(Page page, CancellationToken token = default)
@@ -322,9 +332,21 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
                 }, token).ConfigureAwait(false);
                 if (response == null)
                     throw new HttpRequestException("Image response was null.");
-                if (response.code() != 200)
-                    throw new HttpRequestException($"Request error! {response.code()}", null, (HttpStatusCode)response.code());
-                return new ContentTypeStreamImplementation(response);
+                // The response holds an OkHttp connection until it is consumed
+                // (success path) or closed. A non-200 that just throws leaks that
+                // connection; enough leaks exhaust the per-host limit and the
+                // source stops answering. Close it on every non-success path.
+                try
+                {
+                    if (response.code() != 200)
+                        throw new HttpRequestException($"Request error! {response.code()}", null, (HttpStatusCode)response.code());
+                    return new ContentTypeStreamImplementation(response);
+                }
+                catch
+                {
+                    try { response.close(); } catch { /* already closed */ }
+                    throw;
+                }
             }).ConfigureAwait(false);
         }
 

@@ -10,7 +10,7 @@
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.Rensaio"
+        android:theme="@style/Theme.Renzo"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
         android:allowBackup="true">

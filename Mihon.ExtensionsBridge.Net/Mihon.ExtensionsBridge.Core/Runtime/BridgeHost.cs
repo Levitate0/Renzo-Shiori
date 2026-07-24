@@ -93,6 +93,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
            //(Action)(()=>{
                 StartupKt.applicationSetup(folder.AndroidFolder, folder.TempFolder, new AndroidCompatLogManager.LoggerSink(logger));
                 AndroidCompatLogManager.SetLoglevel(logger);
+                // Must come after applicationSetup: overrides the Kotlin-registered
+                // KCEF factory with the null-callback-safe wrapper (see SafeWebViewHook).
+                SafeWebViewHook.Install(_logger);
            //)).InvokeInJavaContext();
     
             await _manager.SetPreferencesAsync(prefs, cancellationToken);

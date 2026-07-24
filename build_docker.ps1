@@ -1,5 +1,5 @@
-$backendPath = "./RensaioBackend"
-$project = "RensaioBackend.csproj"
+$backendPath = "./RenzoBackend"
+$project = "RenzoBackend.csproj"
 
 Push-Location $backendPath
 dotnet restore $project

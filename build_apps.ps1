@@ -2,13 +2,13 @@ param(
     [switch]$SkipBuild
 )
 
-$backendPath = "./RensaioBackend"
-$trayPath = "./RensaioTray"
-$project = "RensaioBackend.csproj"
-$projectTray = "RensaioTray.csproj"
+$backendPath = "./RenzoBackend"
+$trayPath = "./RenzoTray"
+$project = "RenzoBackend.csproj"
+$projectTray = "RenzoTray.csproj"
 
 $trayOutputBase = "bin/App"
-$finalName = "Rensaio"
+$finalName = "Renzo"
 
 $runtimeIds = @("win-x64", "win-arm64", "linux-x64", "linux-arm64", "osx-arm64")
 
@@ -53,7 +53,7 @@ foreach ($rid in $runtimeIds) {
 }
 
 
-$trayBaseName = "RensaioTray"
+$trayBaseName = "RenzoTray"
 $version = $null
 
 foreach ($rid in $runtimeIds) {
@@ -104,13 +104,13 @@ foreach ($rid in $runtimeIds) {
         # Copy application icon (.icns) to Contents/Resources/ if it exists
         # Check both AppBundle/ (user-friendly) and Assets/ (standard location)
         $resourcesDir = Join-Path $appDir "Contents/Resources"
-        $iconPath1 = Join-Path $trayDir "AppBundle/rensaio.icns"
-        $iconPath2 = Join-Path $trayDir "Assets/rensaio.icns"
+        $iconPath1 = Join-Path $trayDir "AppBundle/renzo.icns"
+        $iconPath2 = Join-Path $trayDir "Assets/renzo.icns"
         foreach ($iconPath in @($iconPath1, $iconPath2)) {
             if (Test-Path $iconPath) {
                 New-Item -ItemType Directory -Path $resourcesDir -Force | Out-Null
-                Copy-Item -Path $iconPath -Destination (Join-Path $resourcesDir "rensaio.icns") -Force
-                Write-Host "Copied icon: $iconPath -> $resourcesDir/rensaio.icns"
+                Copy-Item -Path $iconPath -Destination (Join-Path $resourcesDir "renzo.icns") -Force
+                Write-Host "Copied icon: $iconPath -> $resourcesDir/renzo.icns"
                 break
             }
         }
@@ -153,7 +153,7 @@ function New-ZipWithPermissions {
                     $unixMode = $modeExe
                 }
 
-                $entryName = "Rensaio.app/$relativePath"
+                $entryName = "Renzo.app/$relativePath"
                 $entry = $zip.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
                 $bytes = [System.IO.File]::ReadAllBytes($fullPath)
                 $entryStream = $entry.Open()
@@ -195,7 +195,7 @@ foreach ($rid in $runtimeIds) {
     $isWindows = $rid -like "win-*"
     $isOsx = $rid -eq "osx-arm64"
     $ext = if ($isWindows) { ".exe" } else { "" }
-    $archiveBase = "bin/Rensaio-$rid-v$version"
+    $archiveBase = "bin/Renzo-$rid-v$version"
 
     if ($isOsx) {
         # macOS: zip the .app bundle with Unix permissions preserved

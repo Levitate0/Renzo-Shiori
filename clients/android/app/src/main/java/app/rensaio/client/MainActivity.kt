@@ -1,4 +1,4 @@
-package app.rensaio.client
+package app.renzo.client
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
@@ -52,7 +52,7 @@ class MainActivity : AppCompatActivity() {
             fileChooserCallback = null
         }
 
-    private val prefs by lazy { getSharedPreferences("rensaio", Context.MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences("renzo", Context.MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -181,7 +181,7 @@ class MainActivity : AppCompatActivity() {
             val candidates =
                 if (input.startsWith("http://", true) || input.startsWith("https://", true)) listOf(input)
                 else listOf("https://$input", "http://$input")
-            val server = candidates.firstOrNull { isRensaioServer(it) }
+            val server = candidates.firstOrNull { isRenzoServer(it) }
             runOnUiThread {
                 setBusy(false)
                 if (server == null) {
@@ -199,7 +199,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Probes {base}/api/system/info/public — same discovery endpoint the web client uses. */
-    private fun isRensaioServer(base: String): Boolean {
+    private fun isRenzoServer(base: String): Boolean {
         return try {
             val conn = URL("$base/api/system/info/public").openConnection() as HttpURLConnection
             conn.connectTimeout = 10_000
@@ -207,7 +207,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 if (conn.responseCode != 200) return false
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
-                JSONObject(body).optString("product").equals("Rensaio", ignoreCase = true)
+                JSONObject(body).optString("product").equals("Renzo", ignoreCase = true)
             } finally {
                 conn.disconnect()
             }

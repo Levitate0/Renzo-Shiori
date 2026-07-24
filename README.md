@@ -1,270 +1,150 @@
-<table>
-  <tr>
-    <td align="center" border="0">
-      <img width="500px" src="./RensaioFrontend/public/rensaiow.png" alt="Rensaiō"></img>
-    </td>
-    </tr>  <tr>
-    <td>
-       <strong>Rensaiō</strong> is a modern fork of the original <strong>Kaizoku</strong> and <strong>Kaizoku Next Gen</strong> by OAE,  built to fill the void and bring a streamlined series manager back to life.<br/>
-<strong>What does it do?</strong>  <br/>
-When you subscribe to a series, it will automatically download it. Whenever the series is updated in any of your configured providers, new chapters will be downloaded automatically, in a “drop and forget” fashion.
-    </td>
-  </tr>
-</table>
-
-> [!IMPORTANT]
-> ⬆️ **You can upgrade directly from Kaizoku.Net to Rensaiō.** No changes are required on your side: simply run the new executable or update your Docker image, and everything will be upgraded automatically.
->
-> Nevertheless, **before upgrading**, make sure to back up your config directory, including your database. Since the devil never rests.
-
 <p align="center">
-  <a href="https://discord.gg/AvhtPPV8">💬 Discord</a> &nbsp;|&nbsp; <a href="https://www.rensaio.net">🌐 Website</a>
+  <img src="./docs/renzo-banner.svg" alt="Renzō — Your World. Your Library." width="100%">
 </p>
 
----
+<h1 align="center">連蔵 · Renzō</h1>
+<p align="center"><em>Your world. Your library.</em></p>
 
-## 🎯 What It Does
+**Renzō** is a self-hosted, multi-user manga / manhwa / manhua library and download manager. Subscribe to a series once and Renzō keeps it — across every source you configure — downloaded, organized, and up to date, in a *drop-and-forget* fashion. One server hosts many fully-isolated private libraries: every user gets their own library, downloads, sources, updates feed, reading progress, and account settings.
 
-Rensaiō is a **series manager** that prioritizes simplicity, speed, and reliability.
+> Renzō is a rebrand and continuation of a fork of [maxpiva/Rensaio](https://github.com/maxpiva/Rensaio) (itself a fork of **Kaizoku / Kaizoku Next Gen** by OAE). Huge thanks to the upstream authors — this project stands on their work.
 
-It uses the power of  **MIHON extensions** to connect with multiple sources.
-
----
-
-## ✨ Key Features
-
-- 🧙‍♂️ **Startup Wizard**  
-  Automatically imports your existing library.
-
-- 🔁 **Temporary vs Permanent Sources**  
-  - Chapters are only downloaded from **temporary** sources when there is no permanent sources 
-  - Auto-deleted if a **permanent** source later provides them.
-
-- 🔎 **Multi-Search & Multi-Linking**  
-  Search and link one series to **multiple sources/providers**.
-
-- 📥 **Automatic Downloads**
-
-  Everyting is automatic, Retries, Reschedules. With a dedicated download Page.
-
-- 🔄 **Auto-Updates**  
-  Extensions are kept up to date.
-
-- 👥 **Multi-User System**
-  Create separate accounts with different permission levels. Invite people, and control who has access to what. Optionally enable authentication to restrict access to authorized users only.
-
-- 🩺 **Status & Health Dashboard**
-  A dedicated page that shows which series and providers need attention. Color-coded alerts (green/yellow/red) help you spot issues at a glance like broken providers, stale series with no new chapters, and more.
-
-- 📡 **OPDS Server**
-  Read your library from any OPDS-compatible reader app. Browse by all series, what's new, what you're currently reading, categories, and tags. Reading progress syncs back automatically. Each user gets their own unique random OPDS path (e.g. `door-pebble`) for private access. Example: ```https://rensaio.example.com/door-pebble```
-
-- 🤖 **MCP Server (AI Integration)**
-  Expose your library to AI tools through the Model Context Protocol. Let LLMs search your series, check status, and more, all respecting user permissions. Just add /mcp to your OPDS path. Example: ```https://rensaio.example.com/door-pebble/mcp'```
-
-- 📖 **Read State Tracking**
-  Remembers where you left off reading each chapter, across all your devices, backed in your series, not the database.
-
-- 🔗 **External Scrobbler Sync**
-  Sync your reading progress with external trackers. Supported providers: **AniList**, **MyAnimeList**, **Kitsu**, **MangaDex**. Each user controls their own connections and sync settings.
-
-- 🧹 **Filename Normalization**  
-  Rebuild your library easily with consistent naming, that will help you reimport it back when needed.
-
-- 🧾 **ComicInfo.xml Injection**  
-  Chapters include rich metadata from the original source.
-
-- 🖼️ **Extras**
-  - Stores `cover.jpg` per series
-  - Stores `rensaio.json` for full metadata mapping, and read-state stored with you series.
-  - External Domain Support for reverse proxy scenarios.
-  - Support for jxl, jp2, avif image formats, with real-time transcoding for clients not supporting them.
-  - And much more...
----
-
-## 🛠️ Under the Hood
-
-Rensaiō is composed of:
-
-- **Frontend**: A beautiful UI forked from [Kaizoku Next by OAE](https://github.com/oae/rensaio/tree/next) (Next.js).
-- **Backend**: A custom .NET engine that manages schedules, downloads, metadata, OPDS/MCP servers, and scrobbler sync, with a Mihon Bridge that enables the use of Mihon Android extensions.
----
-
-## ⚙️ Issues
-
-- If you encounter any issues, check the `logs` folder. You can review the logs there or upload them to share feedback.
-
-## 🤔 Running Android libraries on .NET, is that possible?
-
-Only the **MIHON** extensions are actively maintained, and they are distributed as Android APKs. So we need to hack around that!
-
-By leveraging the Java/Android bridge originally created by the [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server) team, and adapting parts of it to fit our use case, including replacing KCEF with JCEF Maven we can generate a Java 8 Android compatibility layer with all required Java dependencies included.
-
-Then use [IKVM](https://github.com/ikvmnet/ikvm) to run this on .NET.
+> [!IMPORTANT]
+> **Back up your `/config` directory (including the database) before upgrading.** Upgrades are automatic on restart, but the devil never rests.
 
 ---
 
-## 🐳 Docker Support
+## ✨ Highlights
 
-- Available for both `amd64` and `arm64`.
-
-### 📁 Volumes
-
-| Container Path | Description                      |
-|----------------|----------------------------------|
-| `/config`      | Stores application configuration |
-| `/series`      | Stores series                    |
-
----
-
-### 🌐 Ports
-
-| Port  | Service         | Required | Notes                        |
-|-------|--------------|----------|------------------------------|
-| 9833  | Rensaiō UI   | ✅       | Web interface                |
+- 👥 **True multi-user** — Isolated libraries per user with permission levels (User / Manager / Admin / Owner). Optional authentication, invites, and an Owner "global view" for support. Each user gets a personal **Account** page for their own sensitive settings (per-site logins for coin/paid sources, external tracker links) — kept separate from the Owner-only app-wide `/settings`.
+- 🔎 **Multi-source & multi-linking** — Link one series to many sources via **Mihon extensions**. Temporary vs. permanent sources: temporary sources only fill gaps and are auto-replaced when a permanent source provides the chapter.
+- 📥 **Automatic downloads** — Retries, reschedules, a dedicated downloads page. Extensions auto-update.
+- 🗂️ **Automatic categorization** — Series are auto-filed into **Manga / Manhwa / Manhua / Comic** by country-of-origin. When you link a series to a scrobbler (MAL/AniList/Kitsu), Renzō uses that ID-based `media_type` as the authoritative signal — far more accurate than a title guess.
+- 🔗 **Built-in tracker sync (container-hosted OAuth)** — Connect **AniList · MyAnimeList · Kitsu · MangaDex** per user. The OAuth service is **bundled inside the container** — no reliance on any external hosted proxy. See [Tracker / OAuth setup](#-tracker--oauth-setup).
+- 📖 **Built-in reader + read-state tracking** — Resume where you left off on any device; progress is stored with the series (and syncs over OPDS).
+- 📡 **OPDS server** — Read from any OPDS app; per-user private path. `https://renzo.example.com/door-pebble`
+- 🤖 **MCP server** — Expose your library to AI tools via the Model Context Protocol (append `/mcp` to your OPDS path), respecting user permissions.
+- 🩺 **Status & health dashboard** — Color-coded alerts for broken providers, stale series, and more.
+- 🧾 **Rich metadata** — `ComicInfo.xml` injection, per-series `cover.jpg`, and a `renzo.json` metadata/read-state map stored alongside your series.
+- 🖼️ **Format support** — jxl, jp2, avif with real-time transcoding for clients that can't render them.
+- 🌐 **Reverse-proxy friendly** — External-domain support; invite / password links resolve their base URL by priority: **1)** `External Domain` setting → **2)** first public-looking `Allowed Origins` entry → **3)** first private/LAN IP → **4)** `localhost`.
 
 ---
 
-### 👤 Permissions
+## 📚 Sources
 
-| Variable | Value | Description                    |
-|----------|-------|--------------------------------|
-| `UID`    | 99    | Host user ID                   |
-| `PGID`   | 100   | Host group ID                  |
-| `UMASK`  | 022   | File permission mask (default) |
-
-> Ensure the specified UID and PGID have write access to your mounted `/config` and `/series` directories.
+Renzō connects to sources through **Mihon (Tachiyomi) extensions** — MangaDex, Kiryuu, ComicK, ReadComicsOnline, and many more, plus site-specific paid/locked-chapter handling for supported scanlator sites. Add, pin, and manage extensions from the **Sources** page.
 
 ---
 
-### 🌐 Network Mode
+## 🖥️ Platforms
 
-It is recommended to use **host networking** for optimal performance when downloading a lot and querying multiple providers in parallel.
-
----
-
-### 🚀 Example: One-Liner Run Command
-
-```bash
-docker run -d \
-  --name Rensaio \
-  --network host \
-  -p 9833:9833 \
-  -e UID=99 \
-  -e PGID=100 \
-  -e UMASK=022 \
-  -v /path/to/your/config:/config \
-  -v /path/to/your/series:/series \
-  maxpiva/rensaio:latest
-```
-Replace /path/to/your/config and /path/to/your/series with real paths on your host.
-
+| | Platform | Notes |
+|---|----------|-------|
+| 🪟 | **Renzo.exe** | Windows tray app (Avalonia) — see [Releases](https://github.com/Levitate0/Renzo/releases) |
+| 🌐 | **Renzo.web** | The web UI — dark & light themes, responsive, PWA-friendly |
+| 🤖 | **Renzo.apk** | Android build |
 
 ---
 
-## Docker Compose Example
+## 🐳 Docker
+
+Available for `amd64` and `arm64`. **Host networking** is recommended for parallel downloads/searches.
+
+### Volumes & ports
+
+| Path / Port | Description |
+|-------------|-------------|
+| `/config` | Application config + database |
+| `/series` | Downloaded series |
+| `9833` | Web UI |
+
+### Permissions
+
+| Var | Default | Description |
+|-----|---------|-------------|
+| `PUID` | `99` | Host user ID |
+| `PGID` | `100` | Host group ID |
+| `UMASK` | `022` | File permission mask |
+
+Ensure `PUID`/`PGID` have write access to `/config` and `/series`.
+
+### docker-compose
 
 ```yaml
 services:
-  rensaio:
-    container_name: rensaio
-    image: 'maxpiva/rensaio:latest'
+  renzo:
+    container_name: renzo
+    image: 'renzo:latest'        # build locally (see "Build it yourself") or use your registry
+    network_mode: host
     volumes:
-        - '/path/to/your/series:/series'
-        - '/path/to/your/config:/config'
+      - '/path/to/your/series:/series'
+      - '/path/to/your/config:/config'
     environment:
-        - UMASK=022
-        - PGID=100
-        - UID=99
+      - PUID=99
+      - PGID=100
+      - UMASK=022
+      # --- Tracker / OAuth (optional; needed for MAL/AniList/etc. linking) ---
+      - PROXY_MYANIMELIST_CLIENT_ID=your_mal_client_id
+      - PROXY_MYANIMELIST_CLIENT_SECRET=your_mal_client_secret
+      - PROXY_ANILIST_CLIENT_ID=your_anilist_client_id
+      - PROXY_ANILIST_CLIENT_SECRET=your_anilist_client_secret
     ports:
-        - '9833:9833'
+      - '9833:9833'
 ```
 
+---
+
+## 🔗 Tracker / OAuth setup
+
+Renzō hosts its **own** OAuth service inside the container (on loopback `127.0.0.1:5050`, fronted by the backend at `/api/oauth`). There is **no external auth server** to depend on or maintain. To enable per-user tracker linking:
+
+1. **Register an API application** with each provider you want:
+   - MyAnimeList → <https://myanimelist.net/apidocs> (create a Client ID)
+   - AniList → *Settings → Developer → Create New Client*
+2. **Set the redirect URI** in that provider app to:
+   ```
+   https://<your-renzo-domain>/api/oauth/<provider>/callback
+   ```
+   e.g. `https://renzo.example.com/api/oauth/myanimelist/callback`
+3. **Provide the credentials** to the container via env vars (see compose above):
+   `PROXY_MYANIMELIST_CLIENT_ID` / `PROXY_MYANIMELIST_CLIENT_SECRET`, `PROXY_ANILIST_CLIENT_ID` / `PROXY_ANILIST_CLIENT_SECRET`, and likewise `PROXY_KITSU_*` / `PROXY_MANGADEX_*`.
+4. Each user then links their own account from **Account → Trackers**.
+
+> The provider redirect URI must exactly match your public Renzō domain, and that domain must reach the container's port `9833`.
 
 ---
 
-## 🐳 Unraid Template
+## 🧱 Build it yourself
 
-```xml
-<Container>
-  <Name>Rensaiō</Name>
-  <Repository>maxpiva/rensaio:latest</Repository>
-  <Registry>https://hub.docker.com/r/maxpiva/rensaio</Registry>
-  <Network>host</Network>
-  <MyID>rensaio</MyID>
-  <Shell>sh</Shell>
-  <Privileged>false</Privileged>
-  <Support>https://github.com/maxpiva/rensaio/issues</Support>
-  <Project>https://github.com/maxpiva/rensaio</Project>
-  <Overview>Rensaiō – a feature-complete series manager powered by Mihon extensions. </Overview>
-  <Category>MediaManager:Comics</Category>
-
-  <Config Name="Config Folder" Target="/config" Default="/mnt/user/appdata/rensaio" Mode="rw" Description="Path to store configuration, database, and settings." Type="Path" />
-  <Config Name="Series Folder" Target="/series" Default="/mnt/user/media/series" Mode="rw" Description="Path where series and chapters will be downloaded." Type="Path" />
-
-  <Config Name="UID" Target="UID" Default="99" Mode="rw" Description="User ID to run the container as." Type="Variable" />
-  <Config Name="PGID" Target="PGID" Default="100" Mode="rw" Description="Group ID to run the container as." Type="Variable" />
-  <Config Name="UMASK" Target="UMASK" Default="022" Mode="rw" Description="UMASK for file permissions." Type="Variable" />
-
-  <WebUI>http://[IP]:9833</WebUI>
-
-  <TemplateURL>https://raw.githubusercontent.com/maxpiva/rensaio/main/unraid/rensaio.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/maxpiva/rensaio/refs/heads/main/RensaioFrontend/public/rensaio.png</Icon>
-</Container>
-```
-
-
----
-
-## 🖥️ Desktop App
-
-- A **tray application** based on Avalonia is available in the [Releases](https://github.com/maxpiva/Rensaio/releases).
-- Currently tested only on **Windows**. Testers for Linux and macOS are welcome, as I'm unable to verify it myself.
-
----
-
-## 🧱 Build It Yourself
-
-Build scripts are provided for convenience:
-
-### Frontend
 ```powershell
-.\build_frontend.ps1
+.\build_frontend.ps1   # builds the Next.js UI → wwwroot.zip
+.\build_docker.ps1     # publishes the backend (+ bundled OAuth proxy) and builds a multi-arch image
+.\build_apps.ps1       # publishes backend + tray app for win/linux/osx
 ```
-Builds the Next.js frontend and packages it as `wwwroot.zip` for the backend to serve.
 
-### Docker Image
-```powershell
-.\build_docker.ps1
-```
-Restores and publishes the backend for `linux-x64` and `linux-arm64`, then builds and pushes a multi-arch Docker image.
-
-### Desktop Apps + Backend
-```powershell
-.\build_apps.ps1
-```
-Publishes the backend and tray app for `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, and `osx-arm64`, then zips the tray binaries.
+The backend serves the pre-built frontend from `wwwroot`. The Docker image also bundles the OAuth proxy under `/app/oauthproxy`, started automatically by the entrypoint.
 
 ---
 
-## ⚠️ Resource Usage
+## 🛠️ Under the hood
 
-Be aware: **Rensaiō** can be **memory-intensive**, especially when managing large libraries or doing parallel searches and downloads.
+- **Frontend** — Next.js (static export), dark/light themed, forked from Kaizoku Next by OAE.
+- **Backend** — A .NET engine handling schedules, downloads, metadata, OPDS/MCP, and tracker sync, with a **Mihon bridge** (IKVM + a Java 8 Android compatibility layer derived from [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server)) that runs Android Mihon extensions on .NET.
+- **OAuth proxy** — A small ASP.NET service bundled in the container that performs the provider OAuth handshake with your own client credentials.
+
+---
+
+## ⚠️ Resource usage
+
+Renzō can be memory-intensive with large libraries or heavy parallel search/download. Plan headroom accordingly.
 
 ---
 
 ## 🤝 Contributing
 
-### Frontend Devs ! You're Needed 🙏  
-Help clean up the mess left behind by our overenthusiastic friends, Copilot, Claude and ~~Fable~~ (banned).
-
-### Backend Devs ! PRs Welcome  
-
-PRs are welcome to improve stability and architecture.
+PRs welcome — especially frontend polish and backend stability/architecture. If you hit issues, check the `logs` folder and attach the relevant logs.
 
 ---
 
-## 🏴‍☠️ Brace Yourself
-
-This app *just works™*  until it doesn't. But it's here.
-Start managing your series with the style it deserves.
+<p align="center"><sub>連蔵 · Renzō — a fork of <a href="https://github.com/maxpiva/Rensaio">maxpiva/Rensaio</a> · Kaizoku lineage by OAE.</sub></p>

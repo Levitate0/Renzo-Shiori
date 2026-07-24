@@ -220,6 +220,36 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
 
         public bool Initialized => _initialized;
 
+        public void SetMaxRequestsPerHost(int maxRequestsPerHost)
+        {
+            // 5 is OkHttp's default; 12 keeps per-host load short of what typically
+            // trips rate-limiting on strict sources. Refuse to go below 5.
+            int perHost = Math.Clamp(maxRequestsPerHost, 5, 12);
+            try
+            {
+                // Every extension shares one NetworkHelper (a Koin `single`) and thus
+                // one OkHttpClient + Dispatcher. Reach that singleton via the Injekt
+                // facade the bridge already uses, then mutate the live Dispatcher —
+                // OkHttp applies both limits immediately, no client rebuild or restart.
+                java.lang.Class nhClass = java.lang.Class.forName("eu.kanade.tachiyomi.network.NetworkHelper");
+                object nhObj = uy.kohesive.injekt.InjektKt.getInjekt().getInstance(nhClass);
+                var networkHelper = (eu.kanade.tachiyomi.network.NetworkHelper)nhObj;
+                okhttp3.OkHttpClient client = networkHelper.getClient();
+                okhttp3.Dispatcher dispatcher = client.dispatcher();
+                // Lift the global ceiling (OkHttp default 64) so a raised per-host
+                // limit isn't throttled by the total when many hosts are active.
+                dispatcher.setMaxRequests(128);
+                dispatcher.setMaxRequestsPerHost(perHost);
+                _logger.LogInformation(
+                    "OkHttp dispatcher tuned: maxRequestsPerHost={PerHost}, maxRequests=128", perHost);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Could not tune OkHttp maxRequestsPerHost; downloads keep OkHttp's default of 5.");
+            }
+        }
+
         public void Shutdown()
         {
             try

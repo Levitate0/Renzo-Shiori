@@ -1,6 +1,6 @@
 using System.Windows;
 
-namespace RensaioWindows;
+namespace RenzoWindows;
 
 public partial class App : Application
 {

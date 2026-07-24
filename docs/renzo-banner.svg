@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B0B14"/>
+      <stop offset="1" stop-color="#121022"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="60" y1="60" x2="300" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8B5CF6"/><stop offset="1" stop-color="#4C2FB0"/>
+    </linearGradient>
+    <linearGradient id="books" x1="120" y1="240" x2="210" y2="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A78BFA"/><stop offset="1" stop-color="#7C4DFF"/>
+    </linearGradient>
+    <linearGradient id="word" x1="360" y1="0" x2="1000" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="0.8" stop-color="#EDE9FE"/><stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="420" rx="20" fill="url(#bg)"/>
+
+  <!-- Mark -->
+  <g transform="translate(70,70) scale(0.52)">
+    <path d="M360 96 A200 200 0 1 0 428 214" stroke="url(#ring)" stroke-width="30" stroke-linecap="round" fill="none"/>
+    <path d="M356 92 C392 78 418 92 436 128 C420 118 398 116 372 126 Z" fill="url(#ring)"/>
+    <g fill="#F6F5FB">
+      <path d="M150 176 C205 158 307 158 362 176 L356 202 C305 187 207 187 156 202 Z"/>
+      <rect x="168" y="218" width="176" height="20" rx="4"/>
+      <rect x="188" y="176" width="26" height="180" rx="4"/>
+      <rect x="298" y="176" width="26" height="180" rx="4"/>
+    </g>
+    <g fill="url(#books)">
+      <rect x="196" y="300" width="20" height="56" rx="4"/>
+      <rect x="224" y="280" width="20" height="76" rx="4"/>
+      <rect x="252" y="256" width="20" height="100" rx="4"/>
+      <rect x="280" y="288" width="20" height="68" rx="4"/>
+    </g>
+  </g>
+
+  <!-- Wordmark + tagline -->
+  <text x="360" y="150" font-size="96" font-weight="700" letter-spacing="14" fill="url(#word)">RENZO</text>
+  <text x="364" y="196" font-size="22" font-weight="500" letter-spacing="8" fill="#9A93B8">YOUR WORLD.  YOUR LIBRARY.</text>
+  <text x="364" y="236" font-size="20" font-weight="600" letter-spacing="6" fill="#6D5FA0">連蔵 · RENZŌ</text>
+
+  <!-- Feature chips -->
+  <g font-size="17" font-weight="600" fill="#CFC9E8">
+    <g transform="translate(364,286)">
+      <rect width="168" height="42" rx="21" fill="#1B1730" stroke="#2E2650"/>
+      <text x="84" y="27" text-anchor="middle">Multi-User</text>
+    </g>
+    <g transform="translate(548,286)">
+      <rect width="186" height="42" rx="21" fill="#1B1730" stroke="#2E2650"/>
+      <text x="93" y="27" text-anchor="middle">Multi-Source</text>
+    </g>
+    <g transform="translate(750,286)">
+      <rect width="182" height="42" rx="21" fill="#1B1730" stroke="#2E2650"/>
+      <text x="91" y="27" text-anchor="middle">Built-in Reader</text>
+    </g>
+    <g transform="translate(948,286)">
+      <rect width="188" height="42" rx="21" fill="#1B1730" stroke="#2E2650"/>
+      <text x="94" y="27" text-anchor="middle">Track &amp; Sync</text>
+    </g>
+  </g>
+
+  <!-- Isolation strip -->
+  <g transform="translate(364,346)" font-size="15" fill="#7E77A0">
+    <text x="0" y="18">One server · many fully-isolated private libraries · your data, your rules.</text>
+  </g>
+</svg>

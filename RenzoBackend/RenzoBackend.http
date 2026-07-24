@@ -1,0 +1,6 @@
+@RenzoBackend_HostAddress = http://localhost:5294
+
+GET {{RenzoBackend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

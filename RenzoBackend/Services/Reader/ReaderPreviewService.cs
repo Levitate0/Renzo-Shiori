@@ -1,0 +1,443 @@
+using RenzoBackend.Data;
+using RenzoBackend.Extensions;
+using RenzoBackend.Models.Database;
+using RenzoBackend.Models.Dto;
+using RenzoBackend.Services.Bridge;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Mihon.ExtensionsBridge.Models;
+using Mihon.ExtensionsBridge.Models.Abstractions;
+using Mihon.ExtensionsBridge.Models.Extensions;
+using RenzoBackend.Services.Search;
+using System.Text.RegularExpressions;
+
+namespace RenzoBackend.Services.Reader;
+
+/// <summary>
+/// Preview reading for Browse items that are NOT in the library: fetches
+/// chapter lists and page images live from the source through the Mihon
+/// bridge, holding nothing on disk. Chapter/page lists are memory-cached for
+/// 30 minutes so paging through a chapter doesn't re-hit the source's
+/// list endpoints for every image.
+/// </summary>
+public class ReaderPreviewService
+{
+    private readonly AppDbContext _db;
+    private readonly MihonBridgeService _mihon;
+    private readonly IMemoryCache _cache;
+    private readonly SiteAuth.SiteAuthService _siteAuth;
+    private readonly ILogger _logger;
+
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
+
+    // A single page image must not be able to hang forever: an un-timed source
+    // fetch holds the browser's connection open, and once a few stall the reader
+    // stops loading images entirely until it's re-opened. Bounding each fetch lets
+    // a slow page fail fast (the client just retries) instead of freezing.
+    private static readonly TimeSpan StreamImageTimeout = TimeSpan.FromSeconds(30);
+
+    // Each source's chapter-list / page-list fetch is bounded so a slow or dead
+    // source is skipped quickly and the next permanent source is tried.
+    private static readonly TimeSpan StreamSourceTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// EnsureLoggedInAsync performs a REAL login POST every call. The locked-chapter
+    /// poll retries page fetches repeatedly, and a chapter that stays locked would
+    /// re-login on every attempt — spamming the coin site's login endpoint (ban
+    /// risk). Gate attempts to once per provider per minute; within the window the
+    /// existing session is reused without a fresh POST.
+    /// </summary>
+    private async Task<bool> RateLimitedReloginAsync(Guid userId, string provider, CancellationToken token)
+    {
+        string gate = $"siteauth:relogin:{userId}:{provider}";
+        if (_cache.TryGetValue(gate, out bool lastResult))
+            return lastResult;
+        bool ok = await _siteAuth.EnsureLoggedInAsync(userId, provider, token).ConfigureAwait(false);
+        _cache.Set(gate, ok, TimeSpan.FromSeconds(60));
+        return ok;
+    }
+
+    private readonly StreamImageCache _imageCache;
+
+    /// <summary>
+    /// Clears the in-memory cache of streamed (web-pulled) page images. Downloaded
+    /// chapters are unaffected — they read from their CBZ on disk, not this cache.
+    /// Returns the number of cached images dropped.
+    /// </summary>
+    public long ClearStreamCache() => _imageCache.Clear();
+
+    public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache,
+        SiteAuth.SiteAuthService siteAuth, StreamImageCache imageCache, ILogger<ReaderPreviewService> logger)
+    {
+        _db = db;
+        _mihon = mihon;
+        _cache = cache;
+        _siteAuth = siteAuth;
+        _imageCache = imageCache;
+        _logger = logger;
+    }
+
+    private async Task<(LatestSerieEntity entity, ISourceInterop source)?> ResolveAsync(string mihonId, CancellationToken token)
+    {
+        LatestSerieEntity? entity = await _db.LatestSeries.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.MihonId == mihonId, token).ConfigureAwait(false);
+        if (entity == null || string.IsNullOrEmpty(entity.MihonProviderId))
+            return null;
+        ISourceInterop src = await _mihon.SourceFromProviderIdAsync(entity.MihonProviderId, token).ConfigureAwait(false);
+        if (src == null)
+            return null;
+        return (entity, src);
+    }
+
+    public async Task<PreviewChaptersDto?> GetChaptersAsync(string mihonId, CancellationToken token = default)
+    {
+        var resolved = await ResolveAsync(mihonId, token).ConfigureAwait(false);
+        if (resolved == null)
+            return null;
+        (LatestSerieEntity entity, ISourceInterop src) = resolved.Value;
+
+        Manga? manga = entity.ToManga();
+        if (manga == null)
+            return null;
+
+        List<ParsedChapter>? chapters = _cache.Get<List<ParsedChapter>>($"pv:ch:{mihonId}");
+        if (chapters == null)
+        {
+            chapters = await src.GetChaptersAsync(manga, token).ConfigureAwait(false);
+            if (chapters == null)
+                return null;
+            _cache.Set($"pv:ch:{mihonId}", chapters, CacheTtl);
+        }
+
+        return new PreviewChaptersDto
+        {
+            MihonId = mihonId,
+            Title = entity.Title,
+            Chapters = chapters.Select((c, i) => new PreviewChapterDto
+            {
+                Index = i,
+                Name = string.IsNullOrEmpty(c.ParsedName) ? c.Name : c.ParsedName,
+                Number = c.ParsedNumber != 0 ? c.ParsedNumber : (decimal?)null,
+                DateUpload = c.DateUpload == default ? null : c.DateUpload.UtcDateTime
+            }).ToList()
+        };
+    }
+
+    public async Task<PreviewPagesDto?> GetPagesAsync(string mihonId, int chapterIndex, Guid? userId = null, CancellationToken token = default)
+    {
+        List<Page>? pages = await GetPageListAsync(mihonId, chapterIndex, userId, token).ConfigureAwait(false);
+        return pages == null ? null : new PreviewPagesDto { PageCount = pages.Count };
+    }
+
+    public async Task<(Stream? stream, string contentType)> GetPageImageAsync(string mihonId, int chapterIndex, int pageIndex, Guid? userId = null, CancellationToken token = default)
+    {
+        string imgKey = $"pv:img:{mihonId}:{chapterIndex}:{pageIndex}";
+        if (_imageCache.TryGet(imgKey, out StreamImageCache.Entry cached))
+            return (new MemoryStream(cached.Bytes, writable: false), cached.ContentType);
+
+        List<Page>? pages = await GetPageListAsync(mihonId, chapterIndex, userId, token).ConfigureAwait(false);
+        if (pages == null || pageIndex < 0 || pageIndex >= pages.Count)
+            return (null, "");
+
+        var resolved = await ResolveAsync(mihonId, token).ConfigureAwait(false);
+        if (resolved == null)
+            return (null, "");
+
+        ContentTypeStream? img;
+        try
+        {
+            img = await SourceTimeout
+                .RunAsync(c => resolved.Value.source.GetPageImageAsync(pages[pageIndex], c), StreamImageTimeout, token)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Preview page image timed out for {MihonId} ch {Chapter} page {Page}", mihonId, chapterIndex, pageIndex);
+            return (null, "");
+        }
+        if (img == null)
+            return (null, "");
+
+        string ct = string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType;
+        byte[] bytes = img.ToArray();
+        _imageCache.Set(imgKey, bytes, ct);
+        return (new MemoryStream(bytes, writable: false), ct);
+    }
+
+    private async Task<List<Page>?> GetPageListAsync(string mihonId, int chapterIndex, Guid? userId, CancellationToken token)
+    {
+        string key = $"pv:pg:{mihonId}:{chapterIndex}";
+        List<Page>? pages = _cache.Get<List<Page>>(key);
+        if (pages != null)
+            return pages;
+
+        var resolved = await ResolveAsync(mihonId, token).ConfigureAwait(false);
+        if (resolved == null)
+            return null;
+        (LatestSerieEntity entity, ISourceInterop src) = resolved.Value;
+
+        List<ParsedChapter>? chapters = _cache.Get<List<ParsedChapter>>($"pv:ch:{mihonId}");
+        if (chapters == null)
+        {
+            Manga? manga = entity.ToManga();
+            if (manga == null)
+                return null;
+            chapters = await src.GetChaptersAsync(manga, token).ConfigureAwait(false);
+            if (chapters == null)
+                return null;
+            _cache.Set($"pv:ch:{mihonId}", chapters, CacheTtl);
+        }
+        if (chapterIndex < 0 || chapterIndex >= chapters.Count)
+            return null;
+
+        pages = await src.GetPagesAsync(chapters[chapterIndex], token).ConfigureAwait(false);
+
+        // A locked/paid chapter comes back empty when the site session has
+        // lapsed. If the user has a login for this source, re-authenticate
+        // (refreshing cookies in the shared jar) and try once more.
+        if ((pages == null || pages.Count == 0) && userId != null)
+        {
+            bool relogged = await RateLimitedReloginAsync(userId.Value, entity.Provider, token).ConfigureAwait(false);
+            if (relogged)
+                pages = await src.GetPagesAsync(chapters[chapterIndex], token).ConfigureAwait(false);
+        }
+
+        if (pages != null)
+            _cache.Set(key, pages, CacheTtl);
+        return pages;
+    }
+
+    // ── Library streaming (read a not-yet-downloaded chapter live) ──────────
+    // Same live-from-source mechanism as preview, but resolved from a library
+    // series + chapter number instead of a Browse item. Lets the reader open
+    // chapters that are still downloading or haven't been downloaded at all.
+
+    // Paid/locked chapters surface as an exception at page-fetch time (the chapter
+    // API has no lock field): "requires purchase", "log in via webview and
+    // purchased this chapter to read", etc. Matched so genuine transient errors
+    // (e.g. "Timed out waiting for page list") are NOT treated as locked.
+    private static readonly Regex PurchaseError = new(
+        @"(requires?\s+purchase|must\s+purchase|purchased?\s+this\s+chapter|log\s*in\s+via\s+webview|unlock\s+to\s+read|coins?\s+to\s+read|premium\s+chapter)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static bool IsPurchaseError(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+            if (!string.IsNullOrEmpty(e.Message) && PurchaseError.IsMatch(e.Message))
+                return true;
+        return false;
+    }
+
+    public async Task<PreviewPagesDto?> GetLibraryStreamPagesAsync(Guid seriesId, decimal chapterNumber, Guid? userId = null, bool forceRefresh = false, CancellationToken token = default)
+    {
+        List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, forceRefresh, token).ConfigureAwait(false);
+        if (pages == null)
+            return null;
+        // Zero pages means the source withheld them — a paid/locked chapter.
+        return new PreviewPagesDto { PageCount = pages.Count, Locked = pages.Count == 0 };
+    }
+
+    public async Task<(Stream? stream, string contentType)> GetLibraryStreamPageImageAsync(Guid seriesId, decimal chapterNumber, int pageIndex, Guid? userId = null, CancellationToken token = default)
+    {
+        // Served from RAM on the way back / re-scroll — no source round-trip.
+        string imgKey = $"lib:img:{seriesId}:{chapterNumber}:{pageIndex}";
+        if (_imageCache.TryGet(imgKey, out StreamImageCache.Entry cached))
+            return (new MemoryStream(cached.Bytes, writable: false), cached.ContentType);
+
+        List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, false, token).ConfigureAwait(false);
+        if (pages == null || pageIndex < 0 || pageIndex >= pages.Count)
+            return (null, "");
+
+        // Use the source that produced the cached page list, so page indices match.
+        var resolved = await ResolveWinningProviderAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
+        if (resolved == null)
+            return (null, "");
+
+        ContentTypeStream? img;
+        try
+        {
+            img = await SourceTimeout
+                .RunAsync(c => resolved.Value.src.GetPageImageAsync(pages[pageIndex], c), StreamImageTimeout, token)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Stream page image timed out for series {SeriesId} ch {Chapter} page {Page}", seriesId, chapterNumber, pageIndex);
+            return (null, "");
+        }
+        if (img == null)
+            return (null, "");
+
+        string ct = string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType;
+        byte[] bytes = img.ToArray();
+        _imageCache.Set(imgKey, bytes, ct);
+        return (new MemoryStream(bytes, writable: false), ct);
+    }
+
+    /// <summary>
+    /// Every capable, permanent source that carries this chapter, storage source
+    /// first. Streaming tries them in order so a failing/locked/slow source falls
+    /// through to the next instead of failing the whole read.
+    /// </summary>
+    private async Task<List<SeriesProviderEntity>> GetCapableProvidersAsync(Guid seriesId, decimal chapterNumber, CancellationToken token)
+    {
+        SeriesEntity? series = await _db.Series.Include(s => s.Sources).AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
+        if (series == null)
+            return new List<SeriesProviderEntity>();
+
+        bool Capable(SeriesProviderEntity p) =>
+            !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId);
+        bool HasChapter(SeriesProviderEntity p) => p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber);
+
+        return series.Sources
+            .Where(p => Capable(p) && HasChapter(p))
+            .OrderByDescending(p => p.IsStorage)
+            .ToList();
+    }
+
+    /// <summary>Resolves one specific source to its live chapter object.</summary>
+    private async Task<(SeriesProviderEntity provider, ISourceInterop src, ParsedChapter chapter)?> ResolveProviderChapterAsync(
+        SeriesProviderEntity target, decimal chapterNumber, bool forceRefresh, CancellationToken token)
+    {
+        ISourceInterop src;
+        try { src = await _mihon.SourceFromProviderIdAsync(target.MihonProviderId!, token).ConfigureAwait(false); }
+        catch (Exception e) { _logger.LogWarning(e, "Stream: could not resolve source for {Provider}", target.Provider); return null; }
+        if (src == null)
+            return null;
+
+        // Force refresh (e.g. polling a locked chapter after purchase) drops the
+        // cached source chapter list so we re-ask the source.
+        string cacheKey = $"lib:ch:{target.Id}";
+        if (forceRefresh)
+            _cache.Remove(cacheKey);
+
+        List<ParsedChapter>? chapters = _cache.Get<List<ParsedChapter>>(cacheKey);
+        if (chapters == null)
+        {
+            Manga? manga = target.ToManga();
+            if (manga == null)
+                return null;
+            try { chapters = await SourceTimeout.RunAsync(c => src.GetChaptersAsync(manga, c), StreamSourceTimeout, token).ConfigureAwait(false); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Stream: source {Provider} failed/timed out fetching chapter list", target.Provider); return null; }
+            if (chapters == null)
+                return null;
+            chapters.ForEach(a => { if (string.IsNullOrEmpty(a.Scanlator)) a.Scanlator = target.Provider; });
+            _cache.Set(cacheKey, chapters, CacheTtl);
+        }
+
+        // Apply the same scanlator scoping the download path uses.
+        IEnumerable<ParsedChapter> pool = chapters;
+        if (target.Scanlator == target.Provider || string.IsNullOrEmpty(target.Scanlator))
+            pool = pool.Where(a => string.IsNullOrEmpty(a.Scanlator) || a.Scanlator == target.Provider);
+        else
+            pool = pool.Where(a => a.Scanlator == target.Scanlator);
+
+        ParsedChapter? match = pool.FirstOrDefault(c => c.ParsedNumber == chapterNumber);
+        return match == null ? null : (target, src, match);
+    }
+
+    /// <summary>Resolves the source that served the cached page list (for image fetches).</summary>
+    private async Task<(SeriesProviderEntity provider, ISourceInterop src, ParsedChapter chapter)?> ResolveWinningProviderAsync(
+        Guid seriesId, decimal chapterNumber, CancellationToken token)
+    {
+        List<SeriesProviderEntity> providers = await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
+        if (providers.Count == 0)
+            return null;
+
+        Guid winnerId = _cache.TryGetValue($"lib:win:{seriesId}:{chapterNumber}", out Guid w) ? w : Guid.Empty;
+        SeriesProviderEntity target = (winnerId != Guid.Empty ? providers.FirstOrDefault(p => p.Id == winnerId) : null) ?? providers.First();
+        return await ResolveProviderChapterAsync(target, chapterNumber, false, token).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// One source's page-list attempt: timeout-bounded, with a re-login retry for
+    /// coin sources whose session lapsed. Returns null on failure/timeout, an empty
+    /// list when the source withholds the pages (locked), or the pages.
+    /// </summary>
+    private async Task<List<Page>?> TryGetPagesFromSourceAsync(
+        ISourceInterop src, ParsedChapter chapter, SeriesProviderEntity provider, Guid? userId, CancellationToken token)
+    {
+        async Task<List<Page>?> Fetch()
+        {
+            try
+            {
+                return await SourceTimeout.RunAsync(c => src.GetPagesAsync(chapter, c), StreamSourceTimeout, token).ConfigureAwait(false);
+            }
+            catch (TimeoutException) { _logger.LogWarning("Stream: source {Provider} timed out fetching pages for ch {Chapter}", provider.Provider, chapter.ParsedNumber); return null; }
+            catch (Exception ex) when (IsPurchaseError(ex)) { return new List<Page>(); }  // locked on this source
+            catch (Exception ex) { _logger.LogWarning(ex, "Stream: source {Provider} failed page list for ch {Chapter}", provider.Provider, chapter.ParsedNumber); return null; }
+        }
+
+        List<Page>? pages = await Fetch().ConfigureAwait(false);
+        if ((pages == null || pages.Count == 0) && userId != null)
+        {
+            bool relogged = await RateLimitedReloginAsync(userId.Value, provider.Provider, token).ConfigureAwait(false);
+            if (relogged)
+                pages = await Fetch().ConfigureAwait(false);
+        }
+        return pages;
+    }
+
+    private async Task<List<Page>?> GetLibraryPageListAsync(Guid seriesId, decimal chapterNumber, Guid? userId, bool forceRefresh, CancellationToken token)
+    {
+        string key = $"lib:pg:{seriesId}:{chapterNumber}";
+        // Force refresh skips the cached (often empty) page list so a chapter that
+        // just got purchased / turned free is actually re-fetched from the source.
+        if (forceRefresh)
+            _cache.Remove(key);
+        else
+        {
+            List<Page>? cached = _cache.Get<List<Page>>(key);
+            if (cached != null)
+                return cached;
+        }
+
+        List<SeriesProviderEntity> providers = await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
+        if (providers.Count == 0)
+            return null;
+
+        // Try each permanent source in turn; the first that actually serves pages
+        // wins. A source that times out, errors, or withholds a paid chapter falls
+        // through to the next — so one bad/locked source no longer breaks the read.
+        List<Page>? pages = null;
+        Guid? winner = null;
+        bool anyResolved = false;
+
+        foreach (SeriesProviderEntity provider in providers)
+        {
+            token.ThrowIfCancellationRequested();
+            var resolved = await ResolveProviderChapterAsync(provider, chapterNumber, forceRefresh, token).ConfigureAwait(false);
+            if (resolved == null)
+                continue;
+            anyResolved = true;
+            (_, ISourceInterop src, ParsedChapter chapter) = resolved.Value;
+
+            List<Page>? attempt = await TryGetPagesFromSourceAsync(src, chapter, provider, userId, token).ConfigureAwait(false);
+            if (attempt != null && attempt.Count > 0)
+            {
+                pages = attempt;
+                winner = provider.Id;
+                break;
+            }
+            // empty (locked) or failed on this source — try the next one
+        }
+
+        // No source could even resolve the chapter → genuinely not found.
+        if (!anyResolved)
+            return null;
+
+        // A source resolved but none served pages → withheld/locked everywhere.
+        pages ??= new List<Page>();
+
+        // Remember which source served the pages so image fetches use the same one.
+        if (winner != null)
+            _cache.Set($"lib:win:{seriesId}:{chapterNumber}", winner.Value, CacheTtl);
+
+        // Cache real results; never poison the cache with an empty list during a
+        // forced poll, so the next 3s tick re-checks instead of returning 0.
+        if (pages.Count > 0 || !forceRefresh)
+            _cache.Set(key, pages, CacheTtl);
+        return pages;
+    }
+}

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using com.sun.javadoc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -43,7 +43,13 @@ namespace Mihon.ExtensionsBridge.Core.Services
 
 
         public const float LIB_VERSION_MIN = 1.3f;
-        public const float LIB_VERSION_MAX = 1.5f;
+        // 1.6: the keiyoushi repo moved its extensions to extensions-lib 1.6, so a
+        // 1.5 cap left every installed extension stuck on old builds (auto-update
+        // downloaded each new APK and then rejected it here). Accepting 1.6 is safe
+        // to ATTEMPT because the pipeline compiles in a temp folder and only swaps
+        // in the new version after a successful compile — an incompatible APK
+        // fails the compile and the previous working version stays active.
+        public const float LIB_VERSION_MAX = 1.6f;
         /// <summary>
         /// Provides the local working folder structure and persistence of repository groups.
         /// </summary>
@@ -276,6 +282,8 @@ namespace Mihon.ExtensionsBridge.Core.Services
                 if (interop.Id == initialEntry.Id)
                     return interop;
                 await interop.SwapAsync(initialEntry, token).ConfigureAwait(false);
+                // A version switch (rollback/pin) must survive restarts.
+                await _workingStructure.SaveLocalRepositoryGroupsAsync(LocalExtensions, token).ConfigureAwait(false);
                 return interop;
             }
             catch (OperationCanceledException)
@@ -854,6 +862,11 @@ namespace Mihon.ExtensionsBridge.Core.Services
                 {
                     foreach (var group in LocalExtensions)
                     {
+                        // Pinned groups (AutoUpdate off — e.g. rolled back to the last
+                        // working version while upstream ships a fix) are excluded, so
+                        // the hourly auto-update can never replace a pinned version.
+                        if (!group.AutoUpdate)
+                            continue;
                         activeExtensions[group.Name] = group.Entries.OrderByDescending(e => e.Extension.VersionCode).First().Extension.Version;
                     }
                 }

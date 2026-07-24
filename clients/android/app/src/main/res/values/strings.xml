@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Rensaiō</string>
+    <string name="app_name">Renzō</string>
     <string name="connect_title">Connect to your server</string>
-    <string name="server_hint">https://rensaio.example.com</string>
-    <string name="server_help">e.g. https://rensaio.example.com or http://192.168.1.10:8080</string>
+    <string name="server_hint">https://renzo.example.com</string>
+    <string name="server_help">e.g. https://renzo.example.com or http://192.168.1.10:8080</string>
     <string name="connect">Connect</string>
     <string name="connecting">Connecting…</string>
-    <string name="error_unreachable">Could not reach a Rensaiō server at that address. Check the address (including port) and that the server is running.</string>
+    <string name="error_unreachable">Could not reach a Renzō server at that address. Check the address (including port) and that the server is running.</string>
     <string name="error_empty">Enter a server address.</string>
     <string name="error_lost">Lost connection to the server.</string>
-    <string name="exit_dialog_title">Rensaiō</string>
+    <string name="exit_dialog_title">Renzō</string>
     <string name="exit_dialog_exit">Exit</string>
     <string name="exit_dialog_change_server">Change server</string>
     <string name="exit_dialog_cancel">Cancel</string>

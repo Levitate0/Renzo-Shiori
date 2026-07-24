@@ -1,5 +1,5 @@
-$frontendPath = "./RensaioFrontend"
-$backendPath = "./RensaioBackend"
+$frontendPath = "./RenzoFrontend"
+$backendPath = "./RenzoBackend"
 
 $frontendOutput = Join-Path $frontendPath "out"
 $backendWWWZip = Join-Path $backendPath "wwwroot.zip"

@@ -14,6 +14,12 @@ public static class MiscExtensions
             repo = repo[..^(10)];
         if (repo.EndsWith("index.min.json", StringComparison.InvariantCultureIgnoreCase))
             repo = repo[..^(14)];
+        // Newer Mihon repos advertise a protobuf index (…/index.pb). We fetch the
+        // JSON index from the same base, so strip this suffix too — otherwise the
+        // base URL keeps "/index.pb", every index fetch 404s, and adding the repo
+        // fails to save.
+        if (repo.EndsWith("index.pb", StringComparison.InvariantCultureIgnoreCase))
+            repo = repo[..^(8)];
         if (repo.EndsWith("/"))
             repo  = repo[..^(1)];
         return repo;
