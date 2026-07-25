@@ -325,3 +325,7 @@ RenzoBackend/runtime/renzo.schedule.db-wal
 backup_chat.txt
 /dotnet-install.sh
 /wwwroot.sha256
+
+clients/android/local.properties
+clients/android/.gradle/
+clients/android/app/build/

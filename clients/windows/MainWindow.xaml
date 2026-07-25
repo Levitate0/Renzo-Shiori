@@ -12,8 +12,8 @@
 
         <Grid x:Name="ServerPanel" Background="#0a0a0a">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="420">
-                <TextBlock Text="Renzō" FontSize="42" FontWeight="Bold" Foreground="#fafafa"
-                           HorizontalAlignment="Center" Margin="0,0,0,8" />
+                <Image Source="/renzo-banner.png" Width="300" Stretch="Uniform"
+                       HorizontalAlignment="Center" Margin="0,0,0,14" />
                 <TextBlock Text="Connect to your server" FontSize="14" Foreground="#a1a1aa"
                            HorizontalAlignment="Center" Margin="0,0,0,24" />
                 <TextBox x:Name="AddressBox" FontSize="15" Padding="10,8"

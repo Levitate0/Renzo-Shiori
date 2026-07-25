@@ -20,4 +20,8 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2592.51" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="renzo-banner.png" />
+  </ItemGroup>
+
 </Project>
