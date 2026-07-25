@@ -565,7 +565,14 @@ function ReaderInner() {
     // Always record real dimensions so the page box can match the image exactly
     // (prevents gaps between pages in continuous mode).
     if (w > 0 && h > 0) loadedDimsRef.current.set(gi, { w, h });
-    if ((!isPreview && !streaming) || detectedMode) return;
+    // Once webtoon/longstrip is detected, that's a confident, final verdict —
+    // stop re-checking. But an early "paged" read is NOT final: some webtoons
+    // open with a few normal-shaped establishing panels before the strip-cut
+    // pages that would actually flag it, so a decision made from only the
+    // first few loaded images can be wrong. Keep re-evaluating as more pages
+    // load so it can still upgrade to webtoon/longstrip once real evidence
+    // shows up, instead of staying stuck on paged for the whole chapter.
+    if ((!isPreview && !streaming) || detectedMode === "webtoon" || detectedMode === "longstrip") return;
     const dims = [...loadedDimsRef.current.values()];
     // Mirrors the server-side rule (ReaderService): tall panels are native
     // webtoon artwork; short wide slivers are off-cuts left by slicing a long
