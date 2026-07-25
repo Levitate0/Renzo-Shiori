@@ -147,7 +147,7 @@ public class ScrobblerSyncService
                         ChapterNumber = c.Key,
                         Progress = c.Value,
                         LastReadDeviceId="",
-                        LastReadDeviceName="Renzō",
+                        LastReadDeviceName="Renzo Shiori",
                         IsCompleted = true,
                         LastReadAt = DateTime.UtcNow
                     })

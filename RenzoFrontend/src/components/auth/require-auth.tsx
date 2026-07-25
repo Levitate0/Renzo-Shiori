@@ -7,7 +7,7 @@ import { useAuth } from "@/contexts/auth-context";
 /**
  * Thin auth gate for the page shell.
  *
- * Renzō 2.0's `AuthProvider` already redirects unauthenticated users to
+ * Renzo Shiori 2.0's `AuthProvider` already redirects unauthenticated users to
  * `/login` (auth enabled) or `/user-select` (profile mode) on its own, so this
  * wrapper only needs to hold a loading state until the auth status resolves —
  * avoiding a flash of the shell before the redirect fires. (The Kaizoku

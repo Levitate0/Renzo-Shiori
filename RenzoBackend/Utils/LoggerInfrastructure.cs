@@ -16,7 +16,7 @@ namespace RenzoBackend.Utils
         public static int PascalClassNameWidth = 0;
         private static readonly (string App, string Colored)[] ConsoleAppStyles =
         [
-            (EnvironmentSetup.AppRenzo, "\u001b[32mRenzō\u001b[0m"),
+            (EnvironmentSetup.AppRenzo, "\u001b[32mShiori\u001b[0m"),
             (EnvironmentSetup.AppMihon, "\u001b[34mMihonEx\u001b[0m"),
             (EnvironmentSetup.AppAndroid, "\u001b[36mAndroid\u001b[0m")
         ];

@@ -1,4 +1,4 @@
-package app.renzo.client
+package app.renzoshiori.client
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
@@ -207,10 +207,11 @@ class MainActivity : AppCompatActivity() {
             try {
                 if (conn.responseCode != 200) return false
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
-                // Accept the current brand and the legacy handshake id (the server
-                // reports "Rensaio" as product for backward compat with older clients).
+                // Accept the current brand plus the legacy handshake ids (the server
+                // reported "Renzo"/"Rensaio" as product for older clients).
                 val product = JSONObject(body).optString("product")
-                product.equals("Renzo", ignoreCase = true) || product.equals("Rensaio", ignoreCase = true)
+                product.equals("Renzo Shiori", ignoreCase = true) ||
+                    product.equals("Renzo", ignoreCase = true) || product.equals("Rensaio", ignoreCase = true)
             } finally {
                 conn.disconnect()
             }

@@ -12,7 +12,7 @@ export function renderCallbackHtml(providerName: string, provider: string, state
 
   return `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Renzō &mdash; Complete</title>
+<head><meta charset="utf-8"><title>Renzo Shiori &mdash; Complete</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:hsl(20,14.3%,4.1%);color:hsl(0,0%,95%)}
@@ -29,10 +29,10 @@ p{font-size:0.875rem;opacity:0.7;margin-bottom:1.5rem}
 .hint{font-size:0.75rem;opacity:0.4;margin-top:1.5rem}
 </style></head><body>
 <div class="card">
-<div class="logo">Renzō</span></div>
+<div class="logo">Renzo Shiori</span></div>
 <div class="mark"></div>
 <h1>Authentication Complete</h1>
-<p>Your ${safeProviderName} account has been connected to Renzō.</p>
+<p>Your ${safeProviderName} account has been connected to Renzo Shiori.</p>
 <div class="pill">Connected</div>
 <p class="hint">You may close this window.</p></div>
 <script>(function(){try{if(window.opener){window.opener.postMessage({type:'oauth-success',provider:'${safeProvider}',state:'${safeState}'},'*')}}catch(e){}})()</script>
@@ -52,7 +52,7 @@ export function renderErrorHtml(providerName: string, errorMessage: string): str
 
   return `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Renzō &mdash; Authentication Failed</title>
+<head><meta charset="utf-8"><title>Renzo Shiori &mdash; Authentication Failed</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:hsl(20,14.3%,4.1%);color:hsl(0,0%,95%)}
@@ -70,10 +70,10 @@ p{font-size:0.875rem;opacity:0.7;margin-bottom:0.75rem}
 .hint{font-size:0.75rem;opacity:0.4;margin-top:1.5rem}
 </style></head><body>
 <div class="card">
-<div class="logo">Renzō</span></div>
+<div class="logo">Renzo Shiori</span></div>
 <div class="cross">&#10005;</div>
 <h1>Authentication Failed</h1>
-<p>Could not connect your ${safeProvider} account to Renzō</p>
+<p>Could not connect your ${safeProvider} account to Renzo Shiori</p>
 <div class="error-detail">${safeError}</div>
 <div class="pill">Failed</div>
 <p class="hint">Please try again. If the problem persists, contact support.</p></div>

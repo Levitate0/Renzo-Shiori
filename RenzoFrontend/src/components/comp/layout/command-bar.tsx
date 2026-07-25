@@ -156,7 +156,7 @@ export function CommandBar() {
           >
             <div className="flex items-center gap-2 px-4 py-3 border-b">
               <RenzoLogo className="h-6 w-6 object-contain" />
-              <span className="text-sm font-semibold">Renzō</span>
+              <span className="text-sm font-semibold">Renzo Shiori</span>
             </div>
             <SectionList onNavigate={() => setSheetOpen(false)} />
 
@@ -173,7 +173,7 @@ export function CommandBar() {
         <Link
           href="/library"
           className="flex items-center gap-2 shrink-0"
-          aria-label="Renzō home"
+          aria-label="Renzo Shiori home"
         >
           <RenzoLogo className="h-7 w-7 object-contain" />
           <AnimatePresence>
@@ -185,7 +185,7 @@ export function CommandBar() {
                 transition={{ duration: 0.15 }}
                 className="hidden md:inline text-sm font-semibold text-foreground whitespace-nowrap overflow-hidden"
               >
-                Renzō
+                Renzo Shiori
               </motion.span>
             )}
           </AnimatePresence>

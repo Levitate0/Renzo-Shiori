@@ -394,7 +394,7 @@ public class McpToolService
                 <span style='color:#666;font-size:0.85em'>{s.ChapterCount} chapters</span>
             </div>
         "));
-        var html = $@"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Renzō Library</title></head>
+        var html = $@"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Renzo Shiori Library</title></head>
             <body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:16px'>
             <h2 style='margin-top:0'>Library ({series.Count})</h2>
             <div style='border:1px solid #ddd;border-radius:8px;overflow:hidden'>
@@ -437,7 +437,7 @@ public class McpToolService
                 {System.Net.WebUtility.HtmlEncode(a.Message ?? "No message")}
             </div>
         "));
-        var html = $@"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Renzō Status</title></head>
+        var html = $@"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Renzo Shiori Status</title></head>
             <body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:16px'>
             <h2 style='margin-top:0'>Health Status</h2>
             <div style='border:1px solid #ddd;border-radius:8px;overflow:hidden'>

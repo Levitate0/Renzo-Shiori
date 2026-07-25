@@ -2,7 +2,7 @@ import { getApiConfig } from "@/lib/api/config";
 import { getCachedImageToken } from "@/lib/api/imageToken";
 
 /**
- * Cover placeholder for series with no thumbnail — the Renzō mark, matched
+ * Cover placeholder for series with no thumbnail — the Renzo Shiori mark, matched
  * to the active light/dark theme. Reads the `.dark` class next-themes puts
  * on <html> directly rather than useTheme(), since this is a plain function
  * called from JSX `src={...}` all over the app, not a component that could

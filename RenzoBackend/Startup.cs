@@ -52,7 +52,7 @@ namespace RenzoBackend
                 return new LibraryTaggingLoggerFactory(new SerilogLoggerFactory(Log.Logger, false));
             }));
 
-            Logger.LogInformation("Initializing Renzō...");
+            Logger.LogInformation("Initializing Renzo Shiori...");
 
             services.AddOpenApi();
             services.AddControllers().AddJsonOptions(options =>

@@ -110,7 +110,7 @@ public class OAuthController : ControllerBase
 
             return Content($@"<!DOCTYPE html>
 <html lang=""en"">
-<head><meta charset=""utf-8""><title>Renzō — Complete</title>
+<head><meta charset=""utf-8""><title>Renzo Shiori — Complete</title>
 <link rel=""icon"" href=""/favicon.ico?v=2"" sizes=""any"">
 <link rel=""icon"" type=""image/png"" sizes=""32x32"" href=""/favicon-32x32.png?v=2"">
 <style>
@@ -129,10 +129,10 @@ p{{font-size:0.875rem;opacity:0.7;margin-bottom:1.5rem}}
 .hint{{font-size:0.75rem;opacity:0.4;margin-top:1.5rem}}
 </style></head><body>
 <div class=""card"">
-<img class=""logo"" id=""logoImg"" src=""/renzo-icon-dark.png"" alt=""Renzō"">
+<img class=""logo"" id=""logoImg"" src=""/renzo-icon-dark.png"" alt=""Renzo Shiori"">
 <div class=""check""><svg viewBox=""0 0 24 24""><polyline points=""20 6 9 17 4 12""/></svg></div>
 <h1>Authentication Complete</h1>
-<p>Your {providerName} account has been connected to Renzō.</p>
+<p>Your {providerName} account has been connected to Renzo Shiori.</p>
 <div class=""pill"">Connected</div>
 <p class=""hint"">You may close this window.</p></div>
 <script>

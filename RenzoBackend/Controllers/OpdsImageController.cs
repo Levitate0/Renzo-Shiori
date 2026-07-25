@@ -34,7 +34,7 @@ public class OpdsImageController : ControllerBase
     {
         if (!_clientCapabilitiesHelper.SupportProgression(Request, HttpContext))
         {
-            _readStateService.SetReadState(user.Username, user.Id, series.Id, filename, "", "Renzō", series.StoragePath, chapterNumber, pageIndex + 1, totalPages, false);
+            _readStateService.SetReadState(user.Username, user.Id, series.Id, filename, "", "Renzo Shiori", series.StoragePath, chapterNumber, pageIndex + 1, totalPages, false);
         }
     }
 

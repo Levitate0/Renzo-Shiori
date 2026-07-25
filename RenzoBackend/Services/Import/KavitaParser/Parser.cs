@@ -1,4 +1,4 @@
-//This is the original Parser from Kavita modified for Renzō
+//This is the original Parser from Kavita modified for Renzo Shiori
 //It's used for doing an initial import of files and folders
 //Copyright (c) 2025 Kavita maintainers
 //Licensed under the GNU General Public License v3.0

@@ -1,11 +1,11 @@
-; Renzo desktop client installer (per-user, no admin required)
+; Renzo Shiori desktop client installer (per-user, no admin required)
 Unicode true
-!define APPNAME "Renzo"
+!define APPNAME "Renzo Shiori"
 !define VERSION "1.0.0"
 !define SRC "/tmp/renzo-exe-folder"
 
 Name "${APPNAME}"
-OutFile "/export/Main/Renzo-out/Renzo-Setup.exe"
+OutFile "/export/Main/Renzo-out/RenzoShiori-Setup.exe"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
 Icon "/opt/zurg-stack/Rensaio/clients/windows/renzo.ico"
@@ -18,7 +18,7 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_RUN "$INSTDIR\Renzo.exe"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\RenzoShiori.exe"
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -29,13 +29,13 @@ SetCompressor /SOLID lzma
 Section "Install"
   SetOutPath "$INSTDIR"
   File /r "${SRC}/*"
-  CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\Renzo.exe" "" "$INSTDIR\Renzo.exe" 0
-  CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\Renzo.exe" "" "$INSTDIR\Renzo.exe" 0
+  CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\RenzoShiori.exe" "" "$INSTDIR\RenzoShiori.exe" 0
+  CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\RenzoShiori.exe" "" "$INSTDIR\RenzoShiori.exe" 0
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${APPNAME}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "${APPNAME}"
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\Renzo.exe"
+  WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\RenzoShiori.exe"
   WriteRegStr HKCU "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
   WriteRegStr HKCU "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1

@@ -143,7 +143,7 @@ public class ReadStateService
                 // must not un-complete it. Only the explicit mark toggle un-reads.
                 chapterState.IsCompleted = chapterState.IsCompleted || lastReadPage >= totalPages;
                 chapterState.LastReadDeviceId = deviceid ?? "";
-                chapterState.LastReadDeviceName = string.IsNullOrEmpty(devicename) ? "Renzō" : devicename;
+                chapterState.LastReadDeviceName = string.IsNullOrEmpty(devicename) ? "Renzo Shiori" : devicename;
                 chapterState.LastReadFilename = filename;
                 chapterState.LastReadAt = DateTime.UtcNow;
                 update = true;
@@ -194,7 +194,7 @@ public class ReadStateService
         (_, ChapterReadState chapterState) = GetOrCreateChapterState(states, chapterNumber);
         chapterState.IsCompleted = completed;
         chapterState.Progress = completed ? 1f : 0f;
-        chapterState.LastReadDeviceName = "Renzō Reader";
+        chapterState.LastReadDeviceName = "Renzo Shiori Reader";
         if (filename != null)
             chapterState.LastReadFilename = filename;
         chapterState.LastReadAt = DateTime.UtcNow;

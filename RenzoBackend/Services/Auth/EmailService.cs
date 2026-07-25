@@ -36,11 +36,11 @@ public class EmailService
         !string.IsNullOrWhiteSpace(s.SmtpHost) && !string.IsNullOrWhiteSpace(s.SmtpFromAddress);
 
     /// <summary>
-    /// Sender display name shown in the recipient's inbox — "Renzō on
+    /// Sender display name shown in the recipient's inbox — "Renzo Shiori on
     /// {public host}" so a person with accounts on several instances can tell
     /// them apart. The host comes from the same public-URL resolution the invite
     /// links use (ExternalDomain, else the best AllowedOrigins entry). Falls back
-    /// to plain "Renzō" when nothing but localhost is available.
+    /// to plain "Renzo Shiori" when nothing but localhost is available.
     /// </summary>
     private static string BuildSenderName(SettingsDto s)
     {
@@ -50,9 +50,9 @@ public class EmailService
             && !uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             && !uri.IsLoopback)
         {
-            return $"Renzō on {uri.Authority}";
+            return $"Renzo Shiori on {uri.Authority}";
         }
-        return "Renzō";
+        return "Renzo Shiori";
     }
 
     /// <summary>

@@ -49,7 +49,7 @@ public class SaveCookieRequest
 
 /// <summary>
 /// Manages per-user logins to coin/paid scanlation sites. Credentials are
-/// stored encrypted; on save (and on demand) Renzō logs in, harvests the
+/// stored encrypted; on save (and on demand) Renzo Shiori logs in, harvests the
 /// session cookies into the shared Mihon jar, and the source's extension then
 /// serves the chapters the user owns. Sites that can't be automated accept a
 /// pasted session cookie instead.

@@ -4,7 +4,7 @@ import { useAuth } from "@/contexts/auth-context";
  * Compatibility shim.
  *
  * The Kaizoku redesign was built against a fine-grained, 12-flag permission
- * model (`user.permissions.canViewLibrary` …). Renzō 2.0 replaced that with a
+ * model (`user.permissions.canViewLibrary` …). Renzo Shiori 2.0 replaced that with a
  * 4-tier role model (User < Manager < Admin < Owner) exposed via `useAuth()` as
  * `canManage` / `canAdmin` / `canOwner`.
  *

@@ -67,7 +67,7 @@ public partial class MainWindow : Window
         if (server == null)
         {
             SetBusy(false, null);
-            ShowError("Could not reach a Renzō server at that address. Check the address (including port) and that the server is running.");
+            ShowError("Could not reach a Renzo Shiori server at that address. Check the address (including port) and that the server is running.");
             return;
         }
 
@@ -131,8 +131,9 @@ public partial class MainWindow : Window
                 if (doc.RootElement.TryGetProperty("product", out JsonElement product))
                 {
                     string? p = product.GetString();
-                    // Accept both the current brand and the legacy handshake id.
-                    if (string.Equals(p, "Renzo", StringComparison.OrdinalIgnoreCase) ||
+                    // Accept the current brand plus the legacy handshake ids.
+                    if (string.Equals(p, "Renzo Shiori", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p, "Renzo", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(p, "Rensaio", StringComparison.OrdinalIgnoreCase))
                     {
                         return baseUrl;
@@ -155,7 +156,7 @@ public partial class MainWindow : Window
         // A fixed user-data folder makes cookies (incl. the refresh-token cookie)
         // survive restarts, so login is permanent until the server expires it.
         string dataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Renzo", "WebView2");
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RenzoShiori", "WebView2");
         CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(userDataFolder: dataDir);
         await WebView.EnsureCoreWebView2Async(env);
 

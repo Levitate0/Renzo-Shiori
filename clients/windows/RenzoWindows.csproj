@@ -4,7 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <AssemblyName>Renzo</AssemblyName>
+    <AssemblyName>RenzoShiori</AssemblyName>
     <RootNamespace>RenzoWindows</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -12,8 +12,8 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationIcon>renzo.ico</ApplicationIcon>
     <Version>1.0.0</Version>
-    <Product>Renzo</Product>
-    <Description>Renzo desktop client</Description>
+    <Product>Renzo Shiori</Product>
+    <Description>Renzo Shiori desktop client</Description>
   </PropertyGroup>
 
   <ItemGroup>

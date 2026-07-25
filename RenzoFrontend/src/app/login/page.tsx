@@ -80,9 +80,9 @@ export default function LoginPage() {
         <CardHeader className="space-y-3">
           <CardTitle className="flex justify-center">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/renzo-login-banner-light.png" alt="Renzō" className="block dark:hidden w-64 max-w-full h-auto" />
+            <img src="/renzo-login-banner-light.png" alt="Renzo Shiori" className="block dark:hidden w-64 max-w-full h-auto" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/renzo-login-banner-dark.png" alt="Renzō" aria-hidden="true" className="hidden dark:block w-64 max-w-full h-auto" />
+            <img src="/renzo-login-banner-dark.png" alt="Renzo Shiori" aria-hidden="true" className="hidden dark:block w-64 max-w-full h-auto" />
           </CardTitle>
           <CardDescription className="text-center">
             Enter your credentials to log in

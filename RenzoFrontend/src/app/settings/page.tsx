@@ -10,7 +10,7 @@ export default function SettingsPage() {
         showHeader={true}
         showSaveButton={true}
         title="Settings"
-        description="Configure your Renzō application settings"
+        description="Configure your Renzo Shiori application settings"
       />
       {/* Scrobbler moved to the per-user Account page (/account) — each user
           links their own trackers privately; it's no longer Owner-gated here. */}

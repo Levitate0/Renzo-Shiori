@@ -21,13 +21,13 @@ dotnet publish -c Release -r win-x64 --self-contained true \
 
 Publish as a **folder**, not `-p:PublishSingleFile=true` — the single-file mode does not
 reliably extract the native `WebView2Loader.dll` at startup, which makes the app launch
-with no window at all. `bin/publish/Renzo.exe` plus the rest of the folder is the real
-deliverable; zip the folder for distribution, or wrap it with `renzo-installer.nsi`
-(`makensis renzo-installer.nsi`) to produce a proper `Renzo-Setup.exe` installer with
+with no window at all. `bin/publish/RenzoShiori.exe` plus the rest of the folder is the real
+deliverable; zip the folder for distribution, or wrap it with `renzoshiori-installer.nsi`
+(`makensis renzoshiori-installer.nsi`) to produce a proper `RenzoShiori-Setup.exe` installer with
 Start Menu/Desktop shortcuts and an uninstaller.
 
-Server address is stored in `%AppData%\Renzo\settings.json`; browser data (cookies,
-cache) in `%LocalAppData%\Renzo\WebView2`. Press **Ctrl+Shift+S** in the app to change
+Server address is stored in `%AppData%\RenzoShiori\settings.json`; browser data (cookies,
+cache) in `%LocalAppData%\RenzoShiori\WebView2`. Press **Ctrl+Shift+S** in the app to change
 servers.
 
 The exe is unsigned, so Windows SmartScreen will warn on first run
@@ -51,9 +51,9 @@ gradle assembleRelease
 Release signing reads `clients/android/key.properties` (untracked):
 
 ```properties
-keystoreFile=/path/to/renzo.keystore
+keystoreFile=/path/to/renzoshiori.keystore
 keystorePassword=...
-keyAlias=renzo
+keyAlias=renzoshiori
 keyPassword=...
 ```
 

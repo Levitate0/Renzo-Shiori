@@ -53,7 +53,7 @@ export default function AccountPage() {
           <CardHeader>
             <CardTitle>Site Logins</CardTitle>
             <CardDescription>
-              Log in to coin/paid sites (e.g. EzManga) so Renzō can load chapters you own — these
+              Log in to coin/paid sites (e.g. EzManga) so Renzo Shiori can load chapters you own — these
               credentials are yours alone and aren&apos;t visible to other users.
             </CardDescription>
           </CardHeader>

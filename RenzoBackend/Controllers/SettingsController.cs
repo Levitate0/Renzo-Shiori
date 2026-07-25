@@ -184,8 +184,8 @@ namespace RenzoBackend.Controllers
 
             string? error = await _emailService.SendAsync(
                 request.To.Trim(),
-                "Renzō test email",
-                "This is a test email from your Renzō server. If you are reading this, SMTP is configured correctly.",
+                "Renzo Shiori test email",
+                "This is a test email from your Renzo Shiori server. If you are reading this, SMTP is configured correctly.",
                 token).ConfigureAwait(false);
 
             if (error != null)

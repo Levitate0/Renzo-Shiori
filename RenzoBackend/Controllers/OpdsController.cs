@@ -562,7 +562,7 @@ public class OpdsController : ControllerBase
             Device = new OpdsProgressionDeviceDto
             {
                 Id = state?.LastReadDeviceId ?? $"urn:renzo:user:{username}",
-                Name = string.IsNullOrEmpty(state?.LastReadDeviceName) ? "Renzō" : state.LastReadDeviceName
+                Name = string.IsNullOrEmpty(state?.LastReadDeviceName) ? "Renzo Shiori" : state.LastReadDeviceName
             },
             
             Progression = state?.Progress ?? 0,

@@ -17,7 +17,7 @@ import {
 
 /**
  * Settings → Site Logins. Logins for coin/paid scanlation sites: enter your
- * site username/password once, Renzō logs in server-side, harvests the
+ * site username/password once, Renzo Shiori logs in server-side, harvests the
  * session cookies into the shared source jar, and the source then serves the
  * chapters you own — re-logging-in automatically when the session lapses.
  * Sites that can't be automated accept a pasted session cookie instead.
@@ -101,8 +101,8 @@ export function SiteLoginsSection() {
   return (
     <CardContent className="space-y-5">
       <p className="text-sm text-muted-foreground">
-        Log in to coin/paid scanlation sites so Renzō can load the chapters you&apos;ve
-        paid for. Your password is encrypted and never shown again; Renzō logs in for you
+        Log in to coin/paid scanlation sites so Renzo Shiori can load the chapters you&apos;ve
+        paid for. Your password is encrypted and never shown again; Renzo Shiori logs in for you
         and re-logs-in automatically when the site&apos;s session expires. For sites that
         can&apos;t be automated (CAPTCHA / Google sign-in), paste a session cookie instead.
       </p>

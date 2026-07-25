@@ -40,7 +40,7 @@ export default function AddProvidersStep({
           <>
             Install sources to access different websites. At least one source is required to continue. It&apos;s recommended to install enough sources to cover all your series.<br />
             After installation, adjust each source&apos;s settings. Be sure to choose whether each source is temporary or permanent, depending on how you plan to store the data.<br />
-            If the storage folder was previously used in Renzō, your previously installed sources will be restored automatically in the next step.
+            If the storage folder was previously used in Renzo Shiori, your previously installed sources will be restored automatically in the next step.
           </>
         }
         onError={handleError}

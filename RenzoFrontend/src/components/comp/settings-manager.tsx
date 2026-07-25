@@ -1414,7 +1414,7 @@ function SecuritySection({
           <Label className="text-base">Email (SMTP)</Label>
           <p className="text-xs text-muted-foreground mt-1">
             Outbound relay for password-reset emails (e.g. Gmail with an app
-            password, Brevo, SendGrid). Renzō only submits mail to the relay
+            password, Brevo, SendGrid). Renzo Shiori only submits mail to the relay
             — it never hosts an email server, so ISP hosting blocks don&apos;t
             apply. Leave the host empty to disable email features.
           </p>
@@ -1629,7 +1629,7 @@ export function SettingsManager({
   showSaveButton = true,
   showHeader = true,
   title = "Settings",
-  description = "Configure your Renzō application settings",
+  description = "Configure your Renzo Shiori application settings",
   onSave,
   onSettingsChange,
   useLocalState = false,

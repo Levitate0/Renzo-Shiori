@@ -11,7 +11,7 @@ public class ServerConfig
     public string? ServerUrl { get; set; }
 
     private static string ConfigDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Renzo");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RenzoShiori");
 
     private static string ConfigPath => Path.Combine(ConfigDir, "settings.json");
 

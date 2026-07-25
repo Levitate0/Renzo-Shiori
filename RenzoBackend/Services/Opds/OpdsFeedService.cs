@@ -73,7 +73,7 @@ public class OpdsFeedService
         title = EscapeXml(title);
         sb.AppendLine($@"<?xml version=""1.0"" encoding=""UTF-8""?>
 <feed xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns=""http://www.w3.org/2005/Atom"" xmlns:opds=""http://opds-spec.org/2010/catalog"">
-  <generator uri=""https://www.renzo.net"" version=""1.0"">Renzō OPDS Server</generator>
+  <generator uri=""https://www.renzo.net"" version=""1.0"">Renzo Shiori OPDS Server</generator>
   <updated>{DateTime.UtcNow:yyyy-MM-ddTHH:mm:ssZ}</updated>
   <id>{newId}</id>
   <title>{title}</title>");
@@ -148,7 +148,7 @@ public class OpdsFeedService
         var readingSeries = FilterByReading(allSeries, user.Username);
         var lastSeries = FilterByLast(allSeries);
         string allThumb = await PickRandomThumbnailAsync(user.OpdsPath, allSeries, token);
-        var sb = RenderHeader(user, "", $"Renzō - {EscapeXml(user.Username)}'s Library", user_agent);
+        var sb = RenderHeader(user, "", $"Renzo Shiori - {EscapeXml(user.Username)}'s Library", user_agent);
         if (readingSeries.Count > 0)
             await RenderFolderAsync(sb, user, "reading", "Reading", readingSeries, null, token).ConfigureAwait(false);
         if (lastSeries.Count > 0)
@@ -319,14 +319,14 @@ public class OpdsFeedService
             progValueStr = chapterState.Progress.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
             progModifiedStr = chapterState.LastReadAt.ToString("yyyy-MM-ddTHH:mm:ssZ");
             progDeviceId = string.IsNullOrEmpty(chapterState.LastReadDeviceId) ? EscapeXml($"urn:renzo:user:{EscapeXml(user.Username)}") : EscapeXml(chapterState.LastReadDeviceId);
-            progDeviceName = string.IsNullOrEmpty(chapterState.LastReadDeviceName) ? "Renzō" : EscapeXml(chapterState.LastReadDeviceName);
+            progDeviceName = string.IsNullOrEmpty(chapterState.LastReadDeviceName) ? "Renzo Shiori" : EscapeXml(chapterState.LastReadDeviceName);
         }
         else
         {
             progValueStr = "0.0000";
             progModifiedStr = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
             progDeviceId = EscapeXml($"urn:renzo:user:{EscapeXml(user.Username)}");
-            progDeviceName = "Renzō";
+            progDeviceName = "Renzo Shiori";
         }
         int lastReadPage = pageCount > 0
             ? (int)Math.Round((chapterState?.Progress ?? 0) * pageCount)

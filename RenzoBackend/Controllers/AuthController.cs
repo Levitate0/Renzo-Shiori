@@ -426,9 +426,9 @@ public class AuthController : ControllerBase
 
         string? error = await _emailService.SendAsync(
             user.Email,
-            "Renzō password reset",
+            "Renzo Shiori password reset",
             $"Hello {user.Username},\n\n" +
-            $"A password reset was requested for your Renzō account. Click the link below to choose a new password. " +
+            $"A password reset was requested for your Renzo Shiori account. Click the link below to choose a new password. " +
             $"The link expires in {(int)UserInviteService.PasswordResetTokenLifetime.TotalMinutes} minutes.\n\n" +
             $"{link}\n\n" +
             "If you did not request this, you can ignore this email — your password has not been changed.",

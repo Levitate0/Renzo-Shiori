@@ -17,12 +17,12 @@ namespace RenzoBackend
             {
                 options.SwaggerDoc("v1", new OpenApiInfo
                 {
-                    Title = "Renzō API",
+                    Title = "Renzo Shiori API",
                     Version = "v1",
                     Description = "Series backend API",
                     Contact = new OpenApiContact
                     {
-                        Name = "Renzō Team"
+                        Name = "Renzo Shiori Team"
                     }
                 });
 

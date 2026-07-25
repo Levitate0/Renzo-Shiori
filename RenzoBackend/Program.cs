@@ -38,7 +38,7 @@ namespace RenzoBackend
     "Kestrel:Ports:Release"
 #endif
                             , 5005);
-                        EnvironmentSetup.Logger.LogInformation("Starting Renzō on port {port}...", port);
+                        EnvironmentSetup.Logger.LogInformation("Starting Renzo Shiori on port {port}...", port);
                         server.ListenAnyIP(port);
                     });
                 });

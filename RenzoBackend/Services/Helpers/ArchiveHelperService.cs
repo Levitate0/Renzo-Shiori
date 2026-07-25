@@ -453,7 +453,7 @@ namespace RenzoBackend.Services.Helpers
             {
                 info.Manga = "YesAndRightToLeft";
             }
-            info.Notes = "Created by Renzō";
+            info.Notes = "Created by Renzo Shiori";
             return info;
         }
 
@@ -499,7 +499,7 @@ namespace RenzoBackend.Services.Helpers
             {
                 info.Manga = "YesAndRightToLeft";
             }
-            info.Notes = "Created by Renzō";
+            info.Notes = "Created by Renzo Shiori";
             return info;
         }
 

@@ -112,7 +112,7 @@ public class ReaderController : ControllerBase
         // scrolling back lowers it. Completion stays sticky (see SetReadState);
         // explicit un-read goes through /mark.
         _readState.SetReadState(CurrentUsername, user?.Id ?? Guid.Empty, series.Id, req.Filename ?? "",
-            null, "Renzō Reader", series.StoragePath, req.ChapterNumber, req.LastReadPage, req.TotalPages, updateLower: true);
+            null, "Renzo Shiori Reader", series.StoragePath, req.ChapterNumber, req.LastReadPage, req.TotalPages, updateLower: true);
         return Ok(new { success = true });
     }
 

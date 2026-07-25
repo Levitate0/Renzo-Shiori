@@ -390,7 +390,7 @@ namespace RenzoBackend.Extensions
         /// number. For each chapter it reports whether a file is on disk (and which source holds it,
         /// preferring the storage source) versus genuinely missing, plus the remote-capable sources
         /// that know the chapter (for the re-download picker). DB-only — no provider network call;
-        /// "missing" reflects chapters Renzō knows about that are not on disk, not a live upstream
+        /// "missing" reflects chapters Renzo Shiori knows about that are not on disk, not a live upstream
         /// diff. Intentionally-skipped chapters (below a provider's cutoff, ShouldDownload == false
         /// and never downloaded) are omitted so they don't inflate the missing count.
         /// </summary>

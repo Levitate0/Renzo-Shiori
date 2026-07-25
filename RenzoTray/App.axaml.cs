@@ -217,7 +217,7 @@ public partial class App : Application
                 Console.WriteLine("Could not load tray icon from resources, using default icon");
             }
 
-            trayIcon.ToolTipText = "Renzō";
+            trayIcon.ToolTipText = "Renzo Shiori";
 
             var menu = new NativeMenu();
 
@@ -256,7 +256,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Opens the Renzō web interface in the default browser (macOS helper).
+    /// Opens the Renzo Shiori web interface in the default browser (macOS helper).
     /// </summary>
     private void OpenAppInBrowser()
     {

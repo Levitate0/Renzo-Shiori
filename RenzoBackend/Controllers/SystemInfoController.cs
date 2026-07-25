@@ -6,7 +6,7 @@ namespace RenzoBackend.Controllers;
 
 /// <summary>
 /// Unauthenticated server-discovery endpoint (Jellyfin-style /System/Info/Public).
-/// Lets a client validate that an entered address is a live, compatible Renzo
+/// Lets a client validate that an entered address is a live, compatible Renzo Shiori
 /// server — and learn whether login is required — before showing a login screen.
 /// Deliberately exposes nothing sensitive: no user data, no settings, no paths.
 /// </summary>
@@ -29,7 +29,7 @@ public class SystemInfoController : ControllerBase
         string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
         return Ok(new
         {
-            product = "Renzo",
+            product = "Renzo Shiori",
             version,
             authenticationRequired = settings.AuthenticationEnabled
         });
