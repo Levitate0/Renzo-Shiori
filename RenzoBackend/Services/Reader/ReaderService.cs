@@ -173,13 +173,16 @@ public class ReaderService
 
         // Smart mode:
         //  - mostly tall strip images  -> webtoon (native long strip)
-        //  - a handful of tall strips OR wide slivers mixed into otherwise normal
-        //    pages -> longstrip: that's a continuous strip that was cut into
-        //    "pages", and the cut leaves short horizontal off-cuts. Those only
-        //    read correctly stitched edge-to-edge at a matched width.
+        //  - a handful of tall (≥2×) pages OR wide slivers mixed into otherwise
+        //    normal pages -> longstrip: that's a continuous strip that was cut
+        //    into "pages", and the cut leaves short horizontal off-cuts. Those
+        //    only read correctly stitched edge-to-edge at a matched width.
+        //    Uses `tall` (≥2×), not just `strips` (≥3×): a chapter with several
+        //    2–3× pages mixed into normal ones used to fall through to paged
+        //    entirely, squeezing those pages down to fit a single screen.
         //  - otherwise plain paged.
         int known = info.Pages.Count(p => p.Width != null);
-        int cutMarkers = strips + slivers;
+        int cutMarkers = tall + slivers;
         if (known > 0 && strips * 2 >= known)
             info.SuggestedMode = "webtoon";
         // Mostly-tall chapters (≥80% of pages ≥2× taller than wide) are webtoons

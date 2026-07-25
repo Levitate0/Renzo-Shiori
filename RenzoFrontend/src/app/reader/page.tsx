@@ -580,7 +580,10 @@ function ReaderInner() {
       const tall = dims.filter((d) => d.w > 0 && d.h / d.w >= 2.0).length;
       if (strips * 2 >= dims.length) setDetectedMode("webtoon");
       else if (tall * 5 >= dims.length * 4) setDetectedMode("webtoon");
-      else if (strips + slivers > 4) setDetectedMode("longstrip");
+      // `tall` (≥2×), not `strips` (≥3×): a handful of 2–3× pages mixed into an
+      // otherwise normal chapter used to fall through to paged, which squeezes
+      // those pages down to fit a single screen. Sliver detection is untouched.
+      else if (tall + slivers > 4) setDetectedMode("longstrip");
       else setDetectedMode("paged");
     }
   }, [isPreview, streaming, detectedMode, pageCount]);
