@@ -1243,11 +1243,20 @@ function ReaderInner() {
               />
             ))}
           </div>
-          {/* Preload upcoming pages invisibly */}
+          {/* Preload upcoming pages invisibly. Also feeds smart-detect (onImageLoaded)
+              — previously only the single visible page reported its dimensions, so a
+              webtoon/manhwa the type-label heuristic didn't catch stayed stuck in
+              single-page mode until the user manually flipped through ~6 pages. These
+              already-fetched preload images now count toward that sample too. */}
           <div className="hidden">
             {preloadPages.map((i) => (
               // eslint-disable-next-line @next/next/no-img-element
-              <img key={i} src={pageUrl(i)} alt="" />
+              <img
+                key={i}
+                src={pageUrl(i)}
+                alt=""
+                onLoad={(e) => onImageLoaded(i, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+              />
             ))}
           </div>
         </div>

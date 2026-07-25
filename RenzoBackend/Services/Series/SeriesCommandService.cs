@@ -920,7 +920,15 @@ namespace RenzoBackend.Services.Series
             decimal num = c.Number ?? 0m;
             return new ParsedChapter
             {
-                Url = c.Url ?? string.Empty,
+                // Models.Chapter.Url is always the ABSOLUTE url (ModelExtensions.ToChapter
+                // sets it from ParsedChapter.RealUrl, never the source-relative .Url) — but
+                // ParsedChapter.Url here becomes SChapter.url, which HttpSource extensions
+                // treat as relative to their own baseUrl. Passing the absolute value through
+                // unchanged made the source request baseUrl+absoluteUrl, a malformed,
+                // always-failing double-domain URL — this is why "Download All" re-queuing a
+                // known-but-undownloaded chapter (including a just-purchased locked one)
+                // could resolve the chapter but never actually fetch its pages.
+                Url = ToRelativeUrl(c.Url),
                 RealUrl = c.Url ?? string.Empty,
                 Name = c.Name ?? string.Empty,
                 ParsedName = c.Name ?? string.Empty,
@@ -932,6 +940,16 @@ namespace RenzoBackend.Services.Series
                     ? new DateTimeOffset(DateTime.SpecifyKind(c.ProviderUploadDate.Value, DateTimeKind.Utc))
                     : DateTimeOffset.UtcNow,
             };
+        }
+
+        /// <summary>Strips scheme+host off an absolute URL, leaving the path (+query/fragment)
+        /// an HttpSource extension expects for SChapter.url. Returns the input unchanged if
+        /// it isn't a valid absolute URL (already relative, or malformed).</summary>
+        private static string ToRelativeUrl(string? absoluteUrl)
+        {
+            if (string.IsNullOrEmpty(absoluteUrl))
+                return string.Empty;
+            return Uri.TryCreate(absoluteUrl, UriKind.Absolute, out Uri? u) ? u.PathAndQuery + u.Fragment : absoluteUrl;
         }
 
         /// <summary>

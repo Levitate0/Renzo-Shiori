@@ -334,7 +334,57 @@ public class ReaderPreviewService
             pool = pool.Where(a => a.Scanlator == target.Scanlator);
 
         ParsedChapter? match = pool.FirstOrDefault(c => c.ParsedNumber == chapterNumber);
-        return match == null ? null : (target, src, match);
+        if (match != null)
+            return (target, src, match);
+
+        // Not in the source's live chapter listing — this is the coin-gated-chapter
+        // case LockedChapterSupplementService documents: sites running the WordPress
+        // "lock chapters" plugin render a locked chapter with no <a href>, so the
+        // extension's GetChaptersAsync silently drops it and can never match it here,
+        // regardless of whether the user's site login actually owns it now. Fall back
+        // to the DB's stored chapter (Number + Url, scraped once and persisted) and
+        // hand its URL straight to GetPagesAsync — the same reconstruction
+        // SeriesCommandService.ChapterToParsedChapter already uses for downloads, just
+        // applied to the instant-read path too so a purchased chapter doesn't have to
+        // wait for the next queued download to become readable.
+        Models.Chapter? stored = target.Chapters.FirstOrDefault(c => c.Number == chapterNumber && !string.IsNullOrEmpty(c.Url));
+        if (stored == null)
+            return null;
+
+        var reconstructed = new ParsedChapter
+        {
+            // Chapter.Url in the DB is the ABSOLUTE purchase/source link (see
+            // SeriesCommandService's "backfill the purchase/source link" comment) —
+            // but ParsedChapter.Url becomes SChapter.url, which HttpSource extensions
+            // treat as a path RELATIVE to their own baseUrl (ConversionsExtensions:
+            // RealUrl comes from source.getChapterUrl(chapter), a *different*,
+            // already-absolutized value). Handing the absolute URL to both fields
+            // made GetPagesAsync request baseUrl+absoluteUrl — a malformed, always-
+            // failing double-domain URL — which is why purchased/unlocked chapters
+            // never actually loaded even with a valid site login.
+            Url = ToRelativeUrl(stored.Url),
+            RealUrl = stored.Url ?? string.Empty,
+            Name = stored.Name ?? string.Empty,
+            ParsedName = stored.Name ?? string.Empty,
+            ChapterNumber = (float)chapterNumber,
+            ParsedNumber = chapterNumber,
+            Index = stored.ProviderIndex,
+            Scanlator = string.IsNullOrEmpty(target.Scanlator) ? target.Provider : target.Scanlator,
+            DateUpload = stored.ProviderUploadDate.HasValue
+                ? new DateTimeOffset(DateTime.SpecifyKind(stored.ProviderUploadDate.Value, DateTimeKind.Utc))
+                : DateTimeOffset.UtcNow,
+        };
+        return (target, src, reconstructed);
+    }
+
+    /// <summary>Strips scheme+host off an absolute URL, leaving the path (+query/fragment)
+    /// an HttpSource extension expects for SChapter.url. Returns the input unchanged if
+    /// it isn't a valid absolute URL (already relative, or malformed).</summary>
+    private static string ToRelativeUrl(string? absoluteUrl)
+    {
+        if (string.IsNullOrEmpty(absoluteUrl))
+            return string.Empty;
+        return Uri.TryCreate(absoluteUrl, UriKind.Absolute, out Uri? u) ? u.PathAndQuery + u.Fragment : absoluteUrl;
     }
 
     /// <summary>Resolves the source that served the cached page list (for image fetches).</summary>
@@ -379,6 +429,33 @@ public class ReaderPreviewService
         return pages;
     }
 
+    /// <summary>
+    /// Clears Chapter.IsLocked once a live fetch actually returns pages for it.
+    /// The chapters used to resolve/fetch above come from an AsNoTracking() query
+    /// (GetCapableProvidersAsync), so this re-fetches the provider tracked and
+    /// mutates the real entity — same "reload before mutating" requirement as the
+    /// user detached-entity fixes elsewhere in this codebase. No-op if the flag is
+    /// already clear, so this doesn't add a write on every ordinary page load.
+    /// </summary>
+    private async Task ClearLockedFlagAsync(Guid providerId, decimal chapterNumber, CancellationToken token)
+    {
+        try
+        {
+            SeriesProviderEntity? provider = await _db.SeriesProviders.FirstOrDefaultAsync(p => p.Id == providerId, token).ConfigureAwait(false);
+            Models.Chapter? cha = provider?.Chapters.FirstOrDefault(c => c.Number == chapterNumber);
+            if (cha == null || !cha.IsLocked)
+                return;
+            cha.IsLocked = false;
+            _db.Touch(provider!, p => p.Chapters);
+            await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort — the read itself already succeeded above regardless.
+            _logger.LogDebug(ex, "Failed to clear IsLocked for provider {ProviderId} ch {Chapter}", providerId, chapterNumber);
+        }
+    }
+
     private async Task<List<Page>?> GetLibraryPageListAsync(Guid seriesId, decimal chapterNumber, Guid? userId, bool forceRefresh, CancellationToken token)
     {
         string key = $"lib:pg:{seriesId}:{chapterNumber}";
@@ -418,6 +495,11 @@ public class ReaderPreviewService
             {
                 pages = attempt;
                 winner = provider.Id;
+                // Pages actually came back — whatever the DB's stale IsLocked flag
+                // says, this chapter is reachable now. Persist that so the chapter
+                // list (which reads IsLocked, not this live result) stops showing
+                // "Locked" for something the reader just proved it can open.
+                await ClearLockedFlagAsync(provider.Id, chapterNumber, token).ConfigureAwait(false);
                 break;
             }
             // empty (locked) or failed on this source — try the next one

@@ -374,6 +374,13 @@ namespace RenzoBackend.Services.Downloads
                         : DateTime.UtcNow;
                     cha.Filename = zipFile;
                     cha.ShouldDownload = false;
+                    // A successful download proves the chapter is actually reachable
+                    // (the site login owns it) — clear the stale lock flag so the
+                    // reader stops showing the purchase screen for a file it already
+                    // has on disk. IsLocked previously only ever got set to true (by
+                    // LockedChapterSupplementService) and nothing ever cleared it, so
+                    // purchased/downloaded chapters stayed "Locked" forever.
+                    cha.IsLocked = false;
                     providerr.ContinueAfterChapter = providerr.Chapters.MaxNull(c => c.Number);
                     providerr.ChapterCount = providerr.Chapters.Count;
                     _db.Touch(providerr, a => a.Chapters);

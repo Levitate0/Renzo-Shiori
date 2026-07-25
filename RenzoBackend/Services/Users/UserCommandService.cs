@@ -187,9 +187,23 @@ public class UserCommandService
     /// </summary>
     public async Task ClearRefreshTokenAsync(UserEntity user, CancellationToken token = default)
     {
-        user.RefreshTokenHash = null;
-        user.RefreshTokenExpiresAt = null;
+        // Same detached-entity hazard as UpdateUserAsync above: POST /api/auth/logout
+        // passes the HttpContext.Items["User"] entity, which the auth middleware loaded
+        // in a different DI scope — clearing fields on it directly saved nothing, so the
+        // refresh token stayed valid server-side after "logout".
+        UserEntity target = _db.Users.Local.FirstOrDefault(u => u.Id == user.Id)
+                            ?? await _db.Users.FirstOrDefaultAsync(u => u.Id == user.Id, token)
+                            ?? user;
+
+        target.RefreshTokenHash = null;
+        target.RefreshTokenExpiresAt = null;
         await _db.SaveChangesAsync(token);
+
+        if (!ReferenceEquals(target, user))
+        {
+            user.RefreshTokenHash = null;
+            user.RefreshTokenExpiresAt = null;
+        }
     }
 
     /// <summary>

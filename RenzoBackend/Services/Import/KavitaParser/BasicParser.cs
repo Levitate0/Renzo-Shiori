@@ -12,7 +12,8 @@ public class BasicParser
     public ParserInfo? Parse(string filePath, string rootPath, LibraryType type)
     {
         var fileName = Path.GetFileNameWithoutExtension(filePath);
-        // TODO: Potential Bug: This will return null, but on Image libraries, if all images, we would want to include this.
+        // Cover images are skipped everywhere except Image libraries, where every
+        // file *is* an image and excluding "cover-looking" filenames would drop pages.
         if (type != LibraryType.Image &&
             Parser.IsCoverImage(Path.GetFileName(filePath))) return null;
 
