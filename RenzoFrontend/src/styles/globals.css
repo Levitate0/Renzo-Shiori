@@ -419,18 +419,22 @@
 }
 
 /* ─── Add Series spotlight ─── */
+/* These were previously identical in :root and .dark (i.e. hardcoded to
+   near-black regardless of the light/dark toggle) — the modal ignored
+   light mode entirely. :root now carries a real light palette; .dark keeps
+   the original values. */
 
 :root {
-  --as-bg: 240 10% 4%;
-  --as-bg-1: 240 9% 6%;
-  --as-bg-2: 240 8% 8%;
-  --as-bg-3: 240 7% 11%;
-  --as-fg: 0 0% 98%;
-  --as-fg-muted: 0 0% 64%;
-  --as-fg-dim: 0 0% 46%;
-  --as-border: 0 0% 100% / 0.06;
-  --as-border-strong: 0 0% 100% / 0.12;
-  --as-primary-soft: 346.8 77.2% 49.8% / 0.15;
+  --as-bg: 0 0% 100%;
+  --as-bg-1: 240 20% 98%;
+  --as-bg-2: 240 14% 95%;
+  --as-bg-3: 240 10% 91%;
+  --as-fg: 240 10% 3.9%;
+  --as-fg-muted: 240 3.8% 46.1%;
+  --as-fg-dim: 240 4% 60%;
+  --as-border: 0 0% 0% / 0.08;
+  --as-border-strong: 0 0% 0% / 0.14;
+  --as-primary-soft: var(--primary-h) var(--primary-s) var(--primary-l) / 0.1;
 }
 
 .dark {
@@ -443,7 +447,7 @@
   --as-fg-dim: 0 0% 46%;
   --as-border: 0 0% 100% / 0.06;
   --as-border-strong: 0 0% 100% / 0.12;
-  --as-primary-soft: 346.8 77.2% 49.8% / 0.15;
+  --as-primary-soft: var(--primary-h) var(--primary-s) var(--primary-l) / 0.15;
 }
 
 /* Decorative grain overlay */
@@ -663,7 +667,7 @@
   margin: 0 1px -4px 1px;
   animation: as-blink 1.05s steps(2) infinite;
   vertical-align: text-bottom;
-  box-shadow: 0 0 8px hsla(346.8 77.2% 49.8% / 0.6);
+  box-shadow: 0 0 8px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6);
 }
 @keyframes as-blink {
   50% { opacity: 0; }
@@ -760,13 +764,13 @@
 }
 .res-row.selected {
   background:
-    linear-gradient(to right, hsla(346.8 77.2% 49.8% / 0.08), hsla(346.8 77.2% 49.8% / 0.02) 60%, transparent),
+    linear-gradient(to right, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.08), hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.02) 60%, transparent),
     hsla(0 0% 100% / 0.02);
-  box-shadow: inset 0 0 0 1px hsla(346.8 77.2% 49.8% / 0.12);
+  box-shadow: inset 0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.12);
 }
 .res-row.selected .accent {
   background: hsl(var(--primary));
-  box-shadow: 0 0 12px hsla(346.8 77.2% 49.8% / 0.6);
+  box-shadow: 0 0 12px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6);
 }
 .res-row.selected .res-title {
   color: white;
@@ -793,7 +797,7 @@
   color: hsl(var(--primary));
   padding: 2px 6px;
   border-radius: 999px;
-  border: 1px solid hsla(346.8 77.2% 49.8% / 0.3);
+  border: 1px solid hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.3);
   white-space: nowrap;
 }
 
@@ -864,9 +868,9 @@
   gap: 6px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: hsla(346.8 77.2% 49.8% / 0.12);
-  border: 1px solid hsla(346.8 77.2% 49.8% / 0.3);
-  color: #fda4af;
+  background: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.12);
+  border: 1px solid hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.3);
+  color: hsl(var(--primary-h) var(--primary-s) 80%);
   font-size: 11px;
   font-weight: 600;
   font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
@@ -878,7 +882,7 @@
   height: 5px;
   border-radius: 999px;
   background: hsl(var(--primary));
-  box-shadow: 0 0 6px hsla(346.8 77.2% 49.8% / 0.7);
+  box-shadow: 0 0 6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7);
 }
 
 /* Stage 02 confirm layout */
@@ -1003,7 +1007,7 @@
   background: hsla(0 0% 100% / 0.025);
 }
 .src-trow.active {
-  background: linear-gradient(to right, hsla(346.8 77.2% 49.8% / 0.06), transparent 60%);
+  background: linear-gradient(to right, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.06), transparent 60%);
   box-shadow: inset 2px 0 0 0 hsl(var(--primary));
 }
 
@@ -1218,7 +1222,7 @@
 .src-check:checked {
   background: hsl(var(--primary));
   border-color: hsl(var(--primary));
-  box-shadow: 0 4px 12px -4px hsla(346.8 77.2% 49.8% / 0.6);
+  box-shadow: 0 4px 12px -4px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6);
 }
 .src-check:checked::after {
   content: "";
@@ -1245,7 +1249,7 @@
   border-top: 1px solid hsla(var(--as-border));
   /* Solid base + decorative wash; opaque enough to occlude content scrolling beneath */
   background:
-    radial-gradient(ellipse at 80% 50%, hsla(346.8 77.2% 49.8% / 0.05), transparent 60%),
+    radial-gradient(ellipse at 80% 50%, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.05), transparent 60%),
     hsl(var(--as-bg-1));
   flex-wrap: wrap;
   position: sticky;
@@ -1291,7 +1295,7 @@
   font-weight: 500;
   font-size: 0.875rem;
   transition: transform 220ms cubic-bezier(0.2, 0.7, 0.2, 1), filter 180ms ease, box-shadow 220ms ease;
-  box-shadow: 0 10px 30px -10px hsla(346.8 77.2% 49.8% / 0.7), inset 0 1px 0 hsla(0 0% 100% / 0.12);
+  box-shadow: 0 10px 30px -10px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7), inset 0 1px 0 hsla(0 0% 100% / 0.12);
   white-space: nowrap;
   border: none;
   cursor: pointer;
@@ -1700,14 +1704,26 @@
 
 /*
  * Design tokens derived from mockup sources-B2-A-store-list.html.
- * These are dark-mode values; the app is dark-only.
+ * Originally hardcoded to dark-mode values in both :root and .dark (the
+ * page ignored the light/dark toggle) — :root now carries a light variant.
  */
 :root {
+  --sources-line: hsla(0 0% 0% / 0.08);
+  --sources-line-strong: hsla(0 0% 0% / 0.14);
+  --sources-bg-card: hsl(0 0% 100%);
+  --sources-primary-soft: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.1);
+  --sources-primary-glow: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.25);
+  --sources-failing: #dc2626;
+  --sources-failing-soft: hsla(0 84% 60% / 0.08);
+  --sources-healthy: #16a34a;
+}
+
+.dark {
   --sources-line: hsla(0 0% 100% / 0.06);
   --sources-line-strong: hsla(0 0% 100% / 0.12);
   --sources-bg-card: hsl(240 9% 6%);
-  --sources-primary-soft: hsla(346.8 77.2% 49.8% / 0.18);
-  --sources-primary-glow: hsla(346.8 77.2% 49.8% / 0.35);
+  --sources-primary-soft: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.18);
+  --sources-primary-glow: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.35);
   --sources-failing: #ef4444;
   --sources-failing-soft: hsla(0 84% 60% / 0.10);
   --sources-healthy: #22c55e;
@@ -1777,7 +1793,7 @@
 .src-chip.is-on {
   background: var(--sources-primary-soft);
   color: hsl(var(--foreground));
-  border-color: hsla(346.8 77.2% 49.8% / 0.4);
+  border-color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4);
 }
 
 /* Install button — pink primary pill */
@@ -1955,8 +1971,8 @@
   pointer-events: none;
   z-index: -1;
   background:
-    radial-gradient(50% 60% at 50% 18%, hsla(346.8 77.2% 49.8% / 0.28), transparent 65%),
-    radial-gradient(28% 40% at 50% 8%, hsla(346.8 77.2% 49.8% / 0.45), transparent 70%);
+    radial-gradient(50% 60% at 50% 18%, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.28), transparent 65%),
+    radial-gradient(28% 40% at 50% 8%, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.45), transparent 70%);
   filter: blur(8px);
 }
 
@@ -2013,8 +2029,8 @@
 .iw-segment.is-complete .iw-segment-bar {
   background: linear-gradient(
     90deg,
-    hsla(346.8 77.2% 49.8% / 0.7),
-    hsla(346.8 77.2% 49.8% / 0.45)
+    hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7),
+    hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.45)
   );
 }
 
@@ -2022,11 +2038,11 @@
   background: linear-gradient(
     90deg,
     hsl(var(--as-primary)),
-    hsla(346.8 77.2% 49.8% / 0.4)
+    hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4)
   );
   box-shadow:
-    0 0 12px hsla(346.8 77.2% 49.8% / 0.7),
-    0 0 2px hsla(346.8 77.2% 49.8% / 0.9);
+    0 0 12px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7),
+    0 0 2px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.9);
 }
 
 /* Sheen animation on the active segment */
@@ -2076,7 +2092,7 @@
 
 .iw-segment-num {
   font-variant-numeric: tabular-nums;
-  color: hsla(346.8 77.2% 49.8% / 0.8);
+  color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.8);
 }
 
 .iw-segment.is-pending .iw-segment-num { color: hsl(var(--as-fg-dim)); }
@@ -2119,11 +2135,11 @@
   content: "";
   width: 24px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, hsla(346.8 77.2% 49.8% / 0.6));
+  background: linear-gradient(90deg, transparent, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6));
 }
 
 .iw-eyebrow::after {
-  background: linear-gradient(90deg, hsla(346.8 77.2% 49.8% / 0.6), transparent);
+  background: linear-gradient(90deg, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6), transparent);
 }
 
 .iw-title {
@@ -2155,7 +2171,7 @@
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: hsla(346.8 77.2% 49.8% / 0.4) hsla(0 0% 100% / 0.06);
+  scrollbar-color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4) hsla(0 0% 100% / 0.06);
 }
 
 .iw-content::-webkit-scrollbar { width: 7px; }
@@ -2164,11 +2180,11 @@
   border-radius: 4px;
 }
 .iw-content::-webkit-scrollbar-thumb {
-  background: hsla(346.8 77.2% 49.8% / 0.4);
+  background: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4);
   border-radius: 4px;
 }
 .iw-content::-webkit-scrollbar-thumb:hover {
-  background: hsla(346.8 77.2% 49.8% / 0.7);
+  background: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7);
 }
 
 /* ── Footer ── */
@@ -2178,7 +2194,7 @@
   padding: 16px 40px 20px;
   border-top: 1px solid hsla(var(--as-border));
   background:
-    linear-gradient(180deg, transparent, hsla(346.8 77.2% 49.8% / 0.04)),
+    linear-gradient(180deg, transparent, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.04)),
     linear-gradient(180deg, hsla(240 8% 6% / 0.4), hsla(240 8% 4% / 0.6));
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -2197,7 +2213,7 @@
   background: linear-gradient(
     90deg,
     transparent,
-    hsla(346.8 77.2% 49.8% / 0.35),
+    hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.35),
     transparent
   );
 }
@@ -2250,10 +2266,10 @@
   justify-self: flex-end;
   background: linear-gradient(
     180deg,
-    hsla(346.8 77.2% 55% / 1),
-    hsla(346.8 77.2% 45% / 1)
+    hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 5%) / 1),
+    hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) - 5%) / 1)
   );
-  border: 1px solid hsla(346.8 77.2% 55% / 0.8);
+  border: 1px solid hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 5%) / 0.8);
   color: white;
   font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
   font-size: 11px;
@@ -2267,8 +2283,8 @@
   align-items: center;
   gap: 8px;
   box-shadow:
-    0 0 0 1px hsla(346.8 77.2% 49.8% / 0.3),
-    0 8px 24px -8px hsla(346.8 77.2% 49.8% / 0.7),
+    0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.3),
+    0 8px 24px -8px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7),
     inset 0 1px 0 hsla(0 0% 100% / 0.2);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   min-height: 42px;
@@ -2277,8 +2293,8 @@
 .iw-primary-btn:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow:
-    0 0 0 1px hsla(346.8 77.2% 49.8% / 0.5),
-    0 12px 30px -10px hsla(346.8 77.2% 49.8% / 0.9),
+    0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.5),
+    0 12px 30px -10px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.9),
     inset 0 1px 0 hsla(0 0% 100% / 0.25);
 }
 
@@ -2361,10 +2377,10 @@
     color: hsl(var(--as-fg));
     background: linear-gradient(
       180deg,
-      hsla(346.8 77.2% 49.8% / 0.18),
-      hsla(346.8 77.2% 49.8% / 0.06)
+      hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.18),
+      hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.06)
     );
-    border: 1px solid hsla(346.8 77.2% 49.8% / 0.4);
+    border: 1px solid hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4);
     padding: 8px 12px;
     border-radius: 8px;
     display: inline-flex;
@@ -2376,7 +2392,7 @@
 
   .iw-mobile-pct {
     color: hsl(var(--as-primary));
-    text-shadow: 0 0 6px hsla(346.8 77.2% 49.8% / 0.7);
+    text-shadow: 0 0 6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7);
   }
 
   .iw-mobile-caret {
@@ -2400,9 +2416,9 @@
     background: linear-gradient(
       90deg,
       hsl(var(--as-primary)),
-      hsla(346.8 77.2% 70% / 0.9)
+      hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 20.2%) / 0.9)
     );
-    box-shadow: 0 0 6px hsla(346.8 77.2% 49.8% / 0.6);
+    box-shadow: 0 0 6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6);
     border-radius: inherit;
     transition: width 0.35s ease;
   }
@@ -2522,7 +2538,7 @@
   transform: translateX(-50%);
   width: 60%;
   height: 180px;
-  background: radial-gradient(50% 50% at 50% 0%, hsla(346.8 77.2% 49.8% / 0.18), transparent 70%);
+  background: radial-gradient(50% 50% at 50% 0%, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.18), transparent 70%);
   z-index: 0;
 }
 
@@ -2705,8 +2721,8 @@
 .iw-scan-card:last-child { margin-bottom: 0; }
 
 .iw-scan-card.is-active {
-  border-color: hsla(346.8 77.2% 49.8% / 0.45);
-  box-shadow: 0 0 0 1px hsla(346.8 77.2% 49.8% / 0.18);
+  border-color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.45);
+  box-shadow: 0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.18);
 }
 .iw-scan-card.is-done  { border-color: hsla(160 70% 40% / 0.3); }
 .iw-scan-card.is-failed { border-color: hsla(0 84% 60% / 0.4); }
@@ -2721,7 +2737,7 @@
   flex-shrink: 0;
 }
 .iw-scan-icon.is-spinning {
-  border: 2px solid hsla(346.8 77.2% 49.8% / 0.25);
+  border: 2px solid hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.25);
   border-top-color: hsl(var(--primary));
   animation: iw-spin 1s linear infinite;
 }
@@ -2771,8 +2787,8 @@
 }
 .iw-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, hsl(var(--primary)), hsla(346.8 77.2% 70% / 1));
-  box-shadow: 0 0 6px hsla(346.8 77.2% 49.8% / 0.6);
+  background: linear-gradient(90deg, hsl(var(--primary)), hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 20.2%) / 1));
+  box-shadow: 0 0 6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6);
   transition: width 0.3s ease;
 }
 
@@ -2830,9 +2846,9 @@
 .iw-radio-card:last-of-type { margin-bottom: 0; }
 .iw-radio-card:hover { border-color: hsla(0 0% 100% / 0.12); }
 .iw-radio-card.is-selected {
-  border-color: hsla(346.8 77.2% 49.8% / 0.5);
-  background: linear-gradient(180deg, hsla(346.8 77.2% 49.8% / 0.08), hsla(346.8 77.2% 49.8% / 0.02));
-  box-shadow: 0 0 0 1px hsla(346.8 77.2% 49.8% / 0.2), 0 0 16px hsla(346.8 77.2% 49.8% / 0.15);
+  border-color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.5);
+  background: linear-gradient(180deg, hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.08), hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.02));
+  box-shadow: 0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.2), 0 0 16px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.15);
 }
 
 /* custom radio dot */
@@ -2848,7 +2864,7 @@
 }
 .iw-radio-card.is-selected .iw-radio-control {
   border-color: hsl(var(--primary));
-  background: hsla(346.8 77.2% 49.8% / 0.1);
+  background: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.1);
 }
 .iw-radio-card.is-selected .iw-radio-control::after {
   content: "";
@@ -2856,7 +2872,7 @@
   inset: 3px;
   border-radius: 50%;
   background: hsl(var(--primary));
-  box-shadow: 0 0 6px hsla(346.8 77.2% 49.8% / 0.8);
+  box-shadow: 0 0 6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.8);
 }
 .iw-radio-body { flex: 1; min-width: 0; }
 .iw-radio-title {
@@ -2945,8 +2961,8 @@
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .iw-hero-progress.is-active {
-  border-color: hsla(346.8 77.2% 49.8% / 0.4);
-  box-shadow: 0 0 0 1px hsla(346.8 77.2% 49.8% / 0.15);
+  border-color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4);
+  box-shadow: 0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.15);
 }
 .iw-hero-progress.is-failed { border-color: hsla(0 84% 60% / 0.4); }
 
@@ -2966,7 +2982,7 @@
   flex-shrink: 0;
 }
 .iw-hero-progress-icon.is-spinning {
-  border: 2px solid hsla(346.8 77.2% 49.8% / 0.25);
+  border: 2px solid hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.25);
   border-top-color: hsl(var(--primary));
   animation: iw-spin 1s linear infinite;
 }
@@ -2997,7 +3013,7 @@
   font-size: 18px;
   font-weight: 700;
   color: hsl(var(--primary));
-  text-shadow: 0 0 8px hsla(346.8 77.2% 49.8% / 0.6);
+  text-shadow: 0 0 8px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6);
   white-space: nowrap;
 }
 
@@ -3032,13 +3048,23 @@
   }
   
   :root {
+    /* Accent color theme — the raw HSL components behind --primary/--ring
+       everywhere in this file (via var(--primary-h) var(--primary-s)
+       var(--primary-l)). Overridden per-theme below by [data-accent] on
+       <html>; "rose" is the original hardcoded brand color and is the
+       fallback when no data-accent attribute is set. See accent-theme.ts
+       for the picker that sets the attribute. */
+    --primary-h: 346.8;
+    --primary-s: 77.2%;
+    --primary-l: 49.8%;
+
     --background: 0 0% 100%;
     --foreground: 240 10% 3.9%;
     --card: 180 8.2% 90.2%;
     --card-foreground: 240 10% 3.9%;
     --popover: 0 0% 100%;
     --popover-foreground: 240 10% 3.9%;
-    --primary: 346.8 77.2% 49.8%;
+    --primary: var(--primary-h) var(--primary-s) var(--primary-l);
     --primary-foreground: 355.7 100% 97.3%;
     --secondary: 240 4.8% 95.9%;
     --secondary-foreground: 240 5.9% 10%;
@@ -3050,7 +3076,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
-    --ring: 346.8 77.2% 49.8%;
+    --ring: var(--primary-h) var(--primary-s) var(--primary-l);
     --radius: 0.5rem;
   }
 
@@ -3083,7 +3109,7 @@
     --card-foreground: 0 0% 95%;
     --popover: 0 0% 9%;
     --popover-foreground: 0 0% 95%;
-    --primary: 346.8 77.2% 49.8%;
+    --primary: var(--primary-h) var(--primary-s) var(--primary-l);
     --primary-foreground: 355.7 100% 97.3%;
     --secondary: 240 3.7% 15.9%;
     --secondary-foreground: 0 0% 98%;
@@ -3095,9 +3121,38 @@
     --destructive-foreground: 0 85.7% 97.3%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
-    --ring: 346.8 77.2% 49.8%;
+    --ring: var(--primary-h) var(--primary-s) var(--primary-l);
   }
-  
+
+  /* ── Accent color themes ──────────────────────────────────────────────
+     Selectable independently of light/dark via [data-accent] on <html>.
+     Applies at :root scope (both light and dark inherit it) since it only
+     overrides the three HSL component vars everything else reads from. */
+  :root[data-accent="blue"] {
+    --primary-h: 217.2;
+    --primary-s: 91.2%;
+    --primary-l: 59.8%;
+  }
+  :root[data-accent="green"] {
+    --primary-h: 142.1;
+    --primary-s: 70.6%;
+    --primary-l: 45.3%;
+  }
+  :root[data-accent="purple"] {
+    --primary-h: 262.1;
+    --primary-s: 83.3%;
+    --primary-l: 57.8%;
+  }
+  :root[data-accent="orange"] {
+    --primary-h: 24.6;
+    --primary-s: 95%;
+    --primary-l: 53.1%;
+  }
+  :root[data-accent="slate"] {
+    --primary-h: 215;
+    --primary-s: 16%;
+    --primary-l: 46.9%;
+  }
 
   * {
     border-color: hsl(var(--border));
@@ -3296,7 +3351,7 @@
 
 .iw-reviewed-counter__pair--ready {
   color: hsl(var(--primary));
-  text-shadow: 0 0 6px hsla(346.8 77.2% 49.8% / 0.4);
+  text-shadow: 0 0 6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4);
 }
 
 .iw-reviewed-counter__pair--ready strong {
@@ -3330,9 +3385,9 @@
   background: linear-gradient(
     90deg,
     hsl(var(--primary)),
-    hsla(346.8 77.2% 70% / 1)
+    hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 20.2%) / 1)
   );
-  box-shadow: 0 0 6px hsla(346.8 77.2% 49.8% / 0.5);
+  box-shadow: 0 0 6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.5);
   transition: width 0.4s ease;
 }
 
@@ -3373,7 +3428,7 @@
 /* ── Pink custom scrollbar applied to react-window <List> ────────────────── */
 .iw-cards-scroll {
   scrollbar-width: thin;
-  scrollbar-color: hsla(346.8 77.2% 49.8% / 0.4) hsla(0 0% 100% / 0.06);
+  scrollbar-color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4) hsla(0 0% 100% / 0.06);
 }
 
 .iw-cards-scroll::-webkit-scrollbar {
@@ -3386,13 +3441,13 @@
 }
 
 .iw-cards-scroll::-webkit-scrollbar-thumb {
-  background: hsla(346.8 77.2% 49.8% / 0.4);
+  background: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4);
   border-radius: 4px;
   transition: background 0.2s ease;
 }
 
 .iw-cards-scroll::-webkit-scrollbar-thumb:hover {
-  background: hsla(346.8 77.2% 49.8% / 0.7);
+  background: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7);
 }
 
 /* ── Empty state inside scroll area ─────────────────────────────────────── */
@@ -3417,17 +3472,17 @@
   border-radius: 50%;
   background: linear-gradient(
     180deg,
-    hsla(346.8 77.2% 55% / 0.95),
-    hsla(346.8 77.2% 42% / 0.95)
+    hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 5%) / 0.95),
+    hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) - 7.8%) / 0.95)
   );
-  border: 1px solid hsla(346.8 77.2% 60% / 0.7);
+  border: 1px solid hsla(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 10.2%) / 0.7);
   color: white;
   cursor: pointer;
   display: grid;
   place-items: center;
   box-shadow:
-    0 6px 18px -6px hsla(346.8 77.2% 49.8% / 0.7),
-    0 0 0 1px hsla(346.8 77.2% 49.8% / 0.25),
+    0 6px 18px -6px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7),
+    0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.25),
     inset 0 1px 0 hsla(0 0% 100% / 0.25);
   transition: all 0.2s ease;
 }
@@ -3435,8 +3490,8 @@
 .iw-jump-top:hover {
   transform: translateY(-2px);
   box-shadow:
-    0 10px 22px -8px hsla(346.8 77.2% 49.8% / 0.9),
-    0 0 0 1px hsla(346.8 77.2% 49.8% / 0.4),
+    0 10px 22px -8px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.9),
+    0 0 0 1px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.4),
     inset 0 1px 0 hsla(0 0% 100% / 0.25);
 }
 
@@ -3618,7 +3673,7 @@
 .iw-match-row.is-preferred {
   background: linear-gradient(
     90deg,
-    hsla(346.8 77.2% 49.8% / 0.15) 0%,
+    hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.15) 0%,
     transparent 60%
   );
 }
@@ -3633,7 +3688,7 @@
 
 .iw-match-row.is-preferred .iw-match-accent {
   background: hsl(var(--primary));
-  box-shadow: 0 0 8px hsla(346.8 77.2% 49.8% / 0.6);
+  box-shadow: 0 0 8px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.6);
 }
 
 /* Cover thumbnail: 28×40 */
@@ -3674,7 +3729,7 @@
 .iw-match-cover.is-preferred .iw-match-cover__img {
   box-shadow:
     0 0 0 1.5px hsl(var(--primary)),
-    0 0 12px hsla(346.8 77.2% 49.8% / 0.55),
+    0 0 12px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.55),
     0 4px 10px -4px rgba(0, 0, 0, 0.7);
 }
 
@@ -3730,8 +3785,8 @@
   font-weight: 700;
   letter-spacing: 0.18em;
   color: hsl(var(--primary));
-  background: hsla(346.8 77.2% 49.8% / 0.15);
-  border: 1px solid hsla(346.8 77.2% 49.8% / 0.35);
+  background: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.15);
+  border: 1px solid hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.35);
   padding: 2px 6px;
   border-radius: 4px;
   text-transform: uppercase;
@@ -3806,7 +3861,7 @@
   box-shadow:
     0 18px 36px -10px rgba(0, 0, 0, 0.8),
     0 0 0 1px hsla(0 0% 100% / 0.08),
-    0 0 22px hsla(346.8 77.2% 49.8% / 0.25);
+    0 0 22px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.25);
 }
 
 .iw-cover-pop.is-visible {
@@ -3886,7 +3941,7 @@
     height: 2px;
     background: hsl(var(--primary));
     border-radius: 2px;
-    box-shadow: 0 0 8px hsla(346.8 77.2% 49.8% / 0.7);
+    box-shadow: 0 0 8px hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.7);
   }
 
   /* Reviewed counter */

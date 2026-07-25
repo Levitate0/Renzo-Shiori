@@ -50,11 +50,15 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes"/>
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
         <meta name="apple-mobile-web-app-title" content="Renzō"/>
-        <link rel="icon" href="/favicon.ico" sizes="any"/>
-        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png"/>
-        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png"/>
-        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"/>
-        <link rel="manifest" href="/site.webmanifest"/>
+        {/* Cache-busted (?v=2) — browsers cache favicons very aggressively
+            (often ignoring normal Cache-Control), so a same-URL swap of the
+            underlying PNG doesn't reliably reach an open tab. Bump the
+            version string whenever the icon art changes again. */}
+        <link rel="icon" href="/favicon.ico?v=2" sizes="any"/>
+        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=2"/>
+        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=2"/>
+        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2"/>
+        <link rel="manifest" href="/site.webmanifest?v=2"/>
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -77,6 +81,19 @@ export default function RootLayout({
                     document.documentElement.classList.add('dark');
                     document.documentElement.style.colorScheme = 'dark';
                   }
+                }
+
+                try {
+                  // Accent color theme — see src/lib/utils/accent-theme.ts.
+                  // "rose" is the default and needs no attribute (it's the
+                  // fallback CSS values), so only non-default accents apply one.
+                  var accent = localStorage.getItem('renzo-accent');
+                  var known = ['blue', 'green', 'purple', 'orange', 'slate'];
+                  if (accent && known.indexOf(accent) !== -1) {
+                    document.documentElement.setAttribute('data-accent', accent);
+                  }
+                } catch (_) {
+                  // Fall back to the default rose accent.
                 }
               })();
             `,
