@@ -7,7 +7,7 @@
 
 **Renzō** is a self-hosted, multi-user manga / manhwa / manhua library and download manager. Subscribe to a series once and Renzō keeps it — across every source you configure — downloaded, organized, and up to date, in a *drop-and-forget* fashion. One server hosts many fully-isolated private libraries: every user gets their own library, downloads, sources, updates feed, reading progress, and account settings.
 
-> Renzō is a rebrand and continuation of a fork of [maxpiva/Rensaio](https://github.com/maxpiva/Rensaio) (itself a fork of **Kaizoku / Kaizoku Next Gen** by OAE). Huge thanks to the upstream authors — this project stands on their work.
+> Renzō is a rebrand and continuation of a fork of [maxpiva/Rensaio](https://github.com/maxpiva/Rensaio) (itself a fork of **Kaizoku / Kaizoku Next Gen** by OAE). Huge thanks to the upstream authors — this project stands on their work. A handful of features were shaped by looking at [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server) — another self-hosted manga server — as a reference point (see [Under the hood](#-under-the-hood) for the compatibility layer derived directly from it); the rest of the feature set above was designed independently for Renzō.
 
 > [!IMPORTANT]
 > **Back up your `/config` directory (including the database) before upgrading.** Upgrades are automatic on restart, but the devil never rests.
