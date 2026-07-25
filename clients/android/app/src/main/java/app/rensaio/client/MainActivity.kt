@@ -207,7 +207,10 @@ class MainActivity : AppCompatActivity() {
             try {
                 if (conn.responseCode != 200) return false
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
-                JSONObject(body).optString("product").equals("Renzo", ignoreCase = true)
+                // Accept the current brand and the legacy handshake id (the server
+                // reports "Rensaio" as product for backward compat with older clients).
+                val product = JSONObject(body).optString("product")
+                product.equals("Renzo", ignoreCase = true) || product.equals("Rensaio", ignoreCase = true)
             } finally {
                 conn.disconnect()
             }
