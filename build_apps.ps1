@@ -8,7 +8,7 @@ $project = "RenzoBackend.csproj"
 $projectTray = "RenzoTray.csproj"
 
 $trayOutputBase = "bin/App"
-$finalName = "Renzo"
+$finalName = "RenzoShiori"
 
 $runtimeIds = @("win-x64", "win-arm64", "linux-x64", "linux-arm64", "osx-arm64")
 
@@ -153,7 +153,7 @@ function New-ZipWithPermissions {
                     $unixMode = $modeExe
                 }
 
-                $entryName = "Renzo.app/$relativePath"
+                $entryName = "$finalName.app/$relativePath"
                 $entry = $zip.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
                 $bytes = [System.IO.File]::ReadAllBytes($fullPath)
                 $entryStream = $entry.Open()
@@ -195,7 +195,7 @@ foreach ($rid in $runtimeIds) {
     $isWindows = $rid -like "win-*"
     $isOsx = $rid -eq "osx-arm64"
     $ext = if ($isWindows) { ".exe" } else { "" }
-    $archiveBase = "bin/Renzo-$rid-v$version"
+    $archiveBase = "bin/RenzoShiori-$rid-v$version"
 
     if ($isOsx) {
         # macOS: zip the .app bundle with Unix permissions preserved
