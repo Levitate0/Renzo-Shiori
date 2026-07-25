@@ -620,8 +620,15 @@ namespace RenzoBackend.Utils
 
         public static IConfigurationBuilder AddConfigurations(IConfigurationBuilder builder)
         {
-            builder.AddEnvironmentVariables();
+            // Later-added sources win on a key collision. The persisted
+            // /config/appsettings.json (SettingsService writes the full settings
+            // object back to it on any save, "freezing" whatever every field's
+            // value was at that point) must load FIRST so a docker-compose
+            // environment variable can still override it — otherwise an operator
+            // changing e.g. Scrobbling__ProxyUrl in compose silently does nothing
+            // once the settings file has ever been written once.
             builder.SetBasePath(Path).AddJsonFile($"appsettings.json", optional: false, reloadOnChange: true);
+            builder.AddEnvironmentVariables();
             builder.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 { "runtimeDirectory",  Path }
