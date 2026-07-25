@@ -11,14 +11,14 @@ export function RenzoLogo({ className = "" }: { className?: string }) {
     <>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/renzo-logo-light.svg"
+        src="/renzo-logo-light.png"
         alt="Renzō"
         className={`block dark:hidden ${className}`}
         draggable={false}
       />
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/renzo-logo-dark.svg"
+        src="/renzo-logo-dark.png"
         alt="Renzō"
         aria-hidden="true"
         className={`hidden dark:block ${className}`}

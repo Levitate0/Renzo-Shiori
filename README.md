@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/renzo-banner.svg" alt="Renzō — Your World. Your Library." width="100%">
+  <img src="./docs/renzo-banner.png" alt="Renzō — Your World. Your Library." width="100%">
 </p>
 
 <h1 align="center">連蔵 · Renzō</h1>
