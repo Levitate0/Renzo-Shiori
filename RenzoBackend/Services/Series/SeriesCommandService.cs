@@ -1077,22 +1077,37 @@ namespace RenzoBackend.Services.Series
             List<ParsedChapter>? chapterData = await _mihon.MihonErrorWrapperAsync(
                 () => src.GetChaptersAsync(target.ToManga()!, token),
                 "Unable to get Chapters from {series} from {provider}", series.Title, target.Provider).ConfigureAwait(false);
-            if (chapterData == null || chapterData.Count == 0)
-                return new RedownloadResult(RedownloadOutcome.ChapterNotFound);
 
-            // Apply the same scanlator scoping the bulk download path uses.
-            chapterData.ForEach(a =>
+            ParsedChapter? match = null;
+            if (chapterData is { Count: > 0 })
             {
-                if (string.IsNullOrEmpty(a.Scanlator))
-                    a.Scanlator = target.Provider;
-            });
-            IEnumerable<ParsedChapter> pool = chapterData;
-            if (target.Scanlator == target.Provider || string.IsNullOrEmpty(target.Scanlator))
-                pool = pool.Where(a => string.IsNullOrEmpty(a.Scanlator) || a.Scanlator == target.Provider);
-            else
-                pool = pool.Where(a => a.Scanlator == target.Scanlator);
+                // Apply the same scanlator scoping the bulk download path uses.
+                chapterData.ForEach(a =>
+                {
+                    if (string.IsNullOrEmpty(a.Scanlator))
+                        a.Scanlator = target.Provider;
+                });
+                IEnumerable<ParsedChapter> pool = chapterData;
+                if (target.Scanlator == target.Provider || string.IsNullOrEmpty(target.Scanlator))
+                    pool = pool.Where(a => string.IsNullOrEmpty(a.Scanlator) || a.Scanlator == target.Provider);
+                else
+                    pool = pool.Where(a => a.Scanlator == target.Scanlator);
 
-            ParsedChapter? match = pool.FirstOrDefault(c => c.ParsedNumber == chapterNumber);
+                match = pool.FirstOrDefault(c => c.ParsedNumber == chapterNumber);
+            }
+
+            // Paid/coin-gated chapters routinely disappear from (or get renamed in) a
+            // source's live listing once purchased — the same reason a plain reader
+            // fetch used to 404 on an already-unlocked chapter (see ReaderPreviewService).
+            // "Download All" already tolerates this by building straight from the DB's
+            // stored Chapter row instead of requiring a live match; do the same here
+            // rather than failing an explicit re-download of a chapter the user owns.
+            if (match == null)
+            {
+                Models.Chapter? known = target.Chapters.FirstOrDefault(c => !c.IsDeleted && c.Number == chapterNumber);
+                if (known != null)
+                    match = ChapterToParsedChapter(known, target);
+            }
             if (match == null)
                 return new RedownloadResult(RedownloadOutcome.ChapterNotFound);
 
