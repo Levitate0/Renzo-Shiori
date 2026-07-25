@@ -24,6 +24,14 @@ namespace RenzoBackend.Services.Background
         private readonly ConcurrentDictionary<JobQueues, ConcurrentDictionary<string, byte>> _runningJobs = new();
         private readonly object _slotLock = new object();
         private readonly ConcurrentBag<Task> _inFlightJobTasks = new();
+        // Rotates which GroupKey gets first pick of a queue's limited slots each tick.
+        // Without this, when there are more distinct groups (providers) than
+        // availableSlots, the group order feeding FairShareOrderBy is stable
+        // (DB fetch order), so Take(availableSlots) always cuts off after the
+        // same first few groups — every group past that point starves forever,
+        // even though it has eligible Waiting jobs. Rotating the starting group
+        // each tick guarantees every group eventually lands inside the window.
+        private readonly ConcurrentDictionary<JobQueues, int> _groupRotation = new();
 
         public JobQueueHostedService(IServiceScopeFactory scopeFactory, ILogger<JobQueueHostedService> logger,
             JobsSettings settings)
@@ -164,10 +172,16 @@ namespace RenzoBackend.Services.Background
 
             foreach (Priority priority in jobsByPriority.Keys)
             {
-                var groupedJobs = jobsByPriority[priority]
-                    .GroupBy(a => a.GroupKey)
+                var groups = jobsByPriority[priority].GroupBy(a => a.GroupKey).ToList();
+
+                // Rotate the starting group so a later Take(availableSlots) doesn't
+                // always cut off after the same groups — see _groupRotation comment.
+                int offset = groups.Count == 0 ? 0 : _groupRotation.AddOrUpdate(queueName, 0, (_, v) => v + 1) % groups.Count;
+                var rotatedGroups = groups.Skip(offset).Concat(groups.Take(offset));
+
+                var groupedJobs = rotatedGroups
                     .ToDictionary(g => g.Key, g => g.Take(runningCounts.GetLocalGroupMax(g.Key, queueSettings.MaxPerGroup)).ToList());
-                
+
                 jobsByPriority[priority] = groupedJobs.SelectMany(a => a.Value).FairShareOrderBy(a => a.GroupKey).ToList();
             }
 
