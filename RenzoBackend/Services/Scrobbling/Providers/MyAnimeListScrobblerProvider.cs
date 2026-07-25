@@ -39,18 +39,20 @@ public class MyAnimeListScrobblerProvider : ProxyScrobblerProvider
 
     public override async Task<List<ScrobblerSearchResult>> SearchSeriesAsync(string query, CancellationToken token = default)
     {
-        _apiHttpClient.ApplyBearerToken(_accessToken);
-        var nsfwParam = _settingsService.DirectSettings?.NsfwVisibility == NsfwVisibility.Show ? "&nsfw=true" : "";
-        var response = await _apiHttpClient.GetAsync(
-            $"{ApiBase}/manga?q={Uri.EscapeDataString(query)}&limit=25&fields=id,title,alternative_titles,main_picture,media_type,status,num_chapters,synopsis,mean,start_date{nsfwParam}",
-            token);
-
-        response.EnsureSuccessStatusCode();
-
-        var result = await response.Content.ReadFromJsonAsync<MalSearchResponse>(cancellationToken: token);
         var results = new List<ScrobblerSearchResult>();
+        try
+        {
+            _apiHttpClient.ApplyBearerToken(_accessToken);
+            var nsfwParam = _settingsService.DirectSettings?.NsfwVisibility == NsfwVisibility.Show ? "&nsfw=true" : "";
+            var response = await _apiHttpClient.GetAsync(
+                $"{ApiBase}/manga?q={Uri.EscapeDataString(ClampQuery(query))}&limit=25&fields=id,title,alternative_titles,main_picture,media_type,status,num_chapters,synopsis,mean,start_date{nsfwParam}",
+                token);
 
-        if (result?.Data == null) return results;
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<MalSearchResponse>(cancellationToken: token);
+
+            if (result?.Data == null) return results;
 
         foreach (var item in result.Data)
         {
@@ -83,9 +85,35 @@ public class MyAnimeListScrobblerProvider : ProxyScrobblerProvider
                 Score = node.Mean,
                 Year = node.StartDate?.ToString()
             });
+            }
+        }
+        catch (Exception ex)
+        {
+            // Never throw out of a search: auto-match loops over many titles and
+            // an unhandled exception here aborts the ENTIRE batch (every other
+            // series) mid-request. A single title MAL rejects (e.g. a 400 on a
+            // query too long/odd for its search, see ClampQuery) should just
+            // yield no results for that one title. Mirrors the try/catch the
+            // read-state methods already have.
+            base._logger.LogWarning(ex, "MAL search failed for query '{Query}'", query);
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// MAL's /v2/manga search rejects an over-long <c>q</c> with 400 Bad Request,
+    /// which long light-novel-style titles routinely trip. Trim to a safe length
+    /// on a word boundary so those titles still return matches instead of failing.
+    /// </summary>
+    private static string ClampQuery(string query)
+    {
+        const int MaxLen = 90;
+        query = (query ?? string.Empty).Trim();
+        if (query.Length <= MaxLen)
+            return query;
+        int cut = query.LastIndexOf(' ', MaxLen);
+        return (cut > 20 ? query[..cut] : query[..MaxLen]).Trim();
     }
 
     public override async Task<Dictionary<decimal, float>> GetReadChaptersAsync(string externalSeriesId, CancellationToken token = default)
