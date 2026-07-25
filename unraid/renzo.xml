@@ -1,13 +1,13 @@
 <Container>
   <Name>Renzō</Name>
-  <Repository>maxpiva/rensaio:latest</Repository>
-  <Registry>https://hub.docker.com/r/maxpiva/rensaio</Registry>
+  <Repository>ghcr.io/levitate0/renzo:latest</Repository>
+  <Registry>https://ghcr.io/levitate0/renzo</Registry>
   <Network>host</Network>
   <MyID>renzo</MyID>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/maxpiva/rensaio/issues</Support>
-  <Project>https://github.com/maxpiva/rensaio</Project>
+  <Support>https://github.com/Levitate0/Renzo/issues</Support>
+  <Project>https://github.com/Levitate0/Renzo</Project>
   <Overview>Renzō a feature-complete series manager powered by Mihon Extensions.</Overview>
   <Category>MediaManager:Comics</Category>
 
@@ -20,6 +20,6 @@
 
   <WebUI>http://[IP]:9833</WebUI>
 
-  <TemplateURL>https://raw.githubusercontent.com/maxpiva/rensaio/main/unraid/renzo.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/maxpiva/rensaio/refs/heads/main/RenzoFrontend/public/renzo.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/Levitate0/Renzo/main/unraid/renzo.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/Levitate0/Renzo/refs/heads/main/RenzoFrontend/public/renzo.png</Icon>
 </Container>

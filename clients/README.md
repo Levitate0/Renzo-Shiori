@@ -1,6 +1,6 @@
-# Rensaiō native clients
+# Renzō native clients
 
-Thin native shells around the Rensaiō web UI — the same approach as Jellyfin Media Player.
+Thin native shells around the Renzō web UI — the same approach as Jellyfin Media Player.
 Both start with a Jellyfin-style server-address screen, validate the address against the
 unauthenticated `/api/system/info/public` discovery endpoint, then load the web UI with
 persistent cookies so the 90-day sliding refresh-token login survives restarts ("permanent
@@ -16,13 +16,18 @@ Build from Linux/macOS/Windows:
 
 ```sh
 dotnet publish -c Release -r win-x64 --self-contained true \
-  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
-  -o bin/publish
+  -p:PublishSingleFile=false -o bin/publish
 ```
 
-Produces a single self-contained `Rensaio.exe` (no .NET install needed on the target).
-Server address is stored in `%AppData%\Rensaio\settings.json`; browser data (cookies,
-cache) in `%LocalAppData%\Rensaio\WebView2`. Press **Ctrl+Shift+S** in the app to change
+Publish as a **folder**, not `-p:PublishSingleFile=true` — the single-file mode does not
+reliably extract the native `WebView2Loader.dll` at startup, which makes the app launch
+with no window at all. `bin/publish/Renzo.exe` plus the rest of the folder is the real
+deliverable; zip the folder for distribution, or wrap it with `renzo-installer.nsi`
+(`makensis renzo-installer.nsi`) to produce a proper `Renzo-Setup.exe` installer with
+Start Menu/Desktop shortcuts and an uninstaller.
+
+Server address is stored in `%AppData%\Renzo\settings.json`; browser data (cookies,
+cache) in `%LocalAppData%\Renzo\WebView2`. Press **Ctrl+Shift+S** in the app to change
 servers.
 
 The exe is unsigned, so Windows SmartScreen will warn on first run
@@ -46,9 +51,9 @@ gradle assembleRelease
 Release signing reads `clients/android/key.properties` (untracked):
 
 ```properties
-keystoreFile=/path/to/rensaio.keystore
+keystoreFile=/path/to/renzo.keystore
 keystorePassword=...
-keyAlias=rensaio
+keyAlias=renzo
 keyPassword=...
 ```
 
