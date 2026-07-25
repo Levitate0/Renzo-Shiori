@@ -55,38 +55,42 @@ export function UserTrackerRequester({ open, onOpenChange }: UserTrackerRequeste
   const handleConnectOAuth = useCallback(async (config: ScrobblerConfig) => {
     const providerName = ScrobblerProvider[config.provider];
     setConnecting(config.provider);
-    // Open the popup synchronously (user gesture) so it isn't blocked; guarded
-    // because some embedded webviews throw on window.open.
-    let popup: Window | null = null;
-    try { popup = window.open('about:blank', 'oauth-popup', 'width=600,height=700'); } catch { popup = null; }
     try {
       const result = await authorize.mutateAsync(providerName);
 
-      if (popup && !popup.closed) {
-        popup.location.href = result.authUrl;
-      } else {
-        window.location.href = result.authUrl;
-        return;
-      }
-
-      // Poll the backend callback while the user completes OAuth in the popup.
+      // Poll the backend callback while the user completes OAuth elsewhere. The
+      // proxy holds the tokens keyed by state, so this doesn't depend on which
+      // window/tab the user actually finishes the OAuth flow in.
       const callbackUrl = `/api/scrobbler/callback/${providerName}?state=${result.state}`;
-
-      // Keep polling even after the popup closes (the proxy closes it on success).
-      let connected = false;
-      let attempts = 0;
-      while (!connected && attempts < 60) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        attempts++;
-        try {
-          await apiClient.get<{ connected: boolean }>(callbackUrl);
-          connected = true;
-        } catch {
-          // Tokens not yet stored in proxy — retry
+      const pollForCompletion = async (): Promise<boolean> => {
+        let ok = false;
+        let attempts = 0;
+        while (!ok && attempts < 60) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          attempts++;
+          try {
+            await apiClient.get<{ connected: boolean }>(callbackUrl);
+            ok = true;
+          } catch {
+            // Tokens not yet stored in proxy — retry
+          }
         }
-      }
+        return ok;
+      };
 
-      popup.close();
+      // Always a same-window redirect — NOT window.open(). A popup sounds nicer in
+      // a normal browser tab, but it doesn't hold up on our actual targets: WebView2
+      // (the exe) treats window.open('about:blank', ...) as a new-window request
+      // and, since about:blank isn't the Renzo host, hands it to the OS to open
+      // externally — which has no real handler for a bare about:blank URI, so
+      // Windows shows a "search the Microsoft Store" prompt instead of anything
+      // useful. A same-window redirect sidesteps that everywhere: an ordinary
+      // browser tab just navigates away and back; the native shells (WPF/Android)
+      // intercept the same-window redirect to a foreign host and hand THAT off to
+      // the system browser instead, so this page never actually unloads — poll in
+      // place so that case still completes.
+      window.location.href = result.authUrl;
+      const connected = await pollForCompletion();
 
       if (connected) {
         // Invalidate configs so the UI shows the provider as connected

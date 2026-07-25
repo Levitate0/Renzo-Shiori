@@ -38,6 +38,16 @@ export function ScrobblerSettings() {
   const mangaDexAuth = useMangaDexDirectAuth();
 
   const [selectedSeries, setSelectedSeries] = useState<{ seriesId: string; provider: ScrobblerProvider } | null>(null);
+  // Tracks the WHOLE connect flow (URL fetch → redirect → poll-for-completion,
+  // which can run up to ~2 minutes) — NOT just authorize.isPending, which only
+  // covers the brief initial URL fetch. Without this, the button re-enabled the
+  // instant the URL request resolved, so an impatient second click during the
+  // redirect/poll window fired a second independent authorize+redirect with a
+  // different `state`, and whichever one didn't "win" the navigation raced with
+  // the one that did — the proxy's callback then saw a state that either never
+  // got visited or was superseded, and rejected it as "authorization session not
+  // found" even though the flow up to that point looked fine.
+  const [connectingProvider, setConnectingProvider] = useState<ScrobblerProvider | null>(null);
   const [comicVineApiKey, setComicVineApiKey] = useState('');
   const [kitsuEmail, setKitsuEmail] = useState('');
   const [kitsuPassword, setKitsuPassword] = useState('');
@@ -98,11 +108,9 @@ export function ScrobblerSettings() {
   }, []);
 
   const handleConnect = useCallback(async (config: ScrobblerConfig) => {
-    // Open the popup SYNCHRONOUSLY, inside the click's user-gesture, so a browser
-    // doesn't block it. Wrapped in try/catch because some embedded webviews (the
-    // desktop/mobile apps) throw on window.open — that must NOT abort the connect.
-    let popup: Window | null = null;
-    try { popup = window.open('about:blank', 'oauth-popup', 'width=600,height=700'); } catch { popup = null; }
+    // Re-entrancy guard for the whole flow — see connectingProvider's comment.
+    if (connectingProvider != null) return;
+    setConnectingProvider(config.provider);
     try {
       const providerName = ScrobblerProvider[config.provider];
       const result = await authorize.mutateAsync(providerName);
@@ -113,23 +121,28 @@ export function ScrobblerSettings() {
           JSON.stringify({ providerName, providerNum: config.provider, state: result.state }));
       } catch { /* ignore */ }
 
-      if (popup && !popup.closed) {
-        popup.location.href = result.authUrl;
-      } else {
-        // No usable popup (webview) — full-page redirect. On return, the effect
-        // above finishes the connection using the persisted state.
-        window.location.href = result.authUrl;
-        return;
-      }
-
+      // Always a same-window redirect — NOT window.open(). A popup sounds nicer in
+      // a normal browser tab, but it doesn't hold up across our actual targets:
+      // WebView2 (exe) treats window.open('about:blank', ...) as a new-window
+      // request and, since about:blank isn't the Renzo host, hands it to the OS to
+      // open externally — which has no real handler for a bare about:blank URI, so
+      // Windows shows a "search the Microsoft Store" prompt instead of anything
+      // useful. Android's WebView has its own equivalent popup quirks. A same-
+      // window redirect sidesteps all of that everywhere:
+      //  - Ordinary browser tab: navigates away; the on-return effect above
+      //    resumes from the persisted state on the next mount.
+      //  - Native shells (WPF/Android): they intercept a same-window navigation to
+      //    a foreign host and hand THAT off to the system browser instead — this
+      //    page never actually unloads, so poll for completion right here.
+      window.location.href = result.authUrl;
       const connected = await completePending(providerName, config.provider, result.state, 60);
-      popup.close();
       if (!connected) console.warn('[Scrobbler] connect did not complete in time');
     } catch (err) {
-      popup?.close();
       console.error('[Scrobbler] OAuth authorization failed:', err);
+    } finally {
+      setConnectingProvider(null);
     }
-  }, [authorize, completePending]);
+  }, [authorize, completePending, connectingProvider]);
 
   const handleDisconnect = useCallback((config: ScrobblerConfig) => {
     const providerName = ScrobblerProvider[config.provider];
@@ -351,10 +364,10 @@ export function ScrobblerSettings() {
                       variant="default"
                       size="sm"
                       onClick={() => handleConnect(config)}
-                      disabled={authorize.isPending}
+                      disabled={connectingProvider != null}
                     >
                       <Link className="h-4 w-4 mr-1" />
-                      Connect
+                      {connectingProvider === config.provider ? 'Connecting…' : 'Connect'}
                     </Button>
                   )}
                 </div>

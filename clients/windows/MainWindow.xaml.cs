@@ -162,6 +162,7 @@ public partial class MainWindow : Window
         WebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
         WebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
         WebView.CoreWebView2.NewWindowRequested += CoreWebView2_NewWindowRequested;
+        WebView.CoreWebView2.NavigationStarting += CoreWebView2_NavigationStarting;
         WebView.CoreWebView2.NavigationCompleted += CoreWebView2_NavigationCompleted;
         _webViewReady = true;
     }
@@ -170,6 +171,18 @@ public partial class MainWindow : Window
     {
         // Keep same-server links inside the app; external links go to the default browser.
         e.Handled = true;
+
+        // Non-http(s) scheme (about:blank, javascript:, etc.) — there's nothing
+        // useful to open externally for these (Process.Start on "about:blank" has
+        // no registered handler, so Windows shows a "search the Microsoft Store"
+        // prompt instead of doing anything). The web UI shouldn't be requesting a
+        // real new window for one of these anyway; just drop it.
+        if (!e.Uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !e.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         if (_config.ServerUrl != null &&
             Uri.TryCreate(e.Uri, UriKind.Absolute, out Uri? target) &&
             Uri.TryCreate(_config.ServerUrl, UriKind.Absolute, out Uri? server) &&
@@ -179,6 +192,38 @@ public partial class MainWindow : Window
         }
         else
         {
+            OpenInBrowser(e.Uri);
+        }
+    }
+
+    /// <summary>
+    /// Catches same-window navigations to a different host — e.g. the scrobbler
+    /// "Link MAL/AniList" flow, which normally does window.location.href to an
+    /// OAuth page (fine in a real browser tab). NewWindowRequested only covers
+    /// window.open()/target="_blank"; a plain same-window redirect to an external
+    /// host was never intercepted, so the embedded WebView2 tried to render MAL's
+    /// login page itself — which OAuth providers commonly refuse inside an
+    /// embedded browser. Cancel it and hand off to the system browser instead;
+    /// the app itself never needs to see the redirect back (the scrobbler connect
+    /// flow polls the server for completion, not the browser).
+    /// </summary>
+    private void CoreWebView2_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        // Non-http(s) targets (about:blank, javascript:, data:) — never hand these
+        // to the OS (see NewWindowRequested's comment); just let WebView2 handle
+        // them itself, same as any ordinary in-page navigation.
+        if (!e.Uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !e.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (_config.ServerUrl != null &&
+            Uri.TryCreate(e.Uri, UriKind.Absolute, out Uri? target) &&
+            Uri.TryCreate(_config.ServerUrl, UriKind.Absolute, out Uri? server) &&
+            !string.Equals(target.Host, server.Host, StringComparison.OrdinalIgnoreCase))
+        {
+            e.Cancel = true;
             OpenInBrowser(e.Uri);
         }
     }

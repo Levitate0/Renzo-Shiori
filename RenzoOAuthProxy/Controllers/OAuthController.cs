@@ -46,14 +46,23 @@ public class OAuthController : ControllerBase
 
         try
         {
+            // Reuse an already-live, not-yet-completed session for this instance+
+            // provider instead of minting a competing one — see FindActive's comment.
+            var existing = _tokenStore.FindActive(instanceKey, provider);
+            _logger.LogInformation(
+                "GetAuthUrl: instanceKey={InstanceKey} provider={Provider} existingFound={Found} existingState={ExistingState} liveEntryCount={Count}",
+                instanceKey, provider, existing != null, existing?.State ?? "(none)", _tokenStore.DebugLiveCount());
+            if (existing?.AuthUrl != null)
+                return Ok(new OAuthUrlResponseDto { AuthUrl = existing.AuthUrl, State = existing.State });
+
             var state = Guid.NewGuid().ToString("N");
             // Public callback lives at /oauth/... on the Renzo domain (the backend
             // forwards /oauth/* to this proxy's /api/oauth/*). This is the URL the admin
             // registers as the provider redirect_uri.
             var redirectUri = $"{ResolvePublicBase(publicBase)}/oauth/{provider}/callback";
-            var authUrl = await _providerApi.GenerateAuthUrlAsync(provider, redirectUri, state);
+            var (authUrl, codeVerifier) = await _providerApi.GenerateAuthUrlAsync(provider, redirectUri, state);
 
-            _tokenStore.Store(state, instanceKey, provider, redirectUri);
+            _tokenStore.Store(state, instanceKey, provider, redirectUri, codeVerifier, authUrl);
 
             return Ok(new OAuthUrlResponseDto { AuthUrl = authUrl, State = state });
         }
@@ -85,7 +94,7 @@ public class OAuthController : ControllerBase
             var callbackUri = redirectUri
                 ?? (string.IsNullOrEmpty(tokenEntry.RedirectUri) ? null : tokenEntry.RedirectUri)
                 ?? $"{Request.Scheme}://{Request.Host}/api/oauth/{provider}/callback";
-            var tokenResult = await _providerApi.ExchangeCodeAsync(provider, code, callbackUri);
+            var tokenResult = await _providerApi.ExchangeCodeAsync(provider, code, callbackUri, tokenEntry.CodeVerifier);
 
             // Store plaintext in memory (ephemeral, 5-min TTL, never persisted)
             _tokenStore.SetTokens(state, tokenResult.AccessToken, tokenResult.RefreshToken, tokenResult.ExpiresAt);
@@ -102,29 +111,57 @@ public class OAuthController : ControllerBase
             return Content($@"<!DOCTYPE html>
 <html lang=""en"">
 <head><meta charset=""utf-8""><title>Renzō — Complete</title>
+<link rel=""icon"" href=""/favicon.ico?v=2"" sizes=""any"">
+<link rel=""icon"" type=""image/png"" sizes=""32x32"" href=""/favicon-32x32.png?v=2"">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:hsl(20,14.3%,4.1%);color:hsl(0,0%,95%)}}
-@media(prefers-color-scheme:light){{body{{background:hsl(0,0%,100%);color:hsl(240,10%,3.9%)}}.card{{background:hsl(180,8.2%,90.2%)}}}}
-.card{{background:hsl(24,9.8%,10%);border-radius:12px;padding:2.5rem 3rem;text-align:center;max-width:380px;box-shadow:0 4px 24px rgba(0,0,0,0.3)}}
-.logo{{font-size:1.5rem;font-weight:700;letter-spacing:-0.02em;color:hsl(346.8,77.2%,49.8%);margin-bottom:1.25rem}}
-.logo span{{color:hsl(0,0%,95%)}}
-@media(prefers-color-scheme:light){{.logo span{{color:hsl(240,10%,3.9%)}}}}
-.mark{{width:48px;height:48px;border-radius:50%;border:3px solid hsl(346.8,77.2%,49.8%);display:inline-flex;align-items:center;justify-content:center;margin-bottom:1rem}}
-.mark::after{{content:'';display:block;width:14px;height:24px;border:solid hsl(346.8,77.2%,49.8%);border-width:0 3px 3px 0;transform:rotate(45deg) translateY(-2px)}}
+:root{{--accent-h:346.8;--accent-s:77.2%;--accent-l:49.8%;--accent:hsl(var(--accent-h) var(--accent-s) var(--accent-l))}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:hsl(20 14.3% 4.1%);color:hsl(0 0% 95%);transition:none}}
+html.light body{{background:hsl(0 0% 100%);color:hsl(240 10% 3.9%)}}
+html.light .card{{background:hsl(180 8.2% 90.2%)}}
+.card{{background:hsl(24 9.8% 10%);border-radius:12px;padding:2.5rem 3rem;text-align:center;max-width:380px;box-shadow:0 4px 24px rgba(0,0,0,0.3)}}
+.logo{{width:56px;height:56px;margin:0 auto 1.25rem;display:block}}
+.check{{width:44px;height:44px;border-radius:50%;background:var(--accent);display:inline-flex;align-items:center;justify-content:center;margin-bottom:1rem}}
+.check svg{{width:22px;height:22px;stroke:white;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round}}
 h1{{font-size:1.125rem;font-weight:600;margin-bottom:0.5rem}}
 p{{font-size:0.875rem;opacity:0.7;margin-bottom:1.5rem}}
-.pill{{display:inline-block;background:hsl(346.8,77.2%,49.8%);color:hsl(355.7,100%,97.3%);font-size:0.75rem;font-weight:600;padding:0.25rem 0.75rem;border-radius:999px;text-transform:uppercase;letter-spacing:0.04em}}
+.pill{{display:inline-block;background:var(--accent);color:hsl(355.7 100% 97.3%);font-size:0.75rem;font-weight:600;padding:0.25rem 0.75rem;border-radius:999px;text-transform:uppercase;letter-spacing:0.04em}}
 .hint{{font-size:0.75rem;opacity:0.4;margin-top:1.5rem}}
 </style></head><body>
 <div class=""card"">
-<div class=""logo"">Ren<span>zō</span></div>
-<div class=""mark""></div>
+<img class=""logo"" id=""logoImg"" src=""/renzo-icon-dark.png"" alt=""Renzō"">
+<div class=""check""><svg viewBox=""0 0 24 24""><polyline points=""20 6 9 17 4 12""/></svg></div>
 <h1>Authentication Complete</h1>
 <p>Your {providerName} account has been connected to Renzō.</p>
 <div class=""pill"">Connected</div>
 <p class=""hint"">You may close this window.</p></div>
-<script>(function(){{try{{if(window.opener){{window.opener.postMessage({{type:'oauth-success',provider:'{provider}',state:'{state}'}},'*')}}}}catch(e){{}}}})()</script>
+<script>
+(function(){{
+  // Match whichever light/dark/accent the user actually has set in the app
+  // (falls back to system preference), instead of a fixed dark-only look.
+  try {{
+    var theme = localStorage.getItem('renzo-theme');
+    var systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var isDark = theme === 'dark' || (theme !== 'light' && systemDark);
+    document.documentElement.classList.toggle('light', !isDark);
+    document.getElementById('logoImg').src = isDark ? '/renzo-icon-dark.png' : '/renzo-icon-light.png';
+  }} catch (e) {{}}
+  try {{
+    var accents = {{
+      blue: ['217.2', '91.2%', '59.8%'], green: ['142.1', '70.6%', '45.3%'],
+      purple: ['262.1', '83.3%', '57.8%'], orange: ['24.6', '95%', '53.1%'],
+      slate: ['215', '16%', '46.9%']
+    }};
+    var a = accents[localStorage.getItem('renzo-accent')];
+    if (a) {{
+      document.documentElement.style.setProperty('--accent-h', a[0]);
+      document.documentElement.style.setProperty('--accent-s', a[1]);
+      document.documentElement.style.setProperty('--accent-l', a[2]);
+    }}
+  }} catch (e) {{}}
+  try {{ if (window.opener) window.opener.postMessage({{type:'oauth-success',provider:'{provider}',state:'{state}'}},'*'); }} catch (e) {{}}
+}})();
+</script>
 </body></html>", "text/html");
         }
         catch (Exception ex)
@@ -142,9 +179,17 @@ p{{font-size:0.875rem;opacity:0.7;margin-bottom:1.5rem}}
         if (string.IsNullOrWhiteSpace(request.State))
             return BadRequest(new ErrorResponseDto { Error = "State is required" });
 
-        var tokenEntry = _tokenStore.Remove(request.State);
-        if (tokenEntry == null)
+        // Peek, don't consume, until tokens actually exist. The frontend starts
+        // polling this endpoint ~2s after redirecting to the provider — long before
+        // a real login can finish — so unconditionally Remove()-ing on the first
+        // poll destroyed the session before the user's actual callback ever arrived,
+        // which then found nothing and failed with "Invalid state." Only consume
+        // the entry once /callback has actually populated AccessToken.
+        var tokenEntry = _tokenStore.Retrieve(request.State);
+        if (tokenEntry?.AccessToken == null)
             return NotFound(new ErrorResponseDto { Error = "No tokens found for this state" });
+
+        _tokenStore.Remove(request.State);
 
         return Ok(new TokenRetrieveResponseDto
         {

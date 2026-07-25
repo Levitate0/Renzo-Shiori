@@ -57,28 +57,45 @@ public class ProviderApiService
     }
 
     /// <summary>
-    /// Generates the authorization URL for a provider.
+    /// Generates the authorization URL for a provider, plus a PKCE code_verifier when
+    /// the provider requires one (MyAnimeList rejects any authorize request without a
+    /// code_challenge — "Check the `code_challenge` parameter" — and only supports the
+    /// "plain" method, so the challenge sent here IS the verifier, unhashed). The
+    /// caller must persist the verifier alongside `state` and pass it back into
+    /// ExchangeCodeAsync at callback time, or the token exchange will fail the same way.
     /// </summary>
-    public Task<string> GenerateAuthUrlAsync(string provider, string redirectUri, string state)
+    public Task<(string AuthUrl, string? CodeVerifier)> GenerateAuthUrlAsync(string provider, string redirectUri, string state)
     {
         var (clientId, _) = GetCredentials(provider);
+        string? codeVerifier = provider.ToLowerInvariant() == "myanimelist" ? GeneratePkceVerifier() : null;
 
         var authUrl = provider.ToLowerInvariant() switch
         {
             "anilist" => $"https://anilist.co/api/v2/oauth/authorize?client_id={clientId}&redirect_uri={Uri.EscapeDataString(redirectUri)}&response_type=code&state={state}",
-            "myanimelist" => $"https://myanimelist.net/v1/oauth2/authorize?response_type=code&client_id={clientId}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state={state}",
+            "myanimelist" => $"https://myanimelist.net/v1/oauth2/authorize?response_type=code&client_id={clientId}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state={state}&code_challenge={Uri.EscapeDataString(codeVerifier!)}&code_challenge_method=plain",
             "kitsu" => $"https://kitsu.io/api/oauth/authorize?response_type=code&client_id={clientId}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state={state}",
             "mangadex" => $"https://auth.mangadex.org/realms/mangadex/protocol/openid-connect/auth?response_type=code&client_id={clientId}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state={state}&scope=openid",
             _ => throw new InvalidOperationException($"Unknown provider: {provider}")
         };
 
-        return Task.FromResult(authUrl);
+        return Task.FromResult((authUrl, codeVerifier));
+    }
+
+    /// <summary>RFC 7636 code_verifier: 43-128 chars from the unreserved URL-safe set.
+    /// Base64url of 32 random bytes (no padding) yields 43 chars, all within that set.</summary>
+    private static string GeneratePkceVerifier()
+    {
+        byte[] bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
     /// <summary>
-    /// Exchanges an authorization code for tokens.
+    /// Exchanges an authorization code for tokens. codeVerifier must be the same PKCE
+    /// verifier returned by GenerateAuthUrlAsync for this state (MyAnimeList requires it
+    /// on both legs — the token endpoint rejects a code issued against a code_challenge
+    /// if the matching code_verifier isn't sent back here).
     /// </summary>
-    public async Task<TokenResult> ExchangeCodeAsync(string provider, string code, string redirectUri)
+    public async Task<TokenResult> ExchangeCodeAsync(string provider, string code, string redirectUri, string? codeVerifier = null)
     {
         var (clientId, clientSecret) = GetCredentials(provider);
         var httpClient = _httpClientFactory.CreateClient();
@@ -91,6 +108,8 @@ public class ProviderApiService
             ["redirect_uri"] = redirectUri,
             ["code"] = code
         };
+        if (!string.IsNullOrEmpty(codeVerifier))
+            formData["code_verifier"] = codeVerifier;
 
         var tokenUrl = provider.ToLowerInvariant() switch
         {
