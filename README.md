@@ -18,16 +18,71 @@
 
 - 👥 **True multi-user** — Isolated libraries per user with permission levels (User / Manager / Admin / Owner). Optional authentication, invites, and an Owner "global view" for support. Each user gets a personal **Account** page for their own sensitive settings (per-site logins for coin/paid sources, external tracker links) — kept separate from the Owner-only app-wide `/settings`.
 - 🔎 **Multi-source & multi-linking** — Link one series to many sources via **Mihon extensions**. Temporary vs. permanent sources: temporary sources only fill gaps and are auto-replaced when a permanent source provides the chapter.
-- 📥 **Automatic downloads** — Retries, reschedules, a dedicated downloads page. Extensions auto-update.
+- 📥 **Automatic downloads** — A fair, per-provider download queue (no single source can starve the others), automatic retries/rescheduling on failure, and a dedicated downloads page. Extensions auto-update.
 - 🗂️ **Automatic categorization** — Series are auto-filed into **Manga / Manhwa / Manhua / Comic** by country-of-origin. When you link a series to a scrobbler (MAL/AniList/Kitsu), Renzō uses that ID-based `media_type` as the authoritative signal — far more accurate than a title guess.
 - 🔗 **Built-in tracker sync (container-hosted OAuth)** — Connect **AniList · MyAnimeList · Kitsu · MangaDex** per user. The OAuth service is **bundled inside the container** — no reliance on any external hosted proxy. See [Tracker / OAuth setup](#-tracker--oauth-setup).
-- 📖 **Built-in reader + read-state tracking** — Resume where you left off on any device; progress is stored with the series (and syncs over OPDS).
+- 📖 **Built-in reader + read-state tracking** — Paged, paged-RTL, double-page, webtoon/longstrip, and a **Smart Detect** auto mode that inspects page shapes to pick webtoon vs. paged automatically. Resume where you left off on any device; progress is stored with the series (and syncs over OPDS).
+- 🔓 **Coin/paid-site support** — Renzō can log in to coin-gated scanlation sites on your behalf, keep the session alive, and detect/unlock chapters you've actually purchased — locked chapters download automatically once owned.
+- 🧩 **Extension version control** — Roll an extension back or forward between versions, pin it against auto-update, or sideload a patched APK — all from the Sources page.
 - 📡 **OPDS server** — Read from any OPDS app; per-user private path. `https://renzo.example.com/door-pebble`
 - 🤖 **MCP server** — Expose your library to AI tools via the Model Context Protocol (append `/mcp` to your OPDS path), respecting user permissions.
-- 🩺 **Status & health dashboard** — Color-coded alerts for broken providers, stale series, and more.
+- 🧙 **Import wizard** — Bring in an existing library from disk (Kavita-style filename parsing) or a Suwayomi backup, with automatic per-user account creation from `renzo.json` read-state where present.
+- 🩺 **Status & health dashboard** — Color-coded alerts for broken providers, stale series, and more; live job/download progress over SignalR with an automatic polling fallback if the socket connection drops.
+- 🎨 **Theming** — Light/dark mode plus six selectable accent colors, synced across tabs and devices.
 - 🧾 **Rich metadata** — `ComicInfo.xml` injection, per-series `cover.jpg`, and a `renzo.json` metadata/read-state map stored alongside your series.
-- 🖼️ **Format support** — jxl, jp2, avif with real-time transcoding for clients that can't render them.
+- 🖼️ **Format support** — jxl, jp2, avif, heic/heif, and more, with real-time transcoding for clients that can't render them natively.
 - 🌐 **Reverse-proxy friendly** — External-domain support; invite / password links resolve their base URL by priority: **1)** `External Domain` setting → **2)** first public-looking `Allowed Origins` entry → **3)** first private/LAN IP → **4)** `localhost`.
+
+---
+
+## 📋 Feature list
+
+### Library & discovery
+- Library grid with genre/provider/category/favorites filtering, sorting, and favorites lists
+- Browse page — latest releases across every installed source in one feed, with genre/tag filters and add-to-library
+- Updates feed — new chapters bucketed today/yesterday/this week, with batch-release stacking
+- Automatic Manga/Manhwa/Manhua/Comic categorization, scrobbler-ID-aware when a tracker is linked
+- Import wizard for existing on-disk libraries or Suwayomi backups
+
+### Reading
+- Built-in reader: library mode (downloaded, full progress tracking) and preview mode (stream from source, nothing stored)
+- Paged, paged-RTL, double-page, webtoon/longstrip modes, plus Smart Detect auto-mode
+- Continuous mode auto-advances across chapter boundaries
+- Coin/paid-site login + session management, with automatic locked-chapter detection and unlock-on-purchase
+
+### Sources & extensions
+- Mihon (Tachiyomi) extension support — MangaDex, Kiryuu, ComicK, ReadComicsOnline, and many more
+- Temporary vs. permanent source linking per series, with automatic gap-filling
+- Extension pin / rollback / forward / sideload from the Sources page
+- FlareSolverr (Cloudflare bypass) and SOCKS proxy support for source requests
+
+### Downloads & jobs
+- Fair, per-provider download queue with automatic retry/reschedule on failure
+- Live job/download progress via SignalR with a polling fallback
+- Scheduled recurring tasks (chapter checks, extension updates) configurable per job type
+
+### Multi-user & accounts
+- Four permission levels: User / Manager / Admin / Owner
+- Optional authentication, invite-based onboarding with emailed one-time setup links
+- Per-user Account page (password, personal site logins, personal tracker links) separate from Owner-only app settings
+- Unauthenticated server-discovery endpoint so clients can validate a server address before login
+
+### Trackers
+- AniList, MyAnimeList, Kitsu, and MangaDex scrobbling with automatic series matching
+- Container-hosted OAuth proxy — no external hosted service required, one public port handles every provider's callback
+
+### Sharing
+- OPDS server with a per-user private feed path
+- MCP server exposing your library to AI tools, permission-aware
+
+### Admin & ops
+- Status/health dashboard with color-coded provider and series alerts
+- First-run setup wizard
+- App-wide settings: security, content preferences, repositories, downloads, schedules, storage, FlareSolverr, SOCKS
+
+### Platform & theming
+- Light/dark mode plus six selectable accent colors, synced across tabs and devices
+- Reverse-proxy/external-domain aware link resolution
 
 ---
 
