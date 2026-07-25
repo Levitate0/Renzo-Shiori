@@ -23,6 +23,14 @@ public class CoinSiteDefinition
     public string PasswordField { get; set; } = "password";
     public string? CsrfPageUrl { get; set; }
     public string? CsrfField { get; set; }
+    // Some login forms gate on the clicked <input type="submit" name="..." value="...">
+    // being present in the POST body (e.g. to tell which of several forms on the
+    // page was submitted) — a real browser includes it automatically, so a plain
+    // username+password POST that omits it can get silently ignored server-side
+    // while still returning 200 with a baseline session cookie, looking like
+    // success. Optional: most sites don't need this.
+    public string? SubmitField { get; set; }
+    public string? SubmitValue { get; set; }
     public string SessionCookieName { get; set; } = "";
     public bool Confirmed { get; set; }
 }
@@ -377,6 +385,8 @@ public class CoinSiteRegistry
                 def.UsernameField = saved.UsernameField;
                 def.PasswordField = saved.PasswordField;
                 def.SessionCookieName = saved.SessionCookieName;
+                def.SubmitField = saved.SubmitField;
+                def.SubmitValue = saved.SubmitValue;
                 if (!string.IsNullOrEmpty(saved.Domain)) def.Domain = saved.Domain;
                 if (saved.ApiBase != null) def.ApiBase = saved.ApiBase;
             }

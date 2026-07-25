@@ -1,7 +1,10 @@
 using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
+using RenzoBackend.Models.Dto;
+using RenzoBackend.Services.Settings;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -30,15 +33,19 @@ public class SiteAuthService
     private readonly CookieJarBridge _jar;
     private readonly SiteCredentialProtector _protector;
     private readonly CoinSiteRegistry _registry;
+    private readonly SettingsService _settings;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger _logger;
 
     public SiteAuthService(AppDbContext db, CookieJarBridge jar, SiteCredentialProtector protector,
-        CoinSiteRegistry registry, ILogger<SiteAuthService> logger)
+        CoinSiteRegistry registry, SettingsService settings, IHttpClientFactory httpFactory, ILogger<SiteAuthService> logger)
     {
         _db = db;
         _jar = jar;
         _protector = protector;
         _registry = registry;
+        _settings = settings;
+        _httpFactory = httpFactory;
         _logger = logger;
     }
 
@@ -144,13 +151,36 @@ public class SiteAuthService
         userFields.AddRange(CoinSiteRegistry.UsernameFieldGuesses.Where(f => !userFields.Contains(f)));
 
         string lastDetail = "No login endpoint responded.";
+        SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+        bool flareSolverrReady = settings.FlareSolverrEnabled && !string.IsNullOrWhiteSpace(settings.FlareSolverrUrl);
+
         foreach (string loginUrl in _registry.CandidateLoginUrls(def))
         {
+            bool isConfirmedUrl = def.Confirmed && loginUrl == def.LoginUrl;
             foreach (string userField in userFields)
             {
                 token.ThrowIfCancellationRequested();
+
+                // Plain client first: it correctly captures Set-Cookie via .NET's
+                // CookieContainer, and (confirmed by testing this exact site's login
+                // endpoint directly, bypassing Renzo entirely) it isn't actually
+                // Cloudflare-blocked here — a bare HTTP POST reaches the real login
+                // form and gets a real session cookie back. FlareSolverr was tried
+                // first originally on the assumption Cloudflare was the blocker (a
+                // reasonable read of the symptoms at the time — see the coin-site
+                // paywall doc on LockedChapterSupplementService, which DOES need it
+                // for scraping), but its request.post here doesn't reliably surface
+                // Set-Cookie headers even when the site demonstrably sets one — so
+                // it's now only a fallback for sites the plain client genuinely can't
+                // reach at all.
                 (bool ok, List<HarvestedCookie> harvested, string detail, bool endpointExists) =
                     await TryLoginAsync(def, loginUrl, userField, cred.Username, password, token).ConfigureAwait(false);
+                if (!ok && flareSolverrReady)
+                {
+                    var fsResult = await TryLoginViaFlareSolverrAsync(def, loginUrl, userField, cred.Username, password, settings, token).ConfigureAwait(false);
+                    if (fsResult.ok)
+                        (ok, harvested, detail, endpointExists) = fsResult;
+                }
                 if (ok)
                 {
                     int injected = _jar.Inject(harvested);
@@ -173,6 +203,21 @@ public class SiteAuthService
                 // credential means the endpoint is right but the field/creds are off.
                 if (!endpointExists)
                     break;
+            }
+
+            // def.Confirmed means this URL previously logged in successfully — it's
+            // not a guess, unlike the other candidates CandidateLoginUrls yields
+            // (generic paths like /auth/login that were never going to match this
+            // site). If every field guess on it just failed, trying those other
+            // candidates next is pointless and actively harmful: their inevitable
+            // 404 overwrites lastDetail, hiding the confirmed endpoint's real
+            // failure reason behind an unrelated "no login there" for a URL nobody
+            // was ever trying to use.
+            if (isConfirmedUrl)
+            {
+                cred.Status = "failed";
+                cred.StatusDetail = lastDetail + " If it keeps failing, paste a session cookie instead.";
+                return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
             }
         }
 
@@ -211,13 +256,29 @@ public class SiteAuthService
 
             var fields = new Dictionary<string, string> { [userField] = username, [def.PasswordField] = password };
             if (csrf != null) fields[def.CsrfField ?? "_token"] = csrf;
+            if (!string.IsNullOrEmpty(def.SubmitField)) fields[def.SubmitField] = def.SubmitValue ?? "";
+            if (def.CsrfPageUrl != null)
+                http.DefaultRequestHeaders.Referrer = new Uri(def.CsrfPageUrl);
 
-            // Try JSON first (these SPA APIs expect it), then form-encoded.
-            HttpResponseMessage resp = await PostJsonAsync(http, loginUrl, fields, csrf, token).ConfigureAwait(false);
+            // Sites with a real JSON REST API (ApiBase set, e.g. EZmanga's
+            // vapi.* backend) expect a JSON body. Plain server-rendered sites
+            // (ApiBase null, e.g. Violet Scans' WordPress theme form) only read
+            // $_POST — a JSON body is silently ignored (PHP never parses it),
+            // and since that still comes back as a normal 200 (not 400/415),
+            // the old "JSON first, fall back on 400/415" logic never noticed:
+            // the real credentials just never reached the server. Order by
+            // which style this site actually is instead of always trying JSON
+            // first.
+            bool jsonFirst = !string.IsNullOrEmpty(def.ApiBase);
+            HttpResponseMessage resp = jsonFirst
+                ? await PostJsonAsync(http, loginUrl, fields, csrf, token).ConfigureAwait(false)
+                : await http.PostAsync(loginUrl, new FormUrlEncodedContent(fields), token).ConfigureAwait(false);
             if (resp.StatusCode == HttpStatusCode.UnsupportedMediaType || resp.StatusCode == HttpStatusCode.BadRequest)
             {
                 resp.Dispose();
-                resp = await http.PostAsync(loginUrl, new FormUrlEncodedContent(fields), token).ConfigureAwait(false);
+                resp = jsonFirst
+                    ? await http.PostAsync(loginUrl, new FormUrlEncodedContent(fields), token).ConfigureAwait(false)
+                    : await PostJsonAsync(http, loginUrl, fields, csrf, token).ConfigureAwait(false);
             }
 
             bool endpointExists = resp.StatusCode != HttpStatusCode.NotFound && resp.StatusCode != HttpStatusCode.MethodNotAllowed;
@@ -245,6 +306,86 @@ public class SiteAuthService
         {
             return (false, new List<HarvestedCookie>(), "Couldn't reach " + Host(loginUrl) + ": " + ex.Message, false);
         }
+    }
+
+    /// <summary>
+    /// Same login, but driven through FlareSolverr's real, JS-rendering browser
+    /// instead of a bare HttpClient — needed for sites behind Cloudflare, where a
+    /// plain POST can get back a 200 with SOME placeholder cookie (passing the old
+    /// "did we get a cookie" check) without ever reaching the real login form, so
+    /// the actual auth cookie (e.g. WordPress's wordpress_logged_in_*) never gets
+    /// set even though login "looked" successful.
+    /// </summary>
+    private async Task<(bool ok, List<HarvestedCookie> cookies, string detail, bool endpointExists)> TryLoginViaFlareSolverrAsync(
+        CoinSiteDefinition def, string loginUrl, string userField, string username, string password, SettingsDto settings, CancellationToken token)
+    {
+        string endpoint = settings.FlareSolverrUrl.TrimEnd('/') + "/v1";
+        int ms = (int)Math.Clamp(settings.FlareSolverrTimeout.TotalMilliseconds, 15000, 120000);
+        using HttpClient http = _httpFactory.CreateClient();
+        http.Timeout = TimeSpan.FromMilliseconds(ms + 15000);
+
+        try
+        {
+            // No CSRF pre-fetch here (unlike the plain-client path): this
+            // FlareSolverr install has no session continuity between separate calls
+            // (no sessions.create/destroy support), so a first GET can only ever
+            // supply a token VALUE, never the matching cookie a real CSRF check
+            // usually also wants — and def.CsrfField/CsrfPageUrl were auto-guessed
+            // by CoinSiteRegistry, never confirmed necessary for this site. Skipping
+            // it removes a second FlareSolverr round-trip (and its own failure/
+            // timeout surface) for a step that was never verified to matter.
+            var fields = new Dictionary<string, string> { [userField] = username, [def.PasswordField] = password };
+            if (!string.IsNullOrEmpty(def.SubmitField)) fields[def.SubmitField] = def.SubmitValue ?? "";
+            string postData = string.Join("&", fields.Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
+
+            JsonElement? sol = await FlareSolverrCallAsync(http, endpoint,
+                new { cmd = "request.post", url = loginUrl, postData, maxTimeout = ms }, token).ConfigureAwait(false);
+            if (sol == null)
+                return (false, new List<HarvestedCookie>(), "FlareSolverr couldn't reach the login endpoint.", true);
+
+            var harvested = new List<HarvestedCookie>();
+            if (sol.Value.TryGetProperty("cookies", out JsonElement cookiesEl) && cookiesEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement c in cookiesEl.EnumerateArray())
+                {
+                    string name = c.TryGetProperty("name", out JsonElement n) ? n.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(name))
+                        continue;
+                    string value = c.TryGetProperty("value", out JsonElement v) ? v.GetString() ?? "" : "";
+                    string domain = c.TryGetProperty("domain", out JsonElement d) ? d.GetString() ?? def.Domain : def.Domain;
+                    string path = c.TryGetProperty("path", out JsonElement p) ? p.GetString() ?? "/" : "/";
+                    harvested.Add(new HarvestedCookie(name, value, domain, path));
+                }
+            }
+
+            int statusCode = sol.Value.TryGetProperty("status", out JsonElement st) && st.ValueKind == JsonValueKind.Number ? st.GetInt32() : 200;
+            bool endpointExists = statusCode != 404 && statusCode != 405;
+            bool gotSession = harvested.Count > 0 &&
+                (string.IsNullOrEmpty(def.SessionCookieName) ||
+                 harvested.Any(c => c.Name.Equals(def.SessionCookieName, StringComparison.OrdinalIgnoreCase)));
+
+            string detail = !endpointExists ? $"{Host(loginUrl)} has no login there."
+                : !gotSession ? "Login didn't set a session cookie (via FlareSolverr)."
+                : "ok";
+            return (gotSession, harvested, detail, endpointExists);
+        }
+        catch (Exception ex)
+        {
+            return (false, new List<HarvestedCookie>(), "FlareSolverr login failed: " + ex.Message, false);
+        }
+    }
+
+    private static async Task<JsonElement?> FlareSolverrCallAsync(HttpClient http, string endpoint, object payload, CancellationToken token)
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+        using HttpResponseMessage resp = await http.PostAsync(endpoint, content, token).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+            return null;
+        await using Stream s = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+        using JsonDocument doc = await JsonDocument.ParseAsync(s, cancellationToken: token).ConfigureAwait(false);
+        if (!doc.RootElement.TryGetProperty("solution", out JsonElement sol))
+            return null;
+        return sol.Clone();
     }
 
     private static async Task<HttpResponseMessage> PostJsonAsync(HttpClient http, string url,
