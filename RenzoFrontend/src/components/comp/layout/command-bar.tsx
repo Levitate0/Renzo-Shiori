@@ -9,6 +9,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { RenzoLogo } from "@/components/comp/layout/renzo-logo";
+import { RenzoBanner } from "@/components/comp/layout/renzo-banner";
 import { SectionList, SectionPills } from "@/components/comp/layout/section-pills";
 import { UserAvatarDropdown } from "@/components/comp/layout/user-menu";
 import { DownloadStatus } from "@/components/comp/layout/download-status";
@@ -154,9 +155,8 @@ export function CommandBar() {
               paddingBottom: "env(safe-area-inset-bottom, 0px)",
             }}
           >
-            <div className="flex items-center gap-2 px-4 py-3 border-b">
-              <RenzoLogo className="h-6 w-6 object-contain" />
-              <span className="text-sm font-semibold">Renzo Shiori</span>
+            <div className="flex items-center px-4 py-3 border-b">
+              <RenzoBanner className="h-8" />
             </div>
             <SectionList onNavigate={() => setSheetOpen(false)} />
 
@@ -169,13 +169,13 @@ export function CommandBar() {
           </SheetContent>
         </Sheet>
 
-        {/* Logo (always visible). Wordmark hidden when mobile search expands. */}
+        {/* Brand lockup. Compact torii mark on mobile; full Renzo Shiori banner
+            (mark + wordmark) on md+. On mobile it collapses when search expands. */}
         <Link
           href="/library"
-          className="flex items-center gap-2 shrink-0"
+          className="flex items-center shrink-0"
           aria-label="Renzo Shiori home"
         >
-          <RenzoLogo className="h-7 w-7 object-contain" />
           <AnimatePresence>
             {!mobileSearchOpen && (
               <motion.span
@@ -183,12 +183,13 @@ export function CommandBar() {
                 animate={{ opacity: 1, width: "auto" }}
                 exit={{ opacity: 0, width: 0 }}
                 transition={{ duration: 0.15 }}
-                className="hidden md:inline text-sm font-semibold text-foreground whitespace-nowrap overflow-hidden"
+                className="md:hidden inline-flex items-center overflow-hidden"
               >
-                Renzo Shiori
+                <RenzoLogo className="h-7 w-7 object-contain" />
               </motion.span>
             )}
           </AnimatePresence>
+          <RenzoBanner className="hidden md:block h-8" />
         </Link>
 
         {/* Desktop section pills — absolutely centered in the bar so they sit in
