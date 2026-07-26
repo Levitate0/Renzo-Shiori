@@ -131,12 +131,27 @@ export function AddSeriesSteps({
         useStatus: isAddSourcesMode ? false : index === preferredIndex,
       }));
 
-      // The backend drops any selected series it couldn't fully fetch (source
-      // down / rate-limited / no chapters). If that leaves nothing, there's
-      // nothing to confirm — so surface it instead of silently not advancing,
-      // which reads as a dead "Next" button.
+      // The backend drops any selected source it couldn't fully fetch. If that
+      // leaves nothing to confirm, explain *why* instead of silently not
+      // advancing (which reads as a dead "Next" button). The backend tags each
+      // drop with a reason so the message is accurate, not a guess.
       if (fullSeriesWithDefaults.length === 0) {
-        const msg = "Couldn't load details for the selected series — the source may be down, rate-limited, or have no chapters. Try again, or pick a different source.";
+        const dropped = augmentedResponse.droppedSeries ?? [];
+        const providers = Array.from(new Set(dropped.map((d) => d.provider).filter(Boolean)));
+        const providerList = providers.length ? providers.join(", ") : "the selected source";
+        const langs = (augmentedResponse.preferredLanguages ?? []).join(", ").toUpperCase();
+
+        const hasNoChapters = dropped.some((d) => d.reason === "no-chapters");
+        const hasUnreachable = dropped.some((d) => d.reason === "unreachable");
+
+        let msg: string;
+        if (hasNoChapters && !hasUnreachable) {
+          msg = `No chapters available from ${providerList}${langs ? ` in your enabled languages (${langs})` : ""}. This title likely isn't translated in those languages — pick a different source, or add the language in the source's settings.`;
+        } else if (hasUnreachable && !hasNoChapters) {
+          msg = `Couldn't reach ${providerList} — it may be down or rate-limited. Try again in a moment, or pick a different source.`;
+        } else {
+          msg = `Couldn't load chapters for ${providerList} — either no chapters in your enabled languages${langs ? ` (${langs})` : ""}, or the source is down/rate-limited. Try again, or pick a different source.`;
+        }
         setError(msg);
         toast({ title: "Couldn't continue", description: msg, variant: "destructive" });
         return;

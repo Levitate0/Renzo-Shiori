@@ -279,6 +279,14 @@ export interface AugmentedResponse {
   preferredLanguages: string[];
   disableJobs?: boolean;
   startChapter?: number;
+  droppedSeries?: DroppedSeries[];
+}
+export interface DroppedSeries {
+  title: string;
+  provider: string;
+  /** "no-chapters" = details loaded but 0 chapters (usually not translated in the
+   *  enabled languages); "unreachable" = source down / rate-limited / timed out. */
+  reason: "no-chapters" | "unreachable" | string;
 }
 export interface ExistingSource {
   provider: string;

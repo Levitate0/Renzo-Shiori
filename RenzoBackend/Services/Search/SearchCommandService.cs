@@ -70,6 +70,9 @@ namespace RenzoBackend.Services.Search
 
                 // Fetch full series data in parallel
                 var seriesDetailsMap = new ConcurrentDictionary<string, (ParsedManga, List<ParsedChapter>)>();
+                // Sources we couldn't use, with why — surfaced to the wizard so a dead-end
+                // "Next" explains itself (no chapters in your languages vs. source unreachable).
+                var droppedSeries = new ConcurrentBag<DroppedSeriesDto>();
                 var validSeries = linkedSeries.Where(ls => !string.IsNullOrEmpty(ls.MihonId)).ToList();
                 var maxConcurrency = Math.Min(appSettings.NumberOfSimultaneousSearches, validSeries.Count);
                 var parallelOptions = new ParallelOptions
@@ -115,12 +118,21 @@ namespace RenzoBackend.Services.Search
                         }
                         else
                         {
-                            // Empty result WITHOUT an exception — the source returned no
-                            // chapters (commonly MangaDex filtering out chapters whose content
-                            // rating the extension isn't set to show, or persistent rate-limit).
+                            // Empty result WITHOUT an exception. If details loaded but there
+                            // were 0 chapters, the source has nothing in the enabled
+                            // languages (e.g. a title only translated to a language the user
+                            // hasn't enabled), or its content-rating filter hid them. If even
+                            // details were missing, the source is effectively unreachable.
+                            bool detailsOk = fullData != null;
+                            droppedSeries.Add(new DroppedSeriesDto
+                            {
+                                Title = ls.Title,
+                                Provider = ls.Provider,
+                                Reason = detailsOk ? "no-chapters" : "unreachable",
+                            });
                             _logger.LogWarning(
-                                "Augment: '{Title}' from {Provider} came back with {DetailsState} and {ChapterCount} chapters after retries — dropping. Likely the source's content-rating filter (e.g. MangaDex erotica/pornographic not enabled) or rate-limiting.",
-                                ls.Title, ls.Provider, fullData == null ? "no details" : "details", chapterData?.Count ?? 0);
+                                "Augment: '{Title}' from {Provider} came back with {DetailsState} and {ChapterCount} chapters after retries — dropping. Likely no chapters in the enabled languages, a content-rating filter, or rate-limiting.",
+                                ls.Title, ls.Provider, detailsOk ? "details" : "no details", chapterData?.Count ?? 0);
                         }
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -129,14 +141,17 @@ namespace RenzoBackend.Services.Search
                     }
                     catch (TimeoutException)
                     {
+                        droppedSeries.Add(new DroppedSeriesDto { Title = ls.Title, Provider = ls.Provider, Reason = "unreachable" });
                         _logger.LogWarning("Fetching details for {Title} from {Provider} timed out after {Seconds}s; skipping.", ls.Title, ls.Provider, SourceTimeout.DefaultTimeout.TotalSeconds);
                     }
                     catch (HttpRequestException r)
                     {
+                        droppedSeries.Add(new DroppedSeriesDto { Title = ls.Title, Provider = ls.Provider, Reason = "unreachable" });
                         _logger.LogWarning("Error fetching series details for {Title} from {Provider}: Http Error {StatusCode}.", ls.Title, ls.Provider, r.StatusCode);
                     }
                     catch (Exception ex)
                     {
+                        droppedSeries.Add(new DroppedSeriesDto { Title = ls.Title, Provider = ls.Provider, Reason = "unreachable" });
                         _logger.LogError(ex, "Error fetching details for series ID {Title}: {Message}", ls.Title, ex.Message);
                     }
                 }).ConfigureAwait(false);
@@ -273,7 +288,8 @@ namespace RenzoBackend.Services.Search
                     UseCategoriesForPath = appSettings.CategorizedFolders,
                     Categories = appSettings.Categories?.ToList() ?? [],
                     PreferredLanguages = appSettings.PreferredLanguages.ToList(),
-                    ExistingSeries = ProviderSeriesDetailsResults.Any(a => a.ExistingProvider)
+                    ExistingSeries = ProviderSeriesDetailsResults.Any(a => a.ExistingProvider),
+                    DroppedSeries = droppedSeries.ToList()
                 };
             }
             catch (Exception ex)

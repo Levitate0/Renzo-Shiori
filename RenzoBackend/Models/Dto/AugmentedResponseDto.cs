@@ -29,6 +29,14 @@ namespace RenzoBackend.Models.Dto
         [JsonPropertyName("preferredLanguages")]
         public List<string> PreferredLanguages { get; set; } = [];
 
+        /// <summary>
+        /// Selected sources that were dropped during augment (couldn't contribute a
+        /// usable series), with the reason — so the UI can explain *why* "Next" has
+        /// nothing to show instead of guessing.
+        /// </summary>
+        [JsonPropertyName("droppedSeries")]
+        public List<DroppedSeriesDto> DroppedSeries { get; set; } = [];
+
         [JsonPropertyName("disableJobs")]
         public bool DisableJobs { get; set; } = false;
 
@@ -42,5 +50,18 @@ namespace RenzoBackend.Models.Dto
         [JsonIgnore]
         public Action Action { get; set; }
 
+    }
+
+    /// <summary>A source that was dropped during augment, with a machine-readable reason.</summary>
+    public class DroppedSeriesDto
+    {
+        [JsonPropertyName("title")]
+        public string Title { get; set; } = string.Empty;
+        [JsonPropertyName("provider")]
+        public string Provider { get; set; } = string.Empty;
+        /// <summary>"no-chapters" = details loaded but 0 chapters (usually not translated in the
+        /// enabled languages); "unreachable" = source down / rate-limited / timed out.</summary>
+        [JsonPropertyName("reason")]
+        public string Reason { get; set; } = string.Empty;
     }
 }
