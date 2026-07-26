@@ -8,30 +8,45 @@ namespace RenzoBackend.Services.Auth;
 /// </summary>
 public class UserInviteService
 {
+    /// <summary>Lifetime of an invite / password-set link.</summary>
+    public static readonly TimeSpan PasswordSetTokenLifetime = TimeSpan.FromDays(7);
+
     /// <summary>
-    /// Generates a one-time password set token for a user.
-    /// Stores the token in the user entity.
+    /// Generates a one-time password-set (invite) token. Stores only its SHA-256
+    /// hash plus a 7-day expiry on the user; returns the RAW token for the invite
+    /// link. Hardened to match the reset token: 256-bit crypto-random, hashed at
+    /// rest, expiring, single-use, constant-time compared — the old form was a
+    /// plaintext Guid with no expiry and a case-insensitive compare.
     /// </summary>
     public string GeneratePasswordSetToken(UserEntity user)
     {
-        string token = Guid.NewGuid().ToString("N");
-        user.PasswordSetToken = token;
+        string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        user.PasswordSetToken = HashResetToken(token);
+        user.PasswordSetTokenExpiresAt = DateTime.UtcNow.Add(PasswordSetTokenLifetime);
         return token;
     }
 
     /// <summary>
-    /// Consumes (validates and clears) a password set token.
-    /// Returns true if the token was valid and consumed.
+    /// Consumes (validates and clears) a password-set token: matches the stored
+    /// hash (constant-time), checks expiry, and is single-use.
     /// </summary>
     public bool ConsumePasswordSetToken(UserEntity user, string token)
     {
-        if (string.IsNullOrWhiteSpace(user.PasswordSetToken))
+        if (string.IsNullOrWhiteSpace(user.PasswordSetToken) ||
+            user.PasswordSetTokenExpiresAt == null ||
+            user.PasswordSetTokenExpiresAt.Value < DateTime.UtcNow ||
+            string.IsNullOrWhiteSpace(token))
+        {
             return false;
+        }
 
-        if (!string.Equals(user.PasswordSetToken, token, StringComparison.OrdinalIgnoreCase))
+        byte[] expected = Convert.FromHexString(user.PasswordSetToken);
+        byte[] actual = Convert.FromHexString(HashResetToken(token));
+        if (!CryptographicOperations.FixedTimeEquals(expected, actual))
             return false;
 
         user.PasswordSetToken = null;
+        user.PasswordSetTokenExpiresAt = null;
         return true;
     }
 
@@ -92,15 +107,17 @@ public class UserInviteService
     /// <param name="user">The user being invited.</param>
     /// <param name="externalDomain">The external domain (e.g. https://renzo.example.com).</param>
     /// <param name="authEnabled">Whether authentication is enabled.</param>
-    public string GetInviteMessage(UserEntity user, string externalDomain, bool authEnabled)
+    public string GetInviteMessage(UserEntity user, string externalDomain, bool authEnabled, string? rawSetToken = null)
     {
         string cleanDomain = externalDomain.TrimEnd('/');
 
-        if (authEnabled && !string.IsNullOrWhiteSpace(user.PasswordSetToken))
+        // rawSetToken is the un-hashed token from GeneratePasswordSetToken — the
+        // stored user.PasswordSetToken is only its hash and must never be in a link.
+        if (authEnabled && !string.IsNullOrWhiteSpace(rawSetToken))
         {
             return $"Hello {user.Username},\n\n" +
-                   $"Click this link to set your password:\n" +
-                   $"{cleanDomain}/auth/set-password?username={Uri.EscapeDataString(user.Username)}&token={user.PasswordSetToken}\n\n" +
+                   $"Click this link to set your password (valid for 7 days):\n" +
+                   $"{cleanDomain}/auth/set-password?username={Uri.EscapeDataString(user.Username)}&token={rawSetToken}\n\n" +
                    $"Your OPDS path is: {cleanDomain}/{user.OpdsPath}";
         }
         else

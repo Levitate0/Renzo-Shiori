@@ -189,6 +189,8 @@ namespace RenzoBackend.Services
             services.TryAddScoped<OpdsPathGenerator>();
             services.TryAddScoped<JwtTokenService>();
             services.TryAddScoped<UserInviteService>();
+            // Per-account brute-force lockout state must be shared across requests.
+            services.TryAddSingleton<LoginThrottleService>();
             services.TryAddScoped<EmailService>();
             services.TryAddScoped<UserQueryService>();
             services.TryAddScoped<UserCommandService>();

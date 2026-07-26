@@ -22,6 +22,7 @@ public class AuthController : ControllerBase
     private readonly UserCommandService _userCommandService;
     private readonly SettingsService _settingsService;
     private readonly EmailService _emailService;
+    private readonly LoginThrottleService _loginThrottle;
     private readonly ILogger _logger;
 
     public AuthController(
@@ -33,6 +34,7 @@ public class AuthController : ControllerBase
         UserCommandService userCommandService,
         SettingsService settingsService,
         EmailService emailService,
+        LoginThrottleService loginThrottle,
         ILogger<AuthController> logger)
     {
         _db = db;
@@ -43,6 +45,7 @@ public class AuthController : ControllerBase
         _userCommandService = userCommandService;
         _settingsService = settingsService;
         _emailService = emailService;
+        _loginThrottle = loginThrottle;
         _logger = logger;
     }
 
@@ -98,15 +101,36 @@ public class AuthController : ControllerBase
         if (!settings.AuthenticationEnabled)
             return BadRequest(new { error = "Authentication is not enabled" });
 
+        // Per-account brute-force lockout (complements the per-IP rate limiter).
+        // Checked by username BEFORE touching the DB or hashing, so a locked
+        // account short-circuits regardless of whether the guess is right.
+        TimeSpan? locked = _loginThrottle.GetLockRemaining(request.Username);
+        if (locked != null)
+        {
+            int mins = Math.Max(1, (int)Math.Ceiling(locked.Value.TotalMinutes));
+            Response.Headers.RetryAfter = ((int)locked.Value.TotalSeconds).ToString();
+            return StatusCode(StatusCodes.Status429TooManyRequests,
+                new { error = $"Too many failed attempts. Try again in about {mins} minute{(mins == 1 ? "" : "s")}." });
+        }
+
         UserEntity? user = await _userQueryService.GetByUsernameAsync(request.Username, token);
         if (user == null || !user.IsActive)
+        {
+            _loginThrottle.RecordFailure(request.Username);
             return Unauthorized(new { error = "Invalid credentials" });
+        }
 
         if (string.IsNullOrWhiteSpace(user.PasswordHash) || string.IsNullOrWhiteSpace(user.Salt))
             return Unauthorized(new { error = "User has no password set. Ask the admin to send you an invite." });
 
         if (!_passwordService.VerifyPassword(request.Password, user.PasswordHash, user.Salt))
+        {
+            _loginThrottle.RecordFailure(request.Username);
             return Unauthorized(new { error = "Invalid credentials" });
+        }
+
+        // Success — clear any accumulated failure/lock state for this account.
+        _loginThrottle.RecordSuccess(request.Username);
 
         // Update last login
         await _userCommandService.UpdateLastLoginAsync(user, token);
@@ -280,6 +304,7 @@ public class AuthController : ControllerBase
             avatarContentType: update.RemoveAvatar == true ? null : update.AvatarContentType,
             removeAvatar: update.RemoveAvatar,
             email: update.Email,
+            preferences: update.Preferences,
             token: token);
 
         return Ok(UserDto.FromEntity(user));
@@ -338,8 +363,8 @@ public class AuthController : ControllerBase
         if (!settings.AuthenticationEnabled)
             return BadRequest(new { error = "Authentication is not enabled" });
 
-        if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 6)
-            return BadRequest(new { error = "Password must be at least 6 characters" });
+        if (PasswordPolicy.Validate(request.Password) is { } setErr)
+            return BadRequest(new { error = setErr });
 
         UserEntity? user = await _userQueryService.GetByUsernameAsync(request.Username, token);
         if (user == null)
@@ -374,8 +399,8 @@ public class AuthController : ControllerBase
         if (user == null)
             return Unauthorized();
 
-        if (string.IsNullOrWhiteSpace(request.NewPassword) || request.NewPassword.Length < 6)
-            return BadRequest(new { error = "New password must be at least 6 characters" });
+        if (PasswordPolicy.Validate(request.NewPassword) is { } changeErr)
+            return BadRequest(new { error = changeErr });
 
         bool success = await _userCommandService.ChangePasswordAsync(user, request.CurrentPassword, request.NewPassword, token);
         if (!success)
@@ -458,8 +483,8 @@ public class AuthController : ControllerBase
         if (!settings.AuthenticationEnabled)
             return BadRequest(new { error = "Authentication is not enabled" });
 
-        if (string.IsNullOrWhiteSpace(request.NewPassword) || request.NewPassword.Length < 6)
-            return BadRequest(new { error = "Password must be at least 6 characters" });
+        if (PasswordPolicy.Validate(request.NewPassword) is { } resetErr)
+            return BadRequest(new { error = resetErr });
 
         // Identify the account from the token itself — no username is accepted,
         // so a publicly-known username can't be paired with a guessed/leaked

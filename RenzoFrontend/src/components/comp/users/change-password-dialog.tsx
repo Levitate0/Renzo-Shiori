@@ -44,8 +44,8 @@ export function ChangePasswordDialog({
     e.preventDefault();
     setError("");
 
-    if (newPassword.length < 6) {
-      setError("New password must be at least 6 characters");
+    if (newPassword.length < 8) {
+      setError("New password must be at least 8 characters");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -99,7 +99,7 @@ export function ChangePasswordDialog({
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             required
-            minLength={6}
+            minLength={8}
           />
         </div>
         <div className="space-y-2">
@@ -111,7 +111,7 @@ export function ChangePasswordDialog({
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             required
-            minLength={6}
+            minLength={8}
           />
         </div>
         <Button type="submit" className="w-full" disabled={pending}>
