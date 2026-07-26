@@ -18,6 +18,7 @@ import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
 import { CoverLightbox } from "@/components/comp/series/cover-lightbox";
 import { FavoriteButton } from "@/components/comp/series/favorite-button";
 import { ReadSeriesButton } from "@/components/comp/series/read-series-button";
+import { SeriesTrackingButton } from "@/components/comp/series/series-tracking-button";
 
 // Tiny relative-time helper — no external dependency
 function formatRelative(dateString: string | null | undefined): string {
@@ -356,6 +357,10 @@ export function SeriesHero({
 
               {/* Favourites — personal lists, available to every user level */}
               <FavoriteButton seriesId={series.id} />
+
+              {/* Track on connected trackers (MAL/AniList/…) — self-hides when
+                  the user has no tracker connected. */}
+              <SeriesTrackingButton seriesId={series.id} />
 
               {canManageDownloads && !pausedDownloads && (
                 <Button variant="default" onClick={onPauseToggle} className="px-0 w-9 sm:w-auto sm:px-4">

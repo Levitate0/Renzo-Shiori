@@ -32,9 +32,16 @@ public class UserEntity
     public string? Salt { get; set; }
 
     /// <summary>
-    /// One-time token for password set link (set when admin invites user).
+    /// SHA-256 hash of the one-time password-set (invite) token. Only the hash is
+    /// stored — the raw token lives only in the invite link. Single-use + expiring
+    /// (see PasswordSetTokenExpiresAt), like the reset token.
     /// </summary>
     public string? PasswordSetToken { get; set; }
+
+    /// <summary>
+    /// Expiration of the current password-set (invite) token.
+    /// </summary>
+    public DateTime? PasswordSetTokenExpiresAt { get; set; }
 
     /// <summary>
     /// Optional email address, used for self-service password reset.
@@ -78,4 +85,11 @@ public class UserEntity
     public DateTime? LastLoginAt { get; set; }
 
     public bool IsActive { get; set; } = true;
+
+    /// <summary>
+    /// Per-user UI preferences as a small JSON blob (theme mode, accent color,
+    /// custom accent HSL). Owned by the user; hydrated on login and saved via
+    /// PUT /api/auth/me so appearance follows the account across devices.
+    /// </summary>
+    public string? Preferences { get; set; }
 }

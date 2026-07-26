@@ -39,6 +39,10 @@ public class UserDto
     [JsonPropertyName("email")]
     public string? Email { get; set; }
 
+    /// <summary>Per-user UI preferences (theme/accent) as a JSON string.</summary>
+    [JsonPropertyName("preferences")]
+    public string? Preferences { get; set; }
+
     public static UserDto FromEntity(UserEntity entity)
     {
         return new UserDto
@@ -53,7 +57,8 @@ public class UserDto
             LastLoginAt = entity.LastLoginAt,
             IsActive = entity.IsActive,
             HasPassword = !string.IsNullOrWhiteSpace(entity.PasswordHash),
-            Email = entity.Email
+            Email = entity.Email,
+            Preferences = entity.Preferences
         };
     }
 }
@@ -89,6 +94,13 @@ public class UpdateUserDto
     /// </summary>
     [JsonPropertyName("email")]
     public string? Email { get; set; }
+
+    /// <summary>
+    /// Per-user UI preferences (theme/accent) as a JSON string. Null leaves it
+    /// unchanged; any user may set their own via PUT /api/auth/me.
+    /// </summary>
+    [JsonPropertyName("preferences")]
+    public string? Preferences { get; set; }
 }
 
 public class AuthStatusDto

@@ -285,6 +285,16 @@ namespace RenzoBackend
                 context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
                 context.Response.Headers.Append("X-Frame-Options", "SAMEORIGIN");
                 context.Response.Headers.Append("Referrer-Policy", "strict-origin-when-cross-origin");
+                // Disable browser features the app never uses, so a compromised
+                // dependency can't silently reach for the camera/mic/geolocation/etc.
+                context.Response.Headers.Append("Permissions-Policy",
+                    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=(), interest-cohort=()");
+                // Isolate our browsing context from any window that opened us
+                // (allow-popups keeps our own same-window OAuth redirect working).
+                context.Response.Headers.Append("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+                // Don't leak the server/runtime fingerprint.
+                context.Response.Headers.Append("X-Permitted-Cross-Domain-Policies", "none");
+                context.Response.Headers.Remove("Server");
                 // API responses must never be cached by the browser. Without this, GETs
                 // like /api/auth/status and /api/settings have no Cache-Control, so
                 // browsers heuristically cache them — a stale response (e.g. captured

@@ -14,6 +14,7 @@ import {
   Medal,
   Monitor,
   Moon,
+  Palette,
   Radio,
   Route,
   Settings,
@@ -41,7 +42,6 @@ import { ImportBackupDialog } from "@/components/comp/users/import-backup-dialog
 import { UserTrackerRequester } from "@/components/comp/scrobbler/user-tracker-requester";
 import { ExternalLinks } from "@/components/comp/layout/external-links";
 import { useHideAdult } from "@/lib/utils/adult-filter";
-import { useAccentTheme, ACCENT_THEMES } from "@/lib/utils/accent-theme";
 import { copyToClipboard } from "@/lib/utils/clipboard";
 import { UserLevel } from "@/lib/api/types";
 
@@ -98,7 +98,6 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
   const { data: settings } = useSettings();
   const { theme, setTheme } = useTheme();
   const [hideAdult, toggleHideAdult] = useHideAdult();
-  const [accent, setAccent] = useAccentTheme();
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
@@ -319,27 +318,17 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
             Theme: {themeLabel(theme)}
           </DropdownMenuItem>
 
-          {/* Accent color picker — independent of light/dark. Plain buttons
-              (not DropdownMenuItem) so a click doesn't close the menu, same
-              intent as the theme cycle's onSelect-preventDefault above. */}
-          <div className="px-2 py-1.5 flex items-center gap-1.5">
-            {ACCENT_THEMES.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setAccent(t.id)}
-                title={t.label}
-                aria-label={`Accent color: ${t.label}`}
-                aria-pressed={accent === t.id}
-                className={`h-5 w-5 rounded-full shrink-0 transition-transform ${
-                  accent === t.id
-                    ? "ring-2 ring-offset-2 ring-offset-popover ring-foreground scale-110"
-                    : "hover:scale-110"
-                }`}
-                style={{ backgroundColor: t.swatch }}
-              />
-            ))}
-          </div>
+          {/* Full theme customization (accent presets + custom color) lives on
+              the dedicated Appearance page; the quick light/dark cycle stays here. */}
+          <DropdownMenuItem asChild>
+            <Link
+              href="/appearance"
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <Palette className="h-4 w-4" />
+              Appearance
+            </Link>
+          </DropdownMenuItem>
 
           {/* Temporary adult-content (18+) view filter — Library and Browse.
               Kept open on click, like the theme cycle, so the state change is visible. */}

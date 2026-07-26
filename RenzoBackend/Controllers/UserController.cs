@@ -279,19 +279,20 @@ public class UserController : ControllerBase
         if (IsOwner(user) && (currentUser == null || !IsOwner(currentUser)))
             return StatusCode(403, new { error = "Admin users cannot invite the owner" });
 
-        // Generate new token (invalidates any previous one)
-        _userInviteService.GeneratePasswordSetToken(user);
+        // Generate new token (invalidates any previous one). The raw token is only
+        // available here — the entity stores just its hash — so thread it through.
+        string rawSetToken = _userInviteService.GeneratePasswordSetToken(user);
         await _dbSaveChangesAsync(user, token);
 
         var settings = await _settingsService.GetSettingsAsync();
         string externalDomain = Services.Settings.InviteUrlResolver.ResolveBaseUrl(settings, Request);
 
-        string message = _userInviteService.GetInviteMessage(user, externalDomain, settings.AuthenticationEnabled);
+        string message = _userInviteService.GetInviteMessage(user, externalDomain, settings.AuthenticationEnabled, rawSetToken);
 
         return Ok(new InviteMessageDto
         {
             Message = message,
-            Token = user.PasswordSetToken ?? string.Empty,
+            Token = rawSetToken,
             OpdsPath = user.OpdsPath
         });
     }

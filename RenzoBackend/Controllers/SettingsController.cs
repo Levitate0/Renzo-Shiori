@@ -141,15 +141,16 @@ namespace RenzoBackend.Controllers
 
                     if (user != null && string.IsNullOrWhiteSpace(user.PasswordHash))
                     {
-                        // User has no password — generate a set-password token and URL
-                        _userInviteService.GeneratePasswordSetToken(user);
+                        // User has no password — generate a set-password token and URL.
+                        // The raw token goes in the link; the entity stores only its hash.
+                        string rawSetToken = _userInviteService.GeneratePasswordSetToken(user);
                         // The user entity was originally loaded by the AuthMiddleware's scoped DbContext,
                         // not this controller's _db, so we must explicitly attach it for tracking.
                         _db.Entry(user).State = EntityState.Modified;
                         await _db.SaveChangesAsync(token).ConfigureAwait(false);
 
                         string cleanDomain = Services.Settings.InviteUrlResolver.ResolveBaseUrl(settings, Request);
-                        response.SetPasswordUrl = $"{cleanDomain}/auth/set-password?username={Uri.EscapeDataString(user.Username)}&token={user.PasswordSetToken}";
+                        response.SetPasswordUrl = $"{cleanDomain}/auth/set-password?username={Uri.EscapeDataString(user.Username)}&token={rawSetToken}";
                         response.Message = "Authentication enabled. You must set a password to log in.";
                     }
                 }

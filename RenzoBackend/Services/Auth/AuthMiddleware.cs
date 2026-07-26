@@ -220,26 +220,40 @@ public class AuthMiddleware
 
     private static bool IsPublicRoute(PathString path, string method)
     {
-        string pathStr = path.Value?.TrimEnd('/') ?? "";
+        // EXACT match (after trimming a trailing slash), not prefix match: a loose
+        // StartsWith let a crafted path like "/api/auth/statusX" or
+        // "/api/auth/login/../users" slip past auth. These are all single, fixed
+        // endpoints with no children, so exact matching loses nothing.
+        string pathStr = (path.Value?.TrimEnd('/') ?? "").ToLowerInvariant();
 
-        // Public auth endpoints
-        if (pathStr.StartsWith("/api/auth/login", StringComparison.OrdinalIgnoreCase)) return true;
-        if (pathStr.StartsWith("/api/auth/status", StringComparison.OrdinalIgnoreCase)) return true;
-        if (pathStr.StartsWith("/api/auth/select-user", StringComparison.OrdinalIgnoreCase)) return true;
-        if (pathStr.StartsWith("/api/auth/refresh", StringComparison.OrdinalIgnoreCase)) return true;
-        if (pathStr.StartsWith("/api/auth/set-password", StringComparison.OrdinalIgnoreCase)) return true;
-        // Self-service password reset: both are rate-limited, non-enumerating,
-        // and only act on a valid emailed token.
-        if (pathStr.StartsWith("/api/auth/forgot-password", StringComparison.OrdinalIgnoreCase)) return true;
-        if (pathStr.StartsWith("/api/auth/reset-password", StringComparison.OrdinalIgnoreCase)) return true;
-
-        // Server discovery — lets clients validate an entered server address
-        // (Jellyfin-style) before any credentials exist. Exposes nothing sensitive.
-        if (pathStr.Equals("/api/system/info/public", StringComparison.OrdinalIgnoreCase)) return true;
+        switch (pathStr)
+        {
+            // Public auth endpoints
+            case "/api/auth/login":
+            case "/api/auth/status":
+            case "/api/auth/select-user":
+            case "/api/auth/refresh":
+            case "/api/auth/set-password":
+            // Self-service password reset: rate-limited, non-enumerating, and
+            // only act on a valid emailed token.
+            case "/api/auth/forgot-password":
+            case "/api/auth/reset-password":
+            // Server discovery — lets clients validate an entered server address
+            // (Jellyfin-style) before any credentials exist. Nothing sensitive.
+            case "/api/system/info/public":
+                return true;
+        }
 
         // First-user creation (only when no users exist)
-        if (pathStr.StartsWith("/api/users/first", StringComparison.OrdinalIgnoreCase) && method == "POST") return true;
-        if (pathStr.StartsWith("/api/users/", StringComparison.OrdinalIgnoreCase) && pathStr.EndsWith("/claim", StringComparison.OrdinalIgnoreCase) && method == "PUT") return true;
+        if (method == "POST" && pathStr == "/api/users/first") return true;
+
+        // PUT /api/users/{id}/claim — exact 5-segment shape ["", api, users, {id}, claim]
+        if (method == "PUT")
+        {
+            string[] seg = pathStr.Split('/');
+            if (seg.Length == 5 && seg[1] == "api" && seg[2] == "users" && seg[4] == "claim")
+                return true;
+        }
 
         return false;
     }
