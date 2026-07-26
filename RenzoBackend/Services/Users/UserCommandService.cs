@@ -93,7 +93,7 @@ public class UserCommandService
     /// </summary>
     public async Task UpdateUserAsync(UserEntity user, UserLevel? level = null, bool? isActive = null,
         byte[]? avatarBlob = null, string? avatarContentType = null, bool? removeAvatar = null,
-        string? email = null,
+        string? email = null, string? preferences = null,
         CancellationToken token = default)
     {
         // If promoting a user to Owner, ensure one doesn't already exist
@@ -117,6 +117,9 @@ public class UserCommandService
         if (email != null)
             target.Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim();
 
+        if (preferences != null)
+            target.Preferences = string.IsNullOrWhiteSpace(preferences) ? null : preferences;
+
         if (removeAvatar == true)
         {
             target.AvatarBlob = null;
@@ -137,6 +140,7 @@ public class UserCommandService
             user.Level = target.Level;
             user.IsActive = target.IsActive;
             user.Email = target.Email;
+            user.Preferences = target.Preferences;
             user.AvatarBlob = target.AvatarBlob;
             user.AvatarContentType = target.AvatarContentType;
         }

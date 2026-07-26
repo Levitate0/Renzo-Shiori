@@ -22,6 +22,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { ThemeSync } from "@/components/theme/theme-sync";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import QueryProvider from "@/components/providers/query-provider";
 import { AuthProvider } from "@/contexts/auth-context";
@@ -89,7 +90,16 @@ export default function RootLayout({
                   // fallback CSS values), so only non-default accents apply one.
                   var accent = localStorage.getItem('renzo-accent');
                   var known = ['blue', 'green', 'purple', 'orange', 'slate'];
-                  if (accent && known.indexOf(accent) !== -1) {
+                  if (accent === 'custom') {
+                    var hsl = (localStorage.getItem('renzo-accent-custom') || '').trim().split(/\\s+/);
+                    if (hsl.length === 3) {
+                      var d = document.documentElement.style;
+                      d.setProperty('--primary-h', hsl[0]);
+                      d.setProperty('--primary-s', hsl[1]);
+                      d.setProperty('--primary-l', hsl[2]);
+                      document.documentElement.setAttribute('data-accent', 'custom');
+                    }
+                  } else if (accent && known.indexOf(accent) !== -1) {
                     document.documentElement.setAttribute('data-accent', accent);
                   }
                 } catch (_) {
@@ -124,6 +134,7 @@ export default function RootLayout({
                   <ImportWizardProvider>
                     <SearchProvider>
                       <FontLoader />
+                      <ThemeSync />
                       <ServiceWorkerRegistrar />
                       <ClientSideSetupWizard />
                       <ImportProgressPill />

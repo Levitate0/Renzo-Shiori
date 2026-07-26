@@ -787,6 +787,8 @@ export interface User {
   isActive: boolean;
   hasPassword: boolean;
   email?: string;
+  /** Per-user UI preferences (theme/accent) as a JSON string. */
+  preferences?: string;
 }
 
 export enum UserLevel {
@@ -809,6 +811,8 @@ export interface UpdateUserRequest {
   isActive?: boolean;
   /** New email address. Empty string clears it; undefined leaves it unchanged. */
   email?: string;
+  /** Per-user UI preferences (theme/accent) as a JSON string. */
+  preferences?: string;
 }
 
 export interface AuthStatus {
