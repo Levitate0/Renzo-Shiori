@@ -106,7 +106,7 @@ public abstract class ProxyScrobblerProvider : IScrobblerProvider
         _tokenProtector = tokenProtector;
 
         _proxyBaseUrl = configuration.GetValue<string>("Scrobbling:ProxyUrl")?.TrimEnd('/')
-                        ?? "https://auth.levitatemedia.top";
+                        ?? "https://renzo-apps.levitatemedia.top/auth";
         _instanceKey = ResolveInstanceKey(configuration, logger);
 
         ProviderType = providerType;
