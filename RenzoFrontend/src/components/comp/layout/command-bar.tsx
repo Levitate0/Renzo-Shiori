@@ -169,13 +169,13 @@ export function CommandBar() {
           </SheetContent>
         </Sheet>
 
-        {/* Brand lockup. Compact torii mark on mobile; full Renzo Shiori banner
-            (mark + wordmark) on md+. On mobile it collapses when search expands. */}
+        {/* Logo (always visible). Wordmark hidden when mobile search expands. */}
         <Link
           href="/library"
-          className="flex items-center shrink-0"
+          className="flex items-center gap-2 shrink-0"
           aria-label="Renzo Shiori home"
         >
+          <RenzoLogo className="h-7 w-7 object-contain" />
           <AnimatePresence>
             {!mobileSearchOpen && (
               <motion.span
@@ -183,13 +183,12 @@ export function CommandBar() {
                 animate={{ opacity: 1, width: "auto" }}
                 exit={{ opacity: 0, width: 0 }}
                 transition={{ duration: 0.15 }}
-                className="md:hidden inline-flex items-center overflow-hidden"
+                className="hidden md:inline text-sm font-semibold text-foreground whitespace-nowrap overflow-hidden"
               >
-                <RenzoLogo className="h-7 w-7 object-contain" />
+                Renzo Shiori
               </motion.span>
             )}
           </AnimatePresence>
-          <RenzoBanner className="hidden md:block h-8" />
         </Link>
 
         {/* Desktop section pills — absolutely centered in the bar so they sit in
