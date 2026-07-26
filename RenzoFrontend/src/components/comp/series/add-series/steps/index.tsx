@@ -109,6 +109,7 @@ export function AddSeriesSteps({
   };
 
   const handleNext = async () => {
+    setError(null);
     try {
       const allLinkedSeries = formState.allLinkedSeries;
       const selectedLinked: LinkedSeries[] = allLinkedSeries.filter((series: LinkedSeries) =>
@@ -122,13 +123,24 @@ export function AddSeriesSteps({
       }
 
       const preferredIndex = isAddSourcesMode ? 0 : findPreferredSeriesIndex(augmentedResponse.series, augmentedResponse.preferredLanguages);
-      const fullSeriesWithDefaults: FullSeries[] = augmentedResponse.series.map((series: FullSeries, index: number): FullSeries => ({
+      const fullSeriesWithDefaults: FullSeries[] = (augmentedResponse.series ?? []).map((series: FullSeries, index: number): FullSeries => ({
         ...series,
         isStorage: isAddSourcesMode ? false : index === preferredIndex,
         useCover: isAddSourcesMode ? false : index === preferredIndex,
         useTitle: isAddSourcesMode ? false : index === preferredIndex,
         useStatus: isAddSourcesMode ? false : index === preferredIndex,
       }));
+
+      // The backend drops any selected series it couldn't fully fetch (source
+      // down / rate-limited / no chapters). If that leaves nothing, there's
+      // nothing to confirm — so surface it instead of silently not advancing,
+      // which reads as a dead "Next" button.
+      if (fullSeriesWithDefaults.length === 0) {
+        const msg = "Couldn't load details for the selected series — the source may be down, rate-limited, or have no chapters. Try again, or pick a different source.";
+        setError(msg);
+        toast({ title: "Couldn't continue", description: msg, variant: "destructive" });
+        return;
+      }
 
       setFormState((prev: AddSeriesState): AddSeriesState => ({
         ...prev,
@@ -139,6 +151,9 @@ export function AddSeriesSteps({
       setPendingNextStep(true);
     } catch (err) {
       console.error('Failed to augment series:', err);
+      const msg = err instanceof Error ? err.message : 'Failed to load series details.';
+      setError(msg);
+      toast({ title: 'Failed to continue', description: msg, variant: 'destructive' });
     }
   };
 
