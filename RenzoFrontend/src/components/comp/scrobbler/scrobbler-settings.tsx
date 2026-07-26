@@ -12,7 +12,8 @@ import { useScrobblerConfigs, useUpdateScrobblerConfig, useScrobblerAuthorize, u
 import { useScrobblerUnmatched, useAutoMatchAll, useConfirmMatch, useDisableLink } from '@/lib/api/hooks/useScrobbler';
 import { ScrobblerProvider, type ScrobblerConfig, type OAuthCallbackRequest, type ScrobblerConfigUpdate } from '@/lib/api/types';
 import { SeriesMatchDialog } from '@/components/comp/scrobbler/series-match-dialog';
-import { RefreshCw, Link, Link2Off, ExternalLink, Key } from 'lucide-react';
+import { RefreshCw, Link, Link2Off, ExternalLink, Key, ListChecks } from 'lucide-react';
+import { toast } from 'sonner';
 import { apiClient } from '@/lib/api/client';
 
 const providerIcons: Record<ScrobblerProvider, string> = {
@@ -174,6 +175,28 @@ export function ScrobblerSettings() {
           </p>
         </div>
         <div className="flex gap-2">
+          {/* Track the whole library: auto-match every series against each
+              connected tracker. Individual series can be toggled off from
+              their own page. */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const connected = (configs ?? []).filter((c) => c.isConnected);
+              if (connected.length === 0) {
+                toast.info('Connect a tracker below first.');
+                return;
+              }
+              connected.forEach((c) => autoMatchAll.mutate(c.provider));
+              toast.success('Matching your whole library to your trackers…', {
+                description: 'New links appear under Unmatched Series as they resolve.',
+              });
+            }}
+            disabled={autoMatchAll.isPending}
+          >
+            <ListChecks className={`h-4 w-4 mr-2 ${autoMatchAll.isPending ? 'animate-spin' : ''}`} />
+            Track all series
+          </Button>
           <Button
             variant="outline"
             size="sm"

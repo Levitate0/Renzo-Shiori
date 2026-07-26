@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { Radio, Check } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,23 +13,31 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useScrobblerConfigs, useScrobblerMatches } from "@/lib/api/hooks/useScrobbler";
+import {
+  useScrobblerConfigs,
+  useScrobblerMatches,
+  useAutoMatchSeries,
+  useDisableLink,
+} from "@/lib/api/hooks/useScrobbler";
 import { SeriesMatchDialog } from "@/components/comp/scrobbler/series-match-dialog";
 import { ScrobblerProvider, SeriesMappingStatus } from "@/lib/api/types";
 
 /**
- * Per-series tracking entry point on the series detail toolbar. Lists the
- * trackers the user has connected (MAL, AniList, …) with this series' link
- * status, and opens the existing SeriesMatchDialog to match/confirm/remove a
- * link per provider. Read progress then syncs automatically (push-on-read).
+ * Per-series tracking control on the series detail toolbar. A single
+ * "Track this series" switch (on = tracked to your connected trackers, off =
+ * not), plus per-provider rows to fine-tune a specific link via the match
+ * dialog. Read progress syncs automatically once a series is linked.
  *
- * Renders nothing when the user has no connected tracker — there's nothing to
- * track to, and the connect flow lives on Account → Trackers.
+ * Renders nothing when the user has no connected tracker (connect on
+ * Account → Trackers first).
  */
 export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
   const { data: configs } = useScrobblerConfigs();
   const { data: matches } = useScrobblerMatches();
+  const autoMatch = useAutoMatchSeries();
+  const disableLink = useDisableLink();
   const [dialogProvider, setDialogProvider] = useState<ScrobblerProvider | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const connected = (configs ?? []).filter((c) => c.isConnected);
   if (connected.length === 0) return null;
@@ -40,7 +50,33 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
         (m.mappingStatus === SeriesMappingStatus.AutoMatched ||
           m.mappingStatus === SeriesMappingStatus.UserConfirmed),
     );
-  const anyLinked = connected.some((c) => linkFor(c.provider));
+  const activeLinks = connected.filter((c) => linkFor(c.provider));
+  const tracked = activeLinks.length > 0;
+
+  const toggleTracking = async (next: boolean) => {
+    setBusy(true);
+    try {
+      if (next) {
+        // Attempt to auto-match across the user's connected trackers.
+        await autoMatch.mutateAsync(seriesId);
+        toast.success("Looking for matches on your trackers…", {
+          description: "If nothing was linked, pick a match below.",
+        });
+      } else {
+        // Stop tracking: disable every active link for this series.
+        await Promise.all(
+          activeLinks.map((c) =>
+            disableLink.mutateAsync({ seriesId, provider: c.provider }),
+          ),
+        );
+        toast.success("Stopped tracking this series.");
+      }
+    } catch {
+      toast.error("Couldn't update tracking for this series.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <>
@@ -53,12 +89,22 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
           >
             <Radio className="h-4 w-4" />
             <span className="hidden sm:inline">Track</span>
-            {anyLinked && <Check className="h-3.5 w-3.5 text-primary" />}
+            {tracked && <Check className="h-3.5 w-3.5 text-primary" />}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
-          <DropdownMenuLabel>Track this series</DropdownMenuLabel>
+          {/* Series-level on/off — kept open so the switch is visible */}
+          <div
+            className="px-2 py-1.5 flex items-center justify-between gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="text-sm font-medium">Track this series</span>
+            <Switch checked={tracked} onCheckedChange={toggleTracking} disabled={busy} />
+          </div>
           <DropdownMenuSeparator />
+          <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+            Per tracker — tap to match
+          </DropdownMenuLabel>
           {connected.map((c) => {
             const link = linkFor(c.provider);
             return (
@@ -71,7 +117,7 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
                 {link ? (
                   <span className="flex items-center gap-1 text-xs text-primary shrink-0">
                     <Check className="h-3.5 w-3.5" />
-                    {link.externalSeriesTitle ? "Linked" : "Linked"}
+                    Linked
                   </span>
                 ) : (
                   <span className="text-xs text-muted-foreground shrink-0">Not linked</span>
