@@ -499,6 +499,19 @@ public class ScrobblerController : ControllerBase
 
         await _matchingService.ConfirmMatchAsync(userId, request.SeriesId,
             request.Provider, request.ExternalSeriesId, request.ExternalSeriesTitle);
+
+        // Backfill: push the series' CURRENT read progress to the tracker right
+        // away (IsEnabled-gated, explicit action), so linking a series reflects
+        // what you've already read instead of waiting for the next chapter read.
+        try
+        {
+            await _syncService.SyncForUserAndSeriesAsync(userId, request.SeriesId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-confirm backfill sync failed for series {SeriesId}", request.SeriesId);
+        }
+
         return Ok(new { message = "Match confirmed" });
     }
 

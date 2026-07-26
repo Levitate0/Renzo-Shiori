@@ -46,8 +46,12 @@ public class ScrobblerSyncService
     /// </summary>
     public async Task SyncForUserAsync(Guid userId, CancellationToken token = default)
     {
+        // Manual/explicit "Sync All" — gate on IsEnabled only. AutoSync governs
+        // the AUTOMATIC push-on-read path (UpdateForUserAndSeriesAsync); an
+        // explicit sync should run for any connected+enabled tracker, otherwise a
+        // user who left AutoSync off gets a silently-empty manual sync.
         var configs = await _db.UserScrobblerConfigs
-            .Where(c => c.UserId == userId && c.IsEnabled && c.AutoSync)
+            .Where(c => c.UserId == userId && c.IsEnabled)
             .ToListAsync(token);
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, token);
         if (user == null)
@@ -83,8 +87,10 @@ public class ScrobblerSyncService
     }
     public async Task UpdateForUserAndSeriesAsync(Guid userId, Guid seriesId, List<ChapterReadState> localStates, CancellationToken token = default)
     {
+        // Automatic push-on-read: honor the AutoSync toggle (an explicit manual
+        // sync / confirm-backfill still runs on IsEnabled alone elsewhere).
         var configs = await _db.UserScrobblerConfigs
-            .Where(c => c.UserId == userId && c.IsEnabled)
+            .Where(c => c.UserId == userId && c.IsEnabled && c.AutoSync)
             .ToListAsync(token);
         var series = await _db.Series.FirstOrDefaultAsync(a => a.Id == seriesId, token);
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, token);
