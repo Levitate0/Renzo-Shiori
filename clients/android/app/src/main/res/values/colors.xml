@@ -7,4 +7,6 @@
     <color name="muted">#A1A1AA</color>
     <color name="subtle">#71717A</color>
     <color name="error">#EF4444</color>
+    <!-- Splash background: light by default, dark via values-night (see themes.xml) -->
+    <color name="splash_background">#FFFFFF</color>
 </resources>
