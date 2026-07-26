@@ -84,13 +84,25 @@ namespace RenzoBackend.Services.Search
                     {
                         var source = await _mihon.SourceFromProviderIdAsync(ls.MihonProviderId!, token).ConfigureAwait(false);
                         Manga m = ls.ToManga()!;
-                        // Bound each source call so a stuck provider can't freeze the import.
-                        var fullData = await SourceTimeout
-                            .RunAsync(c => source.GetDetailsAsync(m, c), ct)
-                            .ConfigureAwait(false);
-                        var chapterData = await SourceTimeout
-                            .RunAsync(c => source.GetChaptersAsync(m, c), ct)
-                            .ConfigureAwait(false);
+                        ParsedManga? fullData = null;
+                        List<ParsedChapter>? chapterData = null;
+                        // Retry a few times with backoff. Sources like MangaDex 429 under
+                        // the app's concurrent background load, and a transient empty/failed
+                        // chapter fetch would otherwise silently drop the series and dead-end
+                        // "Add Series". Bound each source call so a stuck provider can't freeze.
+                        for (int attempt = 0; attempt < 3; attempt++)
+                        {
+                            if (attempt > 0)
+                                await Task.Delay(TimeSpan.FromMilliseconds(800 * attempt), ct).ConfigureAwait(false);
+                            fullData = await SourceTimeout
+                                .RunAsync(c => source.GetDetailsAsync(m, c), ct)
+                                .ConfigureAwait(false);
+                            chapterData = await SourceTimeout
+                                .RunAsync(c => source.GetChaptersAsync(m, c), ct)
+                                .ConfigureAwait(false);
+                            if (fullData != null && chapterData != null && chapterData.Count > 0)
+                                break;
+                        }
                         if (fullData != null && chapterData != null && chapterData.Count > 0)
                         {
                             // Set default scanlator if not provided
@@ -100,6 +112,15 @@ namespace RenzoBackend.Services.Search
                                     a.Scanlator = ls.Provider;
                             });
                             seriesDetailsMap.TryAdd(ls.MihonId!, (fullData, chapterData));
+                        }
+                        else
+                        {
+                            // Empty result WITHOUT an exception — the source returned no
+                            // chapters (commonly MangaDex filtering out chapters whose content
+                            // rating the extension isn't set to show, or persistent rate-limit).
+                            _logger.LogWarning(
+                                "Augment: '{Title}' from {Provider} came back with {DetailsState} and {ChapterCount} chapters after retries — dropping. Likely the source's content-rating filter (e.g. MangaDex erotica/pornographic not enabled) or rate-limiting.",
+                                ls.Title, ls.Provider, fullData == null ? "no details" : "details", chapterData?.Count ?? 0);
                         }
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
