@@ -12,6 +12,8 @@ export interface ThemePrefs {
   accent?: string;
   /** Custom accent as "H S% L%" (only meaningful when accent === "custom"). */
   accentCustom?: string;
+  /** Highest first-run walkthrough version this user has completed/skipped. */
+  onboardedVersion?: number;
 }
 
 export function parseThemePrefs(json?: string | null): ThemePrefs {

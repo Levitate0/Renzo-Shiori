@@ -24,7 +24,7 @@ import {
   hslStrToHex,
   hexToHslStr,
 } from "@/lib/utils/theme-preset";
-import { serializeThemePrefs, type ThemePrefs } from "@/lib/utils/theme-prefs";
+import { parseThemePrefs, serializeThemePrefs, type ThemePrefs } from "@/lib/utils/theme-prefs";
 
 /**
  * Per-user Appearance page. Named theme presets (palette + accent + mode) with
@@ -43,6 +43,9 @@ export default function AppearancePage() {
     (overrides: Partial<ThemePrefs>, debounce = false) => {
       const cur = presetById(overrides.preset ?? preset);
       const prefs: ThemePrefs = {
+        // Preserve non-appearance keys in the shared preferences blob (e.g. the
+        // onboarding flag) so saving a theme never clobbers them.
+        ...parseThemePrefs(user?.preferences),
         theme: cur.mode,
         preset: overrides.preset ?? preset,
         accent: overrides.accent ?? (customOn ? "custom" : "preset"),
@@ -56,7 +59,7 @@ export default function AppearancePage() {
       if (debounce) saveTimer.current = setTimeout(send, 400);
       else send();
     },
-    [preset, customOn, customHsl],
+    [preset, customOn, customHsl, user?.preferences],
   );
 
   const choosePreset = (id: string) => {

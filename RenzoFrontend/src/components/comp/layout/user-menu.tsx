@@ -11,6 +11,7 @@ import {
   FolderInput,
   KeyRound,
   LogOut,
+  Compass,
   Medal,
   Monitor,
   Moon,
@@ -36,6 +37,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { useSettings } from "@/lib/api/hooks/useSettings";
 import { useImportWizard } from "@/components/providers/import-wizard-provider";
+import { replayWalkthrough } from "@/lib/utils/onboarding";
 import { EditUserDialog } from "@/components/comp/users/user-dialog";
 import { ChangePasswordDialog } from "@/components/comp/users/change-password-dialog";
 import { ImportBackupDialog } from "@/components/comp/users/import-backup-dialog";
@@ -328,6 +330,15 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
               <Palette className="h-4 w-4" />
               Appearance
             </Link>
+          </DropdownMenuItem>
+
+          {/* Re-open the first-run walkthrough on demand. */}
+          <DropdownMenuItem
+            onClick={() => replayWalkthrough()}
+            className="flex items-center gap-2 cursor-pointer"
+          >
+            <Compass className="h-4 w-4" />
+            Take a tour
           </DropdownMenuItem>
 
           {/* Temporary adult-content (18+) view filter — Library and Browse.

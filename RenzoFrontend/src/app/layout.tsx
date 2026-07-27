@@ -37,6 +37,7 @@ import { ServiceWorkerRegistrar } from "@/components/comp/service-worker-registr
 import { OfflineWatcher } from "@/components/comp/offline-watcher";
 import { OfflineDownloadPill } from "@/components/comp/offline-download-pill";
 import { VersionRefresher } from "@/components/comp/version-refresher";
+import { OnboardingWalkthrough } from "@/components/comp/onboarding/onboarding-walkthrough";
 
 export default function RootLayout({
   children,
@@ -147,6 +148,7 @@ export default function RootLayout({
                       <OfflineDownloadPill />
                       <VersionRefresher />
                       <ClientSideSetupWizard />
+                      <OnboardingWalkthrough />
                       <ImportProgressPill />
                       <ImportWizard />
                       {children}
