@@ -38,6 +38,31 @@ namespace RenzoBackend.Utils
 
         public const string wwwRootSHA256 = "wwwroot.sha256";
         public const string wwwRootZip = "wwwroot.zip";
+
+        private static string? _wwwRootHash;
+        /// <summary>
+        /// Fingerprint of the embedded frontend bundle (the wwwroot.sha256 resource).
+        /// Changes on every frontend deploy, so clients can poll it and silently
+        /// reload when a new UI ships. Empty string if unreadable.
+        /// </summary>
+        public static string WwwRootHash
+        {
+            get
+            {
+                if (_wwwRootHash != null) return _wwwRootHash;
+                try
+                {
+                    using var s = System.Reflection.Assembly.GetExecutingAssembly()
+                        .GetManifestResourceStream(nameof(RenzoBackend) + "." + wwwRootSHA256);
+                    _wwwRootHash = s == null ? "" : new System.IO.StreamReader(s).ReadToEnd().Trim();
+                }
+                catch
+                {
+                    _wwwRootHash = "";
+                }
+                return _wwwRootHash!;
+            }
+        }
         /// <summary>
         /// Gets the resolved path to the application's data directory.
         /// </summary>

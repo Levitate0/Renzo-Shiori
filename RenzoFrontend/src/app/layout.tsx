@@ -35,6 +35,7 @@ import { FontLoader } from "@/components/ui/font-loader";
 import { SearchProvider } from "@/contexts/search-context";
 import { ServiceWorkerRegistrar } from "@/components/comp/service-worker-registrar";
 import { OfflineWatcher } from "@/components/comp/offline-watcher";
+import { VersionRefresher } from "@/components/comp/version-refresher";
 
 export default function RootLayout({
   children,
@@ -138,6 +139,7 @@ export default function RootLayout({
                       <ThemeSync />
                       <ServiceWorkerRegistrar />
                       <OfflineWatcher />
+                      <VersionRefresher />
                       <ClientSideSetupWizard />
                       <ImportProgressPill />
                       <ImportWizard />

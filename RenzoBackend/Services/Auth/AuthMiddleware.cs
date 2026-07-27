@@ -241,6 +241,9 @@ public class AuthMiddleware
             // Server discovery — lets clients validate an entered server address
             // (Jellyfin-style) before any credentials exist. Nothing sensitive.
             case "/api/system/info/public":
+            // Build fingerprint for the clients' silent auto-refresh poller —
+            // no auth so it works on the login screen and stays cheap to poll.
+            case "/api/system/version":
                 return true;
         }
 
