@@ -33,12 +33,15 @@ class RenzoDownloadService : Service() {
         const val ACTION_STOP = "stop"
         const val EXTRA_PAYLOAD = "payload"
         const val BROADCAST = "app.renzoshiori.client.DOWNLOAD"
+        /** Concurrent page fetches per chapter. */
+        const val PAGE_CONCURRENCY = 5
     }
 
     private lateinit var store: RenzoStore
     private val queue = ConcurrentLinkedQueue<JSONObject>()
     private val executor = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
+    private val writeLock = Any()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -109,16 +112,37 @@ class RenzoDownloadService : Service() {
         val chapterKey = ch.getString("chapterKey")
         val chapterNumber = ch.optDouble("chapterNumber", 0.0)
         val pagePaths = ch.getJSONArray("pagePaths")
+        val n = pagePaths.length()
         val dir = "offline/${sanitize(chapterKey)}"
+
+        // Fetch pages in parallel (network is the bottleneck); serialize only the
+        // writes so SAF stays safe. Results are placed by page index, so page
+        // order is preserved regardless of completion order.
+        val rels = arrayOfNulls<String>(n)
+        val sizes = LongArray(n)
+        val pool = Executors.newFixedThreadPool(minOf(PAGE_CONCURRENCY, maxOf(1, n)))
+        try {
+            val tasks = (0 until n).map { p ->
+                pool.submit {
+                    if (queueStopped()) return@submit
+                    val res = httpGet(resolve(baseUrl, pagePaths.getString(p)), token) ?: return@submit
+                    val rel = "$dir/${p.toString().padStart(4, '0')}.${ext(res.second)}"
+                    synchronized(writeLock) { store.writeFile(rel, res.first) }
+                    rels[p] = rel
+                    sizes[p] = res.first.size.toLong()
+                }
+            }
+            tasks.forEach { try { it.get() } catch (_: Exception) {} }
+        } finally {
+            pool.shutdown()
+        }
+
         val savedPaths = JSONArray()
         var bytes = 0L
-        for (p in 0 until pagePaths.length()) {
-            if (queueStopped()) return
-            val (data, ct) = httpGet(resolve(baseUrl, pagePaths.getString(p)), token) ?: continue
-            val rel = "$dir/${p.toString().padStart(4, '0')}.${ext(ct)}"
-            store.writeFile(rel, data)
+        for (p in 0 until n) {
+            val rel = rels[p] ?: continue
             savedPaths.put(rel)
-            bytes += data.size
+            bytes += sizes[p]
         }
         if (savedPaths.length() == 0) return
         val entry = JSONObject()
