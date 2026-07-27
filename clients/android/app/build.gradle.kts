@@ -21,8 +21,8 @@ android {
         applicationId = "app.renzoshiori.client"
         minSdk = 24
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.1.7"
+        versionCode = 10
+        versionName = "1.1.8"
     }
 
     signingConfigs {

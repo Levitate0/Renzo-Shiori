@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -120,4 +121,28 @@ class RenzoStore(private val context: Context) {
         if (uri != null) putString("downloadTree", uri.toString()) else remove("downloadTree")
         apply()
     }
+
+    // ── download job queue ────────────────────────────────────────────────────
+    // Jobs are persisted here (not passed via Intent) so a big batch payload
+    // can't blow the Binder transaction size limit — and they survive a restart.
+    @Synchronized
+    fun enqueueJob(payloadJson: String) {
+        val arr = try { JSONArray(prefs.getString("download_jobs", "[]")) } catch (_: Exception) { JSONArray() }
+        arr.put(payloadJson)
+        prefs.edit().putString("download_jobs", arr.toString()).apply()
+    }
+
+    @Synchronized
+    fun takeJob(): JSONObject? {
+        val arr = try { JSONArray(prefs.getString("download_jobs", "[]")) } catch (_: Exception) { JSONArray() }
+        if (arr.length() == 0) return null
+        val first = arr.getString(0)
+        val rest = JSONArray()
+        for (i in 1 until arr.length()) rest.put(arr.getString(i))
+        prefs.edit().putString("download_jobs", rest.toString()).apply()
+        return try { JSONObject(first) } catch (_: Exception) { JSONObject() }
+    }
+
+    @Synchronized
+    fun clearJobs() = prefs.edit().remove("download_jobs").apply()
 }

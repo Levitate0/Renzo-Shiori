@@ -14,7 +14,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -31,14 +30,12 @@ class RenzoDownloadService : Service() {
         const val NOTIF_ID = 4711
         const val ACTION_ENQUEUE = "enqueue"
         const val ACTION_STOP = "stop"
-        const val EXTRA_PAYLOAD = "payload"
         const val BROADCAST = "app.renzoshiori.client.DOWNLOAD"
         /** Concurrent page fetches per chapter. */
         const val PAGE_CONCURRENCY = 5
     }
 
     private lateinit var store: RenzoStore
-    private val queue = ConcurrentLinkedQueue<JSONObject>()
     private val executor = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
     private val writeLock = Any()
@@ -52,13 +49,10 @@ class RenzoDownloadService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            queue.clear()
+            store.clearJobs()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
-        }
-        intent?.getStringExtra(EXTRA_PAYLOAD)?.let {
-            try { queue.add(JSONObject(it)) } catch (_: Exception) {}
         }
         ensureChannel()
         startForeground(NOTIF_ID, notification("Preparing offline download…", 0, 0))
@@ -71,7 +65,7 @@ class RenzoDownloadService : Service() {
     private fun runQueue() {
         try {
             while (true) {
-                val job = queue.poll() ?: break
+                val job = store.takeJob() ?: break
                 try { downloadJob(job) } catch (_: Exception) {}
             }
         } finally {

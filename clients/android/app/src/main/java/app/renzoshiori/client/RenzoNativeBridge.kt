@@ -62,9 +62,11 @@ class RenzoNativeBridge(
      *  foreground download service so it runs natively in the background. */
     @JavascriptInterface
     fun enqueueDownload(payload: String) {
+        // Persist the job (payloads can be large — a batch would blow the Intent
+        // size limit); the service drains the queue from the store.
+        store.enqueueJob(payload)
         val i = Intent(context, RenzoDownloadService::class.java)
             .setAction(RenzoDownloadService.ACTION_ENQUEUE)
-            .putExtra(RenzoDownloadService.EXTRA_PAYLOAD, payload)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
             else context.startService(i)
