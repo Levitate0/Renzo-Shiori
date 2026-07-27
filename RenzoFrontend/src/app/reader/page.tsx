@@ -137,6 +137,7 @@ interface ReaderSettings {
   infiniteScroll: boolean; // continuous: append the next chapter at the bottom
   chapterTransition: boolean; // show a "finished / up next" screen between chapters (paged: its own page)
   autoMarkRead: boolean;
+  autoClearCache: boolean;  // clear the streamed-page cache when leaving the reader
   hotkeys: Hotkeys;
 }
 
@@ -153,10 +154,14 @@ const DEFAULT_SETTINGS: ReaderSettings = {
   infiniteScroll: true,
   chapterTransition: true,
   autoMarkRead: true,
+  autoClearCache: true,
   hotkeys: DEFAULT_HOTKEYS,
 };
 
 const SETTINGS_KEY = "renzo_reader_settings";
+// Continuous scroll keeps at most this many chapters on each side of the active
+// one loaded; the rest are pruned (and their page cache freed) as you scroll.
+const CHAPTER_WINDOW = 2;
 const seriesModeKey = (id: string) => `renzo_reader_mode_${id}`;
 
 function loadSettings(): ReaderSettings {
@@ -211,6 +216,15 @@ function ReaderInner() {
   const [prepended, setPrepended] = useState<Segment[]>([]);
   // Which segment ([...prepended, primary, ...appended]) is currently on screen.
   const [activeSegIndex, setActiveSegIndex] = useState(0);
+  // Sliding window: continuous scroll keeps at most CHAPTER_WINDOW chapters on
+  // either side of the active one, pruning (and so freeing the page cache of)
+  // chapters that scroll out of range. Once the opening chapter itself scrolls
+  // out of the window it's dropped too (primaryHidden) so the window can move
+  // freely; the list stays contiguous because that only happens when one side is
+  // fully pruned. pruneAnchorRef re-anchors the viewport after a top-side drop.
+  const [primaryHidden, setPrimaryHidden] = useState(false);
+  const [pruneNonce, setPruneNonce] = useState(0);
+  const pruneAnchorRef = useRef<{ gi: number; viewportTop: number } | null>(null);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [chaptersOpen, setChaptersOpen] = useState(false);
@@ -229,6 +243,12 @@ function ReaderInner() {
   // Set when a stream attempt reveals the chapter is paid/locked (the source
   // withheld the pages) even though the title carried no lock marker.
   const [streamLocked, setStreamLocked] = useState(false);
+  // Auto-clear the server's streamed-page cache on reader exit. Only worth doing
+  // if we actually streamed/previewed anything (downloaded library pages don't
+  // touch that cache). Refs so the unmount cleanup reads the latest values
+  // without re-running.
+  const autoClearCacheRef = useRef(true);
+  const usedStreamRef = useRef(false);
   // Name of the chapter being switched to — drives the "opening…" overlay so a
   // chapter change is never a silent blank screen, and the toast shown once it lands.
   const [openingLabel, setOpeningLabel] = useState<string | null>(null);
@@ -307,6 +327,17 @@ function ReaderInner() {
     return { key: `pv:${idx}`, chapterNumber: null, previewIndex: idx, name: meta?.name || `Chapter ${idx + 1}`, pageCount: sp.pageCount, streaming: false, filename: null, pages: null };
   }, [mihonId, previewOrder]);
 
+  // Keep the auto-clear ref current, and remember once we've streamed/previewed.
+  useEffect(() => { autoClearCacheRef.current = settings.autoClearCache; }, [settings.autoClearCache]);
+  useEffect(() => { if (isPreview || streaming) usedStreamRef.current = true; }, [isPreview, streaming]);
+  // On reader exit (unmount) clear the server's streamed-page cache — but only if
+  // we actually streamed/previewed pages (downloaded library reads don't use it).
+  useEffect(() => () => {
+    if (autoClearCacheRef.current && usedStreamRef.current) {
+      readerService.clearStreamCache().catch(() => {});
+    }
+  }, []);
+
   // ── Data loading (the opening chapter) ────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -321,6 +352,8 @@ function ReaderInner() {
       setDetectedMode(null);
       setAppended([]);
       setPrepended([]);
+      setPrimaryHidden(false);
+      pruneAnchorRef.current = null;
       setActiveSegIndex(0);
       appendStoppedRef.current = false;
       prependStoppedRef.current = false;
@@ -534,7 +567,10 @@ function ReaderInner() {
     pages: info?.pages ?? null,
   }), [isPreview, chapterNumber, previewChapterIndex, chapterLabel, pageCount, streaming, chapter, info]);
 
-  const segments = useMemo(() => [...prepended, primarySeg, ...appended], [prepended, primarySeg, appended]);
+  const segments = useMemo(
+    () => (primaryHidden ? [...prepended, ...appended] : [...prepended, primarySeg, ...appended]),
+    [prepended, primarySeg, appended, primaryHidden],
+  );
   const segOffsets = useMemo(() => {
     const offs: number[] = [];
     let acc = 0;
@@ -858,6 +894,81 @@ function ReaderInner() {
     prependAdjustRef.current = null;
   }, [prepended]);
 
+  // Sliding window: keep only ±CHAPTER_WINDOW chapters around the active one,
+  // dropping the rest (which frees their page images). `active` is the on-screen
+  // segment index and `currentGi` the on-screen global page index — the page we
+  // anchor the viewport to so pruning content above it doesn't jump the reader.
+  const pruneWindow = useCallback((active: number, currentGi: number) => {
+    if (!isContinuous || !settings.infiniteScroll) return;
+    // Don't fight an in-flight append/prepend or its pending re-anchor.
+    if (appendLockRef.current || prependLockRef.current || prependAdjustRef.current != null) return;
+    const n = segments.length;
+    if (n === 0) return;
+    const firstKeep = Math.max(0, active - CHAPTER_WINDOW);
+    const lastKeep = Math.min(n - 1, active + CHAPTER_WINDOW);
+    const dropFront = firstKeep;
+    const dropBack = n - 1 - lastKeep;
+    if (dropFront <= 0 && dropBack <= 0) return;
+
+    const P = prepended.length;
+    let newPrepended: Segment[];
+    let newAppended: Segment[];
+    let newHidden: boolean;
+    if (primaryHidden) {
+      // list = [prep(0..P-1), app(0..A-1)]
+      newPrepended = prepended.slice(Math.min(firstKeep, P), Math.min(lastKeep + 1, P));
+      newAppended = appended.slice(Math.max(0, firstKeep - P), Math.max(0, lastKeep + 1 - P));
+      newHidden = true;
+    } else {
+      // list = [prep(0..P-1), primary(P), app(0..A-1)]
+      const primaryKept = firstKeep <= P && P <= lastKeep;
+      newPrepended = prepended.slice(Math.min(firstKeep, P), Math.min(lastKeep + 1, P));
+      newAppended = appended.slice(Math.max(0, firstKeep - (P + 1)), Math.max(0, lastKeep + 1 - (P + 1)));
+      newHidden = !primaryKept;
+    }
+    if (newHidden === primaryHidden && newPrepended.length === prepended.length && newAppended.length === appended.length) {
+      return; // nothing actually changed
+    }
+
+    // Anchor the on-screen page's viewport position across the drop-above so the
+    // reader doesn't jump. (getBoundingClientRect is offsetParent-agnostic.)
+    if (dropFront > 0) {
+      const scroller = scrollRef.current;
+      const node = pageRefs.current.get(currentGi);
+      if (scroller && node) {
+        const pageInSeg = currentGi - (segOffsets[active] ?? 0);
+        const newActive = active - dropFront;
+        const newSegs = newHidden ? [...newPrepended, ...newAppended] : [...newPrepended, primarySeg, ...newAppended];
+        let off = 0;
+        for (let k = 0; k < newActive; k++) off += newSegs[k]?.pageCount ?? 0;
+        const viewportTop = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+        pruneAnchorRef.current = { gi: off + pageInSeg, viewportTop };
+        setPruneNonce((x) => x + 1);
+      }
+    }
+
+    setPrepended(newPrepended);
+    setAppended(newAppended);
+    if (newHidden !== primaryHidden) setPrimaryHidden(newHidden);
+    setActiveSegIndex(active - dropFront);
+  }, [isContinuous, settings.infiniteScroll, segments, segOffsets, prepended, appended, primaryHidden, primarySeg]);
+
+  const pruneWindowRef = useRef(pruneWindow);
+  useEffect(() => { pruneWindowRef.current = pruneWindow; }, [pruneWindow]);
+
+  // Re-anchor the viewport to the tracked page after a top-side prune.
+  useLayoutEffect(() => {
+    const a = pruneAnchorRef.current;
+    if (!a) return;
+    pruneAnchorRef.current = null;
+    const scroller = scrollRef.current;
+    const node = pageRefs.current.get(a.gi);
+    if (scroller && node) {
+      const cur = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTop += cur - a.viewportTop;
+    }
+  }, [pruneNonce]);
+
   // Continuous mode: derive the active segment + page from scroll position, and
   // append the next chapter as the bottom approaches.
   //
@@ -898,6 +1009,7 @@ function ReaderInner() {
       setCurrentPage(current - (segOffsets[si] ?? 0));
       maybeAppendRef.current();
       if (scrollingUp) maybePrependRef.current();
+      pruneWindowRef.current(si, current);
     };
     const onScroll = () => {
       if (frame) return;                  // coalesce to one measure per frame
@@ -1531,6 +1643,9 @@ function ReaderInner() {
                 Pages read live from a source (not downloaded) are cached in memory for smooth
                 scrolling. Clear it if a source served a stale or broken image.
               </p>
+              <ToggleRow label="Clear the cache when I exit the reader" checked={settings.autoClearCache}
+                onChange={(v) => persistSettings({ ...settings, autoClearCache: v })} />
+              <div className="mt-2" />
               <Button
                 variant="secondary" size="sm"
                 className="w-full"
