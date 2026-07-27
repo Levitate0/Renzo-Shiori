@@ -237,7 +237,9 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
-      <DrawerContent>
+      {/* Cap the drawer to the viewport so a long description can't push the
+          footer (Add / Read / View Source) off-screen — the body below scrolls. */}
+      <DrawerContent className="max-h-[90dvh]">
         <DrawerHeader className="sr-only">
           <DrawerTitle>{item.title}</DrawerTitle>
           <DrawerDescription>Details for {item.title}</DrawerDescription>
@@ -246,8 +248,9 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
         {coverExpanded && (
           <CoverLightbox src={formatThumbnailUrl(item.thumbnailUrl)} alt={item.title} onClose={() => setCoverExpanded(false)} />
         )}
-        {/* Scrollable body */}
-        <div className="overflow-y-auto flex-1" data-vaul-no-drag>
+        {/* Scrollable body — min-h-0 lets this flex child shrink below its
+            content so it actually scrolls (instead of pushing the footer off). */}
+        <div className="overflow-y-auto flex-1 min-h-0" data-vaul-no-drag>
           {/* Cover section */}
           <div className="flex flex-col items-center px-5 py-3 border-b border-border">
             <div
