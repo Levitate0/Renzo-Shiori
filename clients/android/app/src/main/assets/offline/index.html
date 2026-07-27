@@ -150,6 +150,16 @@
     window.scrollTo(0,0);
   }
 
+  // Record a finished chapter so the app can sync it as "read" once online.
+  function markRead(seriesId, chapterNumber){
+    if(!A) return;
+    try {
+      var list = JSON.parse(A.kvGet('renzo.offline.pendingReads') || '[]');
+      var dup = list.some(function(x){ return x.seriesId===seriesId && x.chapterNumber===chapterNumber; });
+      if(!dup){ list.push({seriesId:seriesId, chapterNumber:chapterNumber}); A.kvSet('renzo.offline.pendingReads', JSON.stringify(list)); }
+    } catch(e){}
+  }
+
   function openChapter(key){
     var m=manifest(); var c=m.chapters[key]; if(!c) return;
     view='reader';
@@ -164,6 +174,15 @@
     }
     readerPagesEl.innerHTML=''; readerPagesEl.appendChild(frag);
     window.scrollTo(0,0);
+    // Mark read when scrolled to the end (or immediately for very short chapters).
+    var marked=false;
+    function checkRead(){
+      if(marked) return;
+      var atEnd = (window.scrollY + window.innerHeight) >= (document.body.scrollHeight - 400);
+      if(atEnd){ marked=true; markRead(c.seriesId, c.chapterNumber); window.removeEventListener('scroll', checkRead); }
+    }
+    window.addEventListener('scroll', checkRead, {passive:true});
+    setTimeout(checkRead, 300);
   }
 
   showLibrary();

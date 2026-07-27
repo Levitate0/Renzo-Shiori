@@ -1,48 +1,14 @@
 "use client";
 import * as React from "react";
-import { readerService } from "@/lib/api/services/readerService";
+import { readerService, encodeFilename } from "@/lib/api/services/readerService";
+import { getApiConfig } from "@/lib/api/config";
 import { useToast } from "@/hooks/use-toast";
 import { isNative } from "./bridge";
-import {
-  isChapterOffline,
-  saveChapterOffline,
-  saveSeriesMeta,
-  type BatchProgress,
-} from "./offline";
+import { isChapterOffline } from "./offline";
 
 /** Stable per-chapter id used across the manifest and reader. */
 export function chapterKeyFor(seriesId: string, chapterNumber: number): string {
   return `${seriesId}:${chapterNumber}`;
-}
-
-// ── background download (Android foreground service) ─────────────────────────
-// The download runs in this WebView's JS, which Android suspends when the app is
-// backgrounded. Holding a foreground service (with a progress notification)
-// keeps the process alive so the download continues when tabbed out. Ref-counted
-// so overlapping downloads don't stop it early. No-op off Android.
-let fgCount = 0;
-function androidFg(method: "startDownloadService" | "updateDownloadService" | "stopDownloadService", text?: string): void {
-  if (typeof window === "undefined") return;
-  const a = (window as unknown as { __RenzoAndroid?: Record<string, (t: string) => void> }).__RenzoAndroid;
-  const fn = a?.[method];
-  if (typeof fn === "function") {
-    try {
-      fn(text ?? "");
-    } catch {
-      /* ignore */
-    }
-  }
-}
-function fgStart(text: string): void {
-  fgCount++;
-  androidFg("startDownloadService", text);
-}
-function fgUpdate(text: string): void {
-  if (fgCount > 0) androidFg("updateDownloadService", text);
-}
-function fgStop(): void {
-  fgCount = Math.max(0, fgCount - 1);
-  if (fgCount === 0) androidFg("stopDownloadService");
 }
 
 interface DownloadTarget {
@@ -51,60 +17,91 @@ interface DownloadTarget {
   chapterNumber: number;
   /** Server archive filename (downloaded library chapters only). */
   filename: string;
-  // Series metadata — cloned into the offline copy on the first save so the
-  // offline library shows a cover + info, not just chapter numbers.
+  // Series metadata cloned into the offline copy (raw paths; native adds auth).
   coverUrl?: string;
   description?: string;
   author?: string;
   status?: string;
 }
 
+function sessionToken(): string | null {
+  try {
+    return typeof window === "undefined" ? null : sessionStorage.getItem("renzo_token");
+  } catch {
+    return null;
+  }
+}
+
+/** Raw (un-tokened) page paths — the native downloader adds a Bearer header. */
+function rawPagePaths(seriesId: string, filename: string, pageCount: number): string[] {
+  const f = encodeFilename(filename);
+  return Array.from({ length: pageCount }, (_, p) => `/api/reader/page?seriesId=${seriesId}&filename=${f}&page=${p}`);
+}
+
 function seriesMetaOf(t: DownloadTarget) {
   return {
     seriesId: t.seriesId,
     title: t.seriesTitle,
-    coverUrl: t.coverUrl,
-    description: t.description,
-    author: t.author,
-    status: t.status,
+    coverPath: t.coverUrl ?? "",
+    description: t.description ?? "",
+    author: t.author ?? "",
   };
 }
 
-/** Build the ordered page-image URLs for a downloaded library chapter. */
-async function pageUrlsFor(seriesId: string, filename: string): Promise<string[]> {
-  const info = await readerService.getChapterInfo(seriesId, filename);
-  const pageCount = info.pageCount ?? 0;
-  if (!pageCount) throw new Error("This chapter has no downloadable pages.");
-  return Array.from({ length: pageCount }, (_, p) => readerService.pageUrl(seriesId, filename, p));
+/** Hand a job to the native (background) downloader via the Android bridge. */
+function enqueueNative(payload: unknown): boolean {
+  const raw = (window as unknown as { __RenzoAndroid?: { enqueueDownload?: (s: string) => void } }).__RenzoAndroid;
+  if (typeof raw?.enqueueDownload === "function") {
+    try {
+      raw.enqueueDownload(JSON.stringify(payload));
+      return true;
+    } catch {
+      /* ignore */
+    }
+  }
+  return false;
 }
 
 /**
- * Save chapters to the device for offline reading. Handles a single chapter or
- * a batch ("grab a few for the trip") with progress + toasts, and tracks which
- * chapter keys are in flight so the UI can show a spinner. No-op on web.
+ * Offline downloads via the native background service. The heavy fetching runs
+ * in Kotlin (independent of the WebView), so it continues when the app is tabbed
+ * out. This hook resolves each chapter's page count (a quick foreground call),
+ * enqueues the job, and reflects progress from the native `renzo:download`
+ * events (in-flight set, batch counter, and a tick the UI refreshes on).
  */
 export function useOfflineDownload(): {
   downloadChapter: (t: DownloadTarget) => Promise<void>;
   downloadMany: (targets: DownloadTarget[]) => Promise<void>;
   inFlight: Set<string>;
-  batch: { active: boolean; done: number; total: number; progress: BatchProgress | null };
+  batch: { active: boolean; done: number; total: number };
+  completedTick: number;
 } {
   const { toast } = useToast();
   const [inFlight, setInFlight] = React.useState<Set<string>>(new Set());
-  const [batch, setBatch] = React.useState<{
-    active: boolean;
-    done: number;
-    total: number;
-    progress: BatchProgress | null;
-  }>({ active: false, done: 0, total: 0, progress: null });
+  const [batch, setBatch] = React.useState({ active: false, done: 0, total: 0 });
+  const [completedTick, setCompletedTick] = React.useState(0);
 
-  const mark = React.useCallback((key: string, on: boolean) => {
-    setInFlight((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(key);
-      else next.delete(key);
-      return next;
-    });
+  React.useEffect(() => {
+    if (!isNative()) return;
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent<{ state?: string; chapterKey?: string; done?: number; total?: number }>).detail;
+      if (!d) return;
+      if (d.state === "saved" && d.chapterKey) {
+        const key = d.chapterKey;
+        setInFlight((prev) => {
+          const n = new Set(prev);
+          n.delete(key);
+          return n;
+        });
+        setBatch((b) => (b.active ? { ...b, done: d.done ?? b.done, total: d.total ?? b.total } : b));
+        setCompletedTick((t) => t + 1);
+      } else if (d.state === "idle") {
+        setBatch((b) => ({ ...b, active: false }));
+        setCompletedTick((t) => t + 1);
+      }
+    };
+    window.addEventListener("renzo:download", handler);
+    return () => window.removeEventListener("renzo:download", handler);
   }, []);
 
   const downloadChapter = React.useCallback(
@@ -115,83 +112,70 @@ export function useOfflineDownload(): {
         toast({ title: "Already saved", description: `Chapter ${t.chapterNumber} is on your device.` });
         return;
       }
-      mark(key, true);
-      fgStart(`Saving Ch. ${t.chapterNumber}…`);
+      const token = sessionToken();
+      if (!token) {
+        toast({ title: "Sign in first", description: "Couldn't start the download.", variant: "destructive" });
+        return;
+      }
       try {
-        await saveSeriesMeta(seriesMetaOf(t));
-        const pageUrls = await pageUrlsFor(t.seriesId, t.filename);
-        await saveChapterOffline({
-          seriesId: t.seriesId,
-          seriesTitle: t.seriesTitle,
-          chapterKey: key,
-          chapterNumber: t.chapterNumber,
-          pageUrls,
+        const info = await readerService.getChapterInfo(t.seriesId, t.filename);
+        const pageCount = info.pageCount ?? 0;
+        if (!pageCount) throw new Error("This chapter has no downloadable pages.");
+        setInFlight((prev) => new Set(prev).add(key));
+        enqueueNative({
+          baseUrl: getApiConfig().baseUrl ?? "",
+          token,
+          series: seriesMetaOf(t),
+          chapters: [{ chapterKey: key, chapterNumber: t.chapterNumber, pagePaths: rawPagePaths(t.seriesId, t.filename, pageCount) }],
         });
-        toast({ title: "Saved offline", description: `Chapter ${t.chapterNumber} · ${pageUrls.length} pages` });
+        toast({ title: "Downloading", description: `Chapter ${t.chapterNumber} — saving in the background.` });
       } catch (e) {
         toast({
           title: "Download failed",
-          description: e instanceof Error ? e.message : "Couldn't save this chapter offline.",
+          description: e instanceof Error ? e.message : "Couldn't start this download.",
           variant: "destructive",
         });
-      } finally {
-        mark(key, false);
-        fgStop();
       }
     },
-    [mark, toast],
+    [toast],
   );
 
   const downloadMany = React.useCallback(
     async (targets: DownloadTarget[]) => {
       if (!isNative() || targets.length === 0) return;
-      setBatch({ active: true, done: 0, total: targets.length, progress: null });
-      fgStart(`Saving ${targets[0].seriesTitle}…`);
-      let saved = 0;
-      try {
-        // Clone the series info + cover once for the whole batch.
-        await saveSeriesMeta(seriesMetaOf(targets[0]));
-        for (let i = 0; i < targets.length; i++) {
-          const t = targets[i];
-          const key = chapterKeyFor(t.seriesId, t.chapterNumber);
-          if (await isChapterOffline(key)) {
-            setBatch((b) => ({ ...b, done: i + 1 }));
-            continue;
-          }
-          fgUpdate(`Saving ${t.seriesTitle} · ${i + 1}/${targets.length}`);
-          mark(key, true);
-          try {
-            const pageUrls = await pageUrlsFor(t.seriesId, t.filename);
-            await saveChapterOffline(
-              {
-                seriesId: t.seriesId,
-                seriesTitle: t.seriesTitle,
-                chapterKey: key,
-                chapterNumber: t.chapterNumber,
-                pageUrls,
-              },
-              (pageDone, pageTotal) =>
-                setBatch((b) => ({
-                  ...b,
-                  progress: { chapterIndex: i, chapterCount: targets.length, chapterNumber: t.chapterNumber, pageDone, pageTotal },
-                })),
-            );
-            saved++;
-          } catch {
-            /* keep going — one bad chapter shouldn't abort the trip download */
-          } finally {
-            mark(key, false);
-            setBatch((b) => ({ ...b, done: i + 1 }));
-          }
-        }
-      } finally {
-        fgStop();
+      const token = sessionToken();
+      if (!token) {
+        toast({ title: "Sign in first", description: "Couldn't start the download.", variant: "destructive" });
+        return;
       }
-      setBatch({ active: false, done: targets.length, total: targets.length, progress: null });
-      toast({ title: "Offline download complete", description: `${saved} of ${targets.length} chapter${targets.length === 1 ? "" : "s"} saved.` });
+      setBatch({ active: true, done: 0, total: targets.length });
+      // Resolve page counts (quick, foreground) and build the batch job.
+      const chapters: Array<{ chapterKey: string; chapterNumber: number; pagePaths: string[] }> = [];
+      for (const t of targets) {
+        const key = chapterKeyFor(t.seriesId, t.chapterNumber);
+        if (await isChapterOffline(key)) continue;
+        try {
+          const info = await readerService.getChapterInfo(t.seriesId, t.filename);
+          const pageCount = info.pageCount ?? 0;
+          if (pageCount) {
+            chapters.push({ chapterKey: key, chapterNumber: t.chapterNumber, pagePaths: rawPagePaths(t.seriesId, t.filename, pageCount) });
+            setInFlight((prev) => new Set(prev).add(key));
+          }
+        } catch {
+          /* skip a chapter we can't resolve */
+        }
+      }
+      if (chapters.length === 0) {
+        setBatch({ active: false, done: 0, total: 0 });
+        toast({ title: "Nothing to download", description: "Those chapters are already saved." });
+        return;
+      }
+      setBatch({ active: true, done: 0, total: chapters.length });
+      enqueueNative({ baseUrl: getApiConfig().baseUrl ?? "", token, series: seriesMetaOf(targets[0]), chapters });
+      toast({ title: "Saving series offline", description: `${chapters.length} chapters — downloading in the background.` });
     },
-    [mark, toast],
+    [toast],
   );
 
-  return { downloadChapter, downloadMany, inFlight, batch };
+  return { downloadChapter, downloadMany, inFlight, batch, completedTick };
 }

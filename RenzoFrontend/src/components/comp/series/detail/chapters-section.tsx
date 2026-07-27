@@ -93,7 +93,7 @@ export function ChaptersSection({
 
   // ── Offline (native apps): save chapters to the device ──
   const native = useIsNative();
-  const { downloadChapter, downloadMany, inFlight, batch } = useOfflineDownload();
+  const { downloadChapter, downloadMany, inFlight, batch, completedTick } = useOfflineDownload();
   const filenameByNumber = useMemo(() => {
     const map = new Map<number, string>();
     readerChapters?.chapters.forEach((c) => {
@@ -109,7 +109,7 @@ export function ChaptersSection({
   }, [native, seriesId]);
   useEffect(() => {
     void refreshOfflineSaved();
-  }, [refreshOfflineSaved]);
+  }, [refreshOfflineSaved, completedTick]);
   const offlineSeriesMeta = useMemo(
     () => ({
       coverUrl: seriesCoverUrl,

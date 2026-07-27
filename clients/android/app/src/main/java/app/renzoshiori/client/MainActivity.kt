@@ -2,8 +2,10 @@ package app.renzoshiori.client
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.Network
@@ -28,6 +30,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -100,6 +103,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Relays native-download progress from RenzoDownloadService to the web UI.
+    private val downloadReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            if (intent == null) return
+            val detail = JSONObject()
+                .put("state", intent.getStringExtra("state"))
+                .put("seriesId", intent.getStringExtra("seriesId"))
+                .put("chapterKey", intent.getStringExtra("chapterKey"))
+                .put("chapterNumber", intent.getDoubleExtra("chapterNumber", 0.0))
+                .put("done", intent.getIntExtra("done", 0))
+                .put("total", intent.getIntExtra("total", 0))
+            runOnUiThread {
+                if (::webView.isInitialized) {
+                    webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('renzo:download',{detail:$detail}))",
+                        null
+                    )
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -117,6 +142,10 @@ class MainActivity : AppCompatActivity() {
             connectivityManager.registerDefaultNetworkCallback(netCallback)
         } catch (_: Exception) {
         }
+        ContextCompat.registerReceiver(
+            this, downloadReceiver, IntentFilter(RenzoDownloadService.BROADCAST),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         // Notification permission (API 33+) so the background-download progress shows.
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -148,10 +177,28 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        val saved = prefs.getString("serverUrl", null)
-        if (saved != null) {
-            addressInput.setText(saved)
-            connect(saved)
+        if (savedInstanceState != null && savedInstanceState.getBoolean("hadWeb", false)) {
+            // Recreated after being backgrounded (config change / process death):
+            // restore the WebView where it was instead of reloading from the top.
+            serverUrl = prefs.getString("serverUrl", null)
+            serverPanel.visibility = View.GONE
+            errorText.visibility = View.GONE
+            webView.visibility = View.VISIBLE
+            webView.restoreState(savedInstanceState)
+        } else {
+            val saved = prefs.getString("serverUrl", null)
+            if (saved != null) {
+                addressInput.setText(saved)
+                connect(saved)
+            }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (::webView.isInitialized && webView.visibility == View.VISIBLE) {
+            outState.putBoolean("hadWeb", true)
+            webView.saveState(outState)
         }
     }
 
@@ -347,6 +394,10 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         try {
             connectivityManager.unregisterNetworkCallback(netCallback)
+        } catch (_: Exception) {
+        }
+        try {
+            unregisterReceiver(downloadReceiver)
         } catch (_: Exception) {
         }
         executor.shutdownNow()

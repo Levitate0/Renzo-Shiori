@@ -1,5 +1,6 @@
 "use client";
 import { useReconnectPurge } from "@/lib/native/hooks";
+import { useOfflineReadSync } from "@/lib/native/read-sync";
 
 /**
  * Confirmation prompt for reconnect-purge on the native shells. When you come
@@ -8,6 +9,7 @@ import { useReconnectPurge } from "@/lib/native/hooks";
  * web build, where there's no native bridge.
  */
 export function OfflineWatcher(): React.ReactElement | null {
+  useOfflineReadSync();
   const { pending, count, confirm, dismiss } = useReconnectPurge();
   if (!pending) return null;
 

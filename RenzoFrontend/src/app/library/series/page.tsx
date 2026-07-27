@@ -25,7 +25,6 @@ import { usePermission } from "@/hooks/use-permission";
 
 import { DownloadsPanel } from "@/components/comp/series/detail/downloads-panel";
 import { SeriesHero } from "@/components/comp/series/detail/series-hero";
-import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
 import { SourcesSection } from "@/components/comp/series/detail/sources-section";
 import { ChaptersSection } from "@/components/comp/series/detail/chapters-section";
 import { SeriesRibbon } from "@/components/comp/series/detail/series-ribbon";
@@ -1254,7 +1253,7 @@ function SeriesPageContent() {
               seriesId={series.id}
               paused={pausedDownloads}
               canManage={canManageDownloads}
-              seriesCoverUrl={displayThumbnail ? formatThumbnailUrl(displayThumbnail) : undefined}
+              seriesCoverUrl={displayThumbnail || undefined}
               seriesDescription={series.description}
               seriesAuthor={series.author}
             />
