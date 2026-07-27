@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, CheckCheck, Circle, Download, ListChecks, Loader2, Search, Trash2, X } from "lucide-react";
@@ -26,6 +26,9 @@ import { useSettings } from "@/lib/api/hooks/useSettings";
 import { readerService } from "@/lib/api/services/readerService";
 import { seriesService } from "@/lib/api/services/seriesService";
 import { cn } from "@/lib/utils";
+import { useIsNative } from "@/lib/native/hooks";
+import { useOfflineDownload, chapterKeyFor } from "@/lib/native/use-download";
+import { listOffline } from "@/lib/native/offline";
 import { ChapterRow } from "./chapter-row";
 
 export interface ChaptersSectionProps {
@@ -73,6 +76,35 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
     readerChapters?.chapters.forEach((c) => map.set(c.number, c));
     return map;
   }, [readerChapters]);
+
+  // ── Offline (native apps): save chapters to the device ──
+  const native = useIsNative();
+  const { downloadChapter, inFlight } = useOfflineDownload();
+  const filenameByNumber = useMemo(() => {
+    const map = new Map<number, string>();
+    readerChapters?.chapters.forEach((c) => {
+      if (c.filename) map.set(c.number, c.filename);
+    });
+    return map;
+  }, [readerChapters]);
+  const [offlineSavedSet, setOfflineSavedSet] = useState<Set<number>>(new Set());
+  const refreshOfflineSaved = useCallback(async () => {
+    if (!native) return;
+    const items = await listOffline();
+    setOfflineSavedSet(new Set(items.filter((c) => c.seriesId === seriesId).map((c) => c.chapterNumber)));
+  }, [native, seriesId]);
+  useEffect(() => {
+    void refreshOfflineSaved();
+  }, [refreshOfflineSaved]);
+  const handleSaveOffline = useCallback(
+    async (chapterNumber: number) => {
+      const filename = filenameByNumber.get(chapterNumber);
+      if (!filename || !readerChapters) return;
+      await downloadChapter({ seriesId, seriesTitle: readerChapters.title, chapterNumber, filename });
+      void refreshOfflineSaved();
+    },
+    [filenameByNumber, readerChapters, downloadChapter, seriesId, refreshOfflineSaved],
+  );
 
   // Opening a series kicks a stale-guarded source scan (backend skips providers
   // fetched within 15 min), and while the page is open its data re-pulls every
@@ -687,6 +719,13 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
                           selecting={selecting}
                           selected={chapter.number != null && selected.has(chapter.number)}
                           onSelectToggle={handleSelectToggle}
+                          onSaveOffline={
+                            native && chapter.downloaded && chapter.number != null && filenameByNumber.has(chapter.number)
+                              ? () => void handleSaveOffline(chapter.number!)
+                              : undefined
+                          }
+                          offlineSaving={chapter.number != null && inFlight.has(chapterKeyFor(seriesId, chapter.number))}
+                          offlineSaved={chapter.number != null && offlineSavedSet.has(chapter.number)}
                         />
                       );
                     })}

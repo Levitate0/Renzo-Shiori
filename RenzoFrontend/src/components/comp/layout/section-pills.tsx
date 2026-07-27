@@ -3,6 +3,7 @@
 import {
   Activity,
   Bell,
+  DownloadCloud,
   Library,
   List,
   Plug,
@@ -14,6 +15,7 @@ import type React from "react";
 
 import { usePermission } from "@/hooks/use-permission";
 import { useDownloadsMetrics } from "@/lib/api/hooks/useDownloads";
+import { useIsNative } from "@/lib/native/hooks";
 
 /* ─── Section config ───────────────────────────────────────────────────── */
 
@@ -37,6 +39,7 @@ export function useSections(): SectionDef[] {
   const canViewQueue = usePermission("canViewQueue");
   const canViewStatus = usePermission("canViewStatistics");
   const { data: metrics } = useDownloadsMetrics();
+  const native = useIsNative();
 
   const sections: SectionDef[] = [];
 
@@ -65,6 +68,11 @@ export function useSections(): SectionDef[] {
   // Search/Browse once THEY enable them — every user needs this tab to pick
   // their own sources, not just Admins.
   sections.push({ name: "Sources", href: "/providers", icon: Plug });
+
+  // Native shells only — offline downloads live on the device.
+  if (native) {
+    sections.push({ name: "Downloads", href: "/downloads", icon: DownloadCloud });
+  }
 
   return sections;
 }

@@ -8,10 +8,12 @@ import {
   CheckSquare,
   ChevronDown,
   Circle,
+  CloudDownload,
   Download,
   Loader2,
   Lock,
   RefreshCw,
+  Smartphone,
   Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -54,6 +56,12 @@ export interface ChapterRowProps {
   selected?: boolean;
   /** Toggle this chapter's selection. shiftKey requests a range from the last click. */
   onSelectToggle?: (chapterNumber: number, shiftKey: boolean) => void;
+  /** Save this chapter to the device for offline reading (native apps only). */
+  onSaveOffline?: () => void;
+  /** An offline save for this chapter is in flight. */
+  offlineSaving?: boolean;
+  /** This chapter is already saved on the device. */
+  offlineSaved?: boolean;
 }
 
 function formatChapter(n: number | undefined): string {
@@ -94,6 +102,9 @@ export function ChapterRow({
   selecting,
   selected,
   onSelectToggle,
+  onSaveOffline,
+  offlineSaving,
+  offlineSaved,
 }: ChapterRowProps) {
   const num = chapter.number;
   const label = chapter.downloaded ? "Re-download" : "Download";
@@ -218,6 +229,31 @@ export function ChapterRow({
           multi-select mode so the whole row is a selection target. */}
       {!selecting && (
       <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+      {/* Save-offline (native apps only) — download this chapter to the device */}
+      {onSaveOffline && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              disabled={offlineSaving || offlineSaved}
+              onClick={onSaveOffline}
+              aria-label={offlineSaved ? "Saved on device" : "Save offline"}
+              className="h-8 w-8 shrink-0"
+            >
+              {offlineSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              ) : offlineSaved ? (
+                <Smartphone className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <CloudDownload className="h-4 w-4 text-muted-foreground" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{offlineSaved ? "Saved on device" : "Save offline"}</TooltipContent>
+        </Tooltip>
+      )}
+
       {/* Read/unread toggle — marks the chapter without opening the reader */}
       {onToggleRead && num != null && (
         <Tooltip>
