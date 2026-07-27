@@ -3,7 +3,7 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { BookPlus, BookOpen, ChevronDown, ChevronRight, Loader2, RefreshCw } from 'lucide-react';
+import { BookPlus, BookOpen, ChevronDown, ChevronRight, Loader2, RefreshCw, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { seriesService } from '@/lib/api/services/seriesService';
 import { useUpdatesFeed } from '@/lib/api/hooks/useSeries';
@@ -55,6 +55,8 @@ const UpdateRow = memo(function UpdateRow({
 }) {
   const { item } = row;
   const isAdded = item.kind === 'seriesAdded';
+  // Finished chapters stay in the feed (and stay clickable) but read greyed-out.
+  const isRead = !isAdded && item.read === true;
 
   const chapterLabel = isAdded
     ? 'Added to library'
@@ -67,7 +69,7 @@ const UpdateRow = memo(function UpdateRow({
     <button
       type="button"
       onClick={() => onOpen(item.seriesId)}
-      className="w-full flex items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-white/[0.03] focus-visible:outline-none focus-visible:bg-white/[0.05]"
+      className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-white/[0.03] focus-visible:outline-none focus-visible:bg-white/[0.05] ${isRead ? 'opacity-45' : ''}`}
     >
       {/* Cover */}
       <div className="h-14 w-10 shrink-0 overflow-hidden rounded-md bg-white/[0.04]">
@@ -100,7 +102,8 @@ const UpdateRow = memo(function UpdateRow({
       </div>
 
       {/* Time */}
-      <div className="shrink-0 text-xs tabular-nums text-muted-foreground/70">
+      <div className="shrink-0 flex items-center gap-1.5 text-xs tabular-nums text-muted-foreground/70">
+        {isRead && <Check className="h-3.5 w-3.5 text-primary/70" aria-label="Read" />}
         {row.displayTime}
       </div>
     </button>

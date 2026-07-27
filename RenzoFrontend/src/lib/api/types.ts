@@ -989,4 +989,6 @@ export interface UpdateFeedItem {
   chapterName?: string;
   provider?: string;
   timestamp: string;
+  /** True when the current user has finished this chapter (newChapter items only). */
+  read?: boolean;
 }

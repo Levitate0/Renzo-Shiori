@@ -5,6 +5,7 @@ using RenzoBackend.Models.Dto;
 using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.Helpers;
 using RenzoBackend.Services.Providers;
+using RenzoBackend.Services.ReadState;
 using RenzoBackend.Services.Search;
 using RenzoBackend.Services.Settings;
 using Microsoft.AspNetCore.Mvc;
@@ -27,16 +28,18 @@ namespace RenzoBackend.Services.Series
         private readonly ProviderCacheService _providerCache;
         private readonly IMemoryCache _memoryCache;
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly ReadStateService _readState;
         private readonly ILogger<SeriesQueryService> _logger;
 
         public SeriesQueryService(AppDbContext db, SettingsService settings, ProviderCacheService providerCache,
-            IMemoryCache memoryCache, IServiceScopeFactory scopeFactory, ILogger<SeriesQueryService> logger)
+            IMemoryCache memoryCache, IServiceScopeFactory scopeFactory, ReadStateService readState, ILogger<SeriesQueryService> logger)
         {
             _db = db;
             _settings = settings;
             _providerCache = providerCache;
             _memoryCache = memoryCache;
             _scopeFactory = scopeFactory;
+            _readState = readState;
             _logger = logger;
         }
 
@@ -211,11 +214,52 @@ namespace RenzoBackend.Services.Series
                 }
             }
 
-            return items
+            List<UpdateFeedItemDto> page = items
                 .OrderByDescending(i => i.Timestamp)
                 .Skip(start)
                 .Take(count)
                 .ToList();
+
+            // Flag chapters the requester has already finished so the UI can grey
+            // them out. Resolve read state only for the series on this page (each
+            // series' state is a cached renzo.json read), and never let a read-state
+            // hiccup break the feed itself.
+            try
+            {
+                string? username = await _db.Users
+                    .Where(u => u.Id == requesterId)
+                    .Select(u => u.Username)
+                    .FirstOrDefaultAsync(token).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(username))
+                {
+                    Dictionary<Guid, string> storageById = series
+                        .Where(s => !string.IsNullOrWhiteSpace(s.StoragePath))
+                        .ToDictionary(s => s.Id, s => s.StoragePath);
+                    Dictionary<Guid, HashSet<decimal>> completedBySeries = new();
+                    foreach (UpdateFeedItemDto item in page)
+                    {
+                        if (item.Kind != UpdateFeedItemDto.KindNewChapter || item.ChapterNumber == null)
+                            continue;
+                        if (!completedBySeries.TryGetValue(item.SeriesId, out HashSet<decimal>? completed))
+                        {
+                            completed = new HashSet<decimal>();
+                            if (storageById.TryGetValue(item.SeriesId, out string? storagePath))
+                            {
+                                foreach (Models.ReadState.ChapterReadState st in _readState.GetSeriesReadStates(username, storagePath))
+                                    if (st.IsCompleted) completed.Add(st.ChapterNumber);
+                            }
+                            completedBySeries[item.SeriesId] = completed;
+                        }
+                        item.Read = completed.Contains(item.ChapterNumber.Value);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Updates feed: couldn't resolve read state; returning feed without read flags.");
+            }
+
+            return page;
         }
 
         /// <summary>

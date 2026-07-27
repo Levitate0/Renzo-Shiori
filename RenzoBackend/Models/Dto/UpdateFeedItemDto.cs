@@ -37,4 +37,8 @@ public class UpdateFeedItemDto : IThumb
 
     [JsonPropertyName("timestamp")]
     public DateTime Timestamp { get; set; }
+
+    /// <summary>True when the requesting user has finished this chapter (newChapter items only).</summary>
+    [JsonPropertyName("read")]
+    public bool Read { get; set; }
 }
