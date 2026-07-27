@@ -161,22 +161,24 @@ export function useOfflineDownload(): {
         return;
       }
       setBatch({ active: true, done: 0, total: targets.length });
-      // Resolve page counts (quick, foreground) and build the batch job.
-      const chapters: Array<{ chapterKey: string; chapterNumber: number; pagePaths: string[] }> = [];
-      for (const t of targets) {
-        const key = chapterKeyFor(t.seriesId, t.chapterNumber);
-        if (await isChapterOffline(key)) continue;
-        try {
-          const info = await readerService.getChapterInfo(t.seriesId, t.filename);
-          const pageCount = info.pageCount ?? 0;
-          if (pageCount) {
-            chapters.push({ chapterKey: key, chapterNumber: t.chapterNumber, pagePaths: rawPagePaths(t.seriesId, t.filename, pageCount) });
-            setInFlight((prev) => new Set(prev).add(key));
+      // Resolve page counts in parallel so a big series doesn't sit on a long
+      // "building" pause before the native downloader starts.
+      const resolved = await Promise.all(
+        targets.map(async (t) => {
+          const key = chapterKeyFor(t.seriesId, t.chapterNumber);
+          if (await isChapterOffline(key)) return null;
+          try {
+            const info = await readerService.getChapterInfo(t.seriesId, t.filename);
+            const pageCount = info.pageCount ?? 0;
+            if (!pageCount) return null;
+            return { chapterKey: key, chapterNumber: t.chapterNumber, pagePaths: rawPagePaths(t.seriesId, t.filename, pageCount) };
+          } catch {
+            return null;
           }
-        } catch {
-          /* skip a chapter we can't resolve */
-        }
-      }
+        }),
+      );
+      const chapters = resolved.filter((c): c is NonNullable<typeof c> => c !== null);
+      if (chapters.length > 0) setInFlight((prev) => new Set([...prev, ...chapters.map((c) => c.chapterKey)]));
       if (chapters.length === 0) {
         setBatch({ active: false, done: 0, total: 0 });
         toast({ title: "Nothing to download", description: "Those chapters are already saved." });
