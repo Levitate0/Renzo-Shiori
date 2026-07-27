@@ -1,7 +1,7 @@
 ; Renzo Shiori desktop client installer (per-user, no admin required)
 Unicode true
 !define APPNAME "Renzo Shiori"
-!define VERSION "1.1.2"
+!define VERSION "1.1.4"
 !define SRC "/tmp/renzo-exe-folder"
 
 Name "${APPNAME}"
