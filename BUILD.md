@@ -18,7 +18,7 @@ projects. It also documents the deploy cycle and the full release checklist.
 | `RenzoBackend/` | .NET 8 ASP.NET Core server. Serves the API **and** the web UI, which is embedded as `wwwroot.zip`. |
 | `RenzoFrontend/` | Next.js (static export, `output: 'export'`) web UI → `out/`. |
 | `clients/android/` | Android client — a remote-first WebView shell (Kotlin) with the offline bridge. |
-| `clients/windows/` | Windows client — a WebView2 WPF shell, packaged with NSIS. |
+| `clients/windows/` | Windows client — a WebView2 WPF shell (with the native offline bridge + background downloader), packaged with NSIS. |
 | `RenzoOAuthProxy/` | Tracker OAuth service (AniList/MAL/Kitsu/MangaDex), bundled **inside** the server container. |
 | `Mihon.ExtensionsBridge.Net/` | Prebuilt IKVM compatibility layer for running Mihon/Tachiyomi extensions. |
 | `RenzoTray/`, `Renzo.Web/`, `RenzoOAuthProxy.CF/` | Ancillary/experimental — not part of a release. |

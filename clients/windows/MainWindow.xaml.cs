@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.NetworkInformation;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Win32;
 
 namespace RenzoWindows;
 
@@ -15,14 +17,28 @@ public partial class MainWindow : Window
     private ServerConfig _config = new();
     private bool _webViewReady;
 
+    // Offline stack (mirrors the Android bridge/downloader): a native background
+    // downloader and a host object the web UI drives as `window.__RenzoWindows`.
+    private readonly RenzoStore _store = new();
+    private readonly RenzoDownloader _downloader;
+    private readonly RenzoBridge _bridge;
+
     public MainWindow()
     {
         InitializeComponent();
+        _downloader = new RenzoDownloader(_store);
+        _bridge = new RenzoBridge(_store, _downloader);
+        _bridge.PickFolderRequested += OnPickFolderRequested;
+        _bridge.ReconnectRequested += OnReconnectRequested;
+        _downloader.Progress += OnDownloadProgress;
+        NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         _config = ServerConfig.Load();
+        // Resume any downloads left queued from a previous session (no-op if none).
+        _downloader.Start();
         if (!string.IsNullOrEmpty(_config.ServerUrl))
         {
             AddressBox.Text = _config.ServerUrl;
@@ -67,6 +83,12 @@ public partial class MainWindow : Window
         if (server == null)
         {
             SetBusy(false, null);
+            // Can't reach the server but chapters are saved → open the offline reader.
+            if (_store.HasDownloads())
+            {
+                await LoadOfflineReaderAsync();
+                return;
+            }
             ShowError("Could not reach a Renzo Shiori server at that address. Check the address (including port) and that the server is running.");
             return;
         }
@@ -162,9 +184,18 @@ public partial class MainWindow : Window
 
         WebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
         WebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        WebView.CoreWebView2.Settings.AreHostObjectsAllowed = true;
         WebView.CoreWebView2.NewWindowRequested += CoreWebView2_NewWindowRequested;
         WebView.CoreWebView2.NavigationStarting += CoreWebView2_NavigationStarting;
         WebView.CoreWebView2.NavigationCompleted += CoreWebView2_NavigationCompleted;
+
+        // Native offline bridge: the host object + a shim that exposes it as the
+        // synchronous `window.__RenzoWindows` the shared frontend expects. Added
+        // before the first navigation so it's present on the server UI and the
+        // bundled offline reader alike.
+        WebView.CoreWebView2.AddHostObjectToScript("renzoNative", _bridge);
+        await WebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(NativeAssets.BridgeShim);
+
         _webViewReady = true;
     }
 
@@ -238,7 +269,87 @@ public partial class MainWindow : Window
                 or CoreWebView2WebErrorStatus.ConnectionReset
                 or CoreWebView2WebErrorStatus.Timeout)
         {
+            // Lost the server mid-session: drop into the offline reader if there's
+            // anything saved, otherwise back to the connect screen.
+            if (_store.HasDownloads())
+                _ = LoadOfflineReaderAsync();
+            else
+                ShowServerPanel("Lost connection to the server.");
+        }
+    }
+
+    /// <summary>Show the bundled offline reader (saved chapters) inside the WebView.</summary>
+    private async Task LoadOfflineReaderAsync()
+    {
+        try
+        {
+            await EnsureWebViewAsync();
+        }
+        catch
+        {
             ShowServerPanel("Lost connection to the server.");
+            return;
+        }
+        ServerPanel.Visibility = Visibility.Collapsed;
+        WebView.Visibility = Visibility.Visible;
+        WebView.CoreWebView2.NavigateToString(NativeAssets.OfflineReaderHtml);
+    }
+
+    // ── native bridge callbacks ──────────────────────────────────────────────────
+    private void OnPickFolderRequested()
+    {
+        // Marshal off the host-object call and show the picker on the UI thread.
+        Dispatcher.BeginInvoke(() =>
+        {
+            var dlg = new OpenFolderDialog { Title = "Choose a download folder" };
+            string? label = null;
+            if (dlg.ShowDialog() == true)
+            {
+                _store.SetFolder(dlg.FolderName);
+                label = dlg.FolderName;
+            }
+            PostToWeb("renzo:folderpicked", new { label });
+        });
+    }
+
+    private void OnReconnectRequested()
+    {
+        Dispatcher.BeginInvoke(async () =>
+        {
+            if (!string.IsNullOrEmpty(_config.ServerUrl))
+                await ConnectAsync(_config.ServerUrl);
+        });
+    }
+
+    private void OnDownloadProgress(DownloadProgress p)
+    {
+        Dispatcher.BeginInvoke(() => PostToWeb("renzo:download", new
+        {
+            state = p.State,
+            seriesId = p.SeriesId,
+            chapterKey = p.ChapterKey,
+            chapterNumber = p.ChapterNumber,
+            done = p.Done,
+            total = p.Total,
+        }));
+    }
+
+    private void OnNetworkAvailabilityChanged(object? sender, NetworkAvailabilityEventArgs e)
+    {
+        Dispatcher.BeginInvoke(() => PostToWeb("renzo:netchange", new { online = e.IsAvailable }));
+    }
+
+    /// <summary>Post a `{channel, detail}` message the bridge shim turns into a DOM CustomEvent.</summary>
+    private void PostToWeb(string channel, object detail)
+    {
+        if (!_webViewReady || WebView.CoreWebView2 == null) return;
+        try
+        {
+            WebView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new { channel, detail }));
+        }
+        catch
+        {
+            // View not ready / mid-navigation — the next event will carry state.
         }
     }
 

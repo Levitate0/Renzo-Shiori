@@ -60,9 +60,13 @@ function seriesMetaOf(t: DownloadTarget) {
   };
 }
 
-/** Hand a job to the native (background) downloader via the Android bridge. */
+/** Hand a job to the native (background) downloader — Android or desktop (Windows). */
 function enqueueNative(payload: unknown): boolean {
-  const raw = (window as unknown as { __RenzoAndroid?: { enqueueDownload?: (s: string) => void } }).__RenzoAndroid;
+  const w = window as unknown as {
+    __RenzoAndroid?: { enqueueDownload?: (s: string) => void };
+    __RenzoWindows?: { enqueueDownload?: (s: string) => void };
+  };
+  const raw = w.__RenzoAndroid ?? w.__RenzoWindows;
   if (typeof raw?.enqueueDownload === "function") {
     try {
       raw.enqueueDownload(JSON.stringify(payload));
