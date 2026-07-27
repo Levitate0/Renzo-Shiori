@@ -32,6 +32,18 @@ function sessionToken(): string | null {
   }
 }
 
+/**
+ * Absolute server origin for the native downloader. getApiConfig().baseUrl is ""
+ * when the app is same-origin with the server (the usual case in the WebView),
+ * but the native HTTP client needs a full host — so fall back to the loaded
+ * page's origin, which IS the server the WebView connected to.
+ */
+function serverBaseUrl(): string {
+  const configured = getApiConfig().baseUrl;
+  if (configured) return configured;
+  return typeof window !== "undefined" ? window.location.origin : "";
+}
+
 /** Raw (un-tokened) page paths — the native downloader adds a Bearer header. */
 function rawPagePaths(seriesId: string, filename: string, pageCount: number): string[] {
   const f = encodeFilename(filename);
@@ -123,7 +135,7 @@ export function useOfflineDownload(): {
         if (!pageCount) throw new Error("This chapter has no downloadable pages.");
         setInFlight((prev) => new Set(prev).add(key));
         enqueueNative({
-          baseUrl: getApiConfig().baseUrl ?? "",
+          baseUrl: serverBaseUrl(),
           token,
           series: seriesMetaOf(t),
           chapters: [{ chapterKey: key, chapterNumber: t.chapterNumber, pagePaths: rawPagePaths(t.seriesId, t.filename, pageCount) }],
@@ -171,7 +183,7 @@ export function useOfflineDownload(): {
         return;
       }
       setBatch({ active: true, done: 0, total: chapters.length });
-      enqueueNative({ baseUrl: getApiConfig().baseUrl ?? "", token, series: seriesMetaOf(targets[0]), chapters });
+      enqueueNative({ baseUrl: serverBaseUrl(), token, series: seriesMetaOf(targets[0]), chapters });
       toast({ title: "Saving series offline", description: `${chapters.length} chapters — downloading in the background.` });
     },
     [toast],
