@@ -20,6 +20,10 @@ class RenzoStore(private val context: Context) {
 
     private val manifestPrefKey = "kv_renzo.offline.manifest.v1"
 
+    // Whether a `.nomedia` marker has been placed at the download root this
+    // process. Reset when the folder changes (see [setFolder]).
+    @Volatile private var noMediaEnsured = false
+
     private val defaultRoot: File
         get() = context.getExternalFilesDir("offline") ?: File(context.filesDir, "offline")
 
@@ -46,7 +50,32 @@ class RenzoStore(private val context: Context) {
     private fun rememberDoc(relPath: String, uri: Uri) = prefs.edit().putString(docKey(relPath), uri.toString()).apply()
     private fun rememberedDoc(relPath: String): Uri? = prefs.getString(docKey(relPath), null)?.let { Uri.parse(it) }
 
+    /**
+     * Drop a `.nomedia` marker at the download root so Android's MediaStore skips
+     * the folder (and its subfolders). Without it, every saved page image gets
+     * indexed and floods the system gallery / the file-upload picker that appears
+     * when uploading to a website. App-private storage isn't scanned anyway, but a
+     * user-chosen SAF folder (Downloads, SD card, …) is — this covers both.
+     */
+    private fun ensureNoMedia() {
+        if (noMediaEnsured) return
+        try {
+            if (treeUri() != null) {
+                val dir = safDir(true, emptyList()) ?: return
+                if (dir.findFile(".nomedia") == null) dir.createFile("application/octet-stream", ".nomedia")
+            } else {
+                val f = File(defaultRoot, ".nomedia")
+                if (!f.exists()) { f.parentFile?.mkdirs(); f.createNewFile() }
+            }
+            noMediaEnsured = true
+        } catch (_: Exception) {
+            // Best-effort: a provider that rejects a dot-file just means the
+            // pages may be indexed; don't fail the download over it.
+        }
+    }
+
     fun writeFile(relPath: String, bytes: ByteArray) {
+        ensureNoMedia()
         if (treeUri() != null) {
             val segs = segments(relPath)
             val parent = safDir(true, segs.dropLast(1)) ?: return
@@ -117,9 +146,12 @@ class RenzoStore(private val context: Context) {
         try { DocumentFile.fromTreeUri(context, it)?.name ?: Uri.decode(it.lastPathSegment) } catch (_: Exception) { null }
     }
 
-    fun setFolder(uri: Uri?) = prefs.edit().apply {
-        if (uri != null) putString("downloadTree", uri.toString()) else remove("downloadTree")
-        apply()
+    fun setFolder(uri: Uri?) {
+        noMediaEnsured = false  // a new folder needs its own `.nomedia` marker
+        prefs.edit().apply {
+            if (uri != null) putString("downloadTree", uri.toString()) else remove("downloadTree")
+            apply()
+        }
     }
 
     // ── download job queue ────────────────────────────────────────────────────
