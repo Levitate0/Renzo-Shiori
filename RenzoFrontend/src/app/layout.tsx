@@ -34,6 +34,7 @@ import { ImportWizard } from "@/components/comp/import-wizard";
 import { FontLoader } from "@/components/ui/font-loader";
 import { SearchProvider } from "@/contexts/search-context";
 import { ServiceWorkerRegistrar } from "@/components/comp/service-worker-registrar";
+import { OfflineWatcher } from "@/components/comp/offline-watcher";
 
 export default function RootLayout({
   children,
@@ -136,6 +137,7 @@ export default function RootLayout({
                       <FontLoader />
                       <ThemeSync />
                       <ServiceWorkerRegistrar />
+                      <OfflineWatcher />
                       <ClientSideSetupWizard />
                       <ImportProgressPill />
                       <ImportWizard />
