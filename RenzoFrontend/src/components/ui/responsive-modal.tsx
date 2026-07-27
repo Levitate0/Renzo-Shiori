@@ -110,7 +110,7 @@ export function ResponsiveModal({
             )}
           </DrawerHeader>
         )}
-        <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-2" data-vaul-no-drag>{children}</div>
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 pb-2" data-vaul-no-drag>{children}</div>
         {footer && (
           <DrawerFooter className="pt-2 pb-4 border-t border-border">
             {footer}

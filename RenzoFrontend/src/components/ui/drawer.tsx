@@ -43,7 +43,11 @@ const DrawerContent = React.forwardRef<
     <DrawerPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed inset-x-0 bottom-0 z-50 mt-24 flex h-auto flex-col rounded-t-[10px] border bg-background",
+        // max-h-[90dvh] keeps every drawer within the viewport so tall content
+        // can't push it (and its footer) off-screen. Drawers with a lot of
+        // content should give their scroll region `flex-1 min-h-0 overflow-y-auto`
+        // so THAT region scrolls; a consumer may override the cap via className.
+        "fixed inset-x-0 bottom-0 z-50 mt-24 flex h-auto max-h-[90dvh] flex-col rounded-t-[10px] border bg-background",
         className
       )}
       {...props}
