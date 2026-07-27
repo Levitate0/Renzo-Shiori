@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useIsNative, useOfflineDownloads } from "@/lib/native/hooks";
+import { useOfflineDownloadStatus } from "@/lib/native/download-status";
 import { nativePrimitives } from "@/lib/native/bridge";
 import {
   autoPurgeEnabled,
@@ -31,6 +32,8 @@ export default function DownloadsPage() {
   const isNative = useIsNative();
   const { toast } = useToast();
   const { items, loading, refresh } = useOfflineDownloads();
+  const dlStatus = useOfflineDownloadStatus();
+  const activeDownloads = Object.entries(dlStatus.series).filter(([, s]) => s.total > 0);
   const [folder, setFolder] = React.useState<string | null>(null);
   const [bytes, setBytes] = React.useState(0);
   const [autoPurge, setAutoPurgeState] = React.useState(true);
@@ -45,6 +48,11 @@ export default function DownloadsPage() {
   React.useEffect(() => {
     if (isNative) void reload();
   }, [isNative, reload, items]);
+
+  // Refresh the saved list as downloads land / when a batch finishes.
+  React.useEffect(() => {
+    if (isNative) void refresh();
+  }, [isNative, refresh, dlStatus.active, activeDownloads.length]);
 
   if (!isNative) {
     return (
@@ -104,6 +112,29 @@ export default function DownloadsPage() {
           </Button>
         )}
       </div>
+
+      {/* Downloading now */}
+      {dlStatus.active && activeDownloads.length > 0 && (
+        <div className="mt-6 space-y-3 rounded-lg border border-emerald-500/30 bg-emerald-500/[0.04] p-4">
+          <div className="text-sm font-medium">Downloading now</div>
+          {activeDownloads.map(([seriesId, s]) => {
+            const pct = s.total ? Math.min(100, Math.round((s.done / s.total) * 100)) : 0;
+            return (
+              <div key={seriesId}>
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="truncate">{s.title || "Saving offline…"}</span>
+                  <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                    {s.done}/{s.total}
+                  </span>
+                </div>
+                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-foreground/10">
+                  <div className="h-full rounded-full bg-emerald-500 transition-[width]" style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Settings */}
       <div className="mt-6 space-y-3 rounded-lg border p-4">
