@@ -15,6 +15,36 @@ export function chapterKeyFor(seriesId: string, chapterNumber: number): string {
   return `${seriesId}:${chapterNumber}`;
 }
 
+// ── background download (Android foreground service) ─────────────────────────
+// The download runs in this WebView's JS, which Android suspends when the app is
+// backgrounded. Holding a foreground service (with a progress notification)
+// keeps the process alive so the download continues when tabbed out. Ref-counted
+// so overlapping downloads don't stop it early. No-op off Android.
+let fgCount = 0;
+function androidFg(method: "startDownloadService" | "updateDownloadService" | "stopDownloadService", text?: string): void {
+  if (typeof window === "undefined") return;
+  const a = (window as unknown as { __RenzoAndroid?: Record<string, (t: string) => void> }).__RenzoAndroid;
+  const fn = a?.[method];
+  if (typeof fn === "function") {
+    try {
+      fn(text ?? "");
+    } catch {
+      /* ignore */
+    }
+  }
+}
+function fgStart(text: string): void {
+  fgCount++;
+  androidFg("startDownloadService", text);
+}
+function fgUpdate(text: string): void {
+  if (fgCount > 0) androidFg("updateDownloadService", text);
+}
+function fgStop(): void {
+  fgCount = Math.max(0, fgCount - 1);
+  if (fgCount === 0) androidFg("stopDownloadService");
+}
+
 interface DownloadTarget {
   seriesId: string;
   seriesTitle: string;
@@ -86,6 +116,7 @@ export function useOfflineDownload(): {
         return;
       }
       mark(key, true);
+      fgStart(`Saving Ch. ${t.chapterNumber}…`);
       try {
         await saveSeriesMeta(seriesMetaOf(t));
         const pageUrls = await pageUrlsFor(t.seriesId, t.filename);
@@ -105,6 +136,7 @@ export function useOfflineDownload(): {
         });
       } finally {
         mark(key, false);
+        fgStop();
       }
     },
     [mark, toast],
@@ -114,40 +146,46 @@ export function useOfflineDownload(): {
     async (targets: DownloadTarget[]) => {
       if (!isNative() || targets.length === 0) return;
       setBatch({ active: true, done: 0, total: targets.length, progress: null });
-      // Clone the series info + cover once for the whole batch.
-      await saveSeriesMeta(seriesMetaOf(targets[0]));
+      fgStart(`Saving ${targets[0].seriesTitle}…`);
       let saved = 0;
-      for (let i = 0; i < targets.length; i++) {
-        const t = targets[i];
-        const key = chapterKeyFor(t.seriesId, t.chapterNumber);
-        if (await isChapterOffline(key)) {
-          setBatch((b) => ({ ...b, done: i + 1 }));
-          continue;
+      try {
+        // Clone the series info + cover once for the whole batch.
+        await saveSeriesMeta(seriesMetaOf(targets[0]));
+        for (let i = 0; i < targets.length; i++) {
+          const t = targets[i];
+          const key = chapterKeyFor(t.seriesId, t.chapterNumber);
+          if (await isChapterOffline(key)) {
+            setBatch((b) => ({ ...b, done: i + 1 }));
+            continue;
+          }
+          fgUpdate(`Saving ${t.seriesTitle} · ${i + 1}/${targets.length}`);
+          mark(key, true);
+          try {
+            const pageUrls = await pageUrlsFor(t.seriesId, t.filename);
+            await saveChapterOffline(
+              {
+                seriesId: t.seriesId,
+                seriesTitle: t.seriesTitle,
+                chapterKey: key,
+                chapterNumber: t.chapterNumber,
+                pageUrls,
+              },
+              (pageDone, pageTotal) =>
+                setBatch((b) => ({
+                  ...b,
+                  progress: { chapterIndex: i, chapterCount: targets.length, chapterNumber: t.chapterNumber, pageDone, pageTotal },
+                })),
+            );
+            saved++;
+          } catch {
+            /* keep going — one bad chapter shouldn't abort the trip download */
+          } finally {
+            mark(key, false);
+            setBatch((b) => ({ ...b, done: i + 1 }));
+          }
         }
-        mark(key, true);
-        try {
-          const pageUrls = await pageUrlsFor(t.seriesId, t.filename);
-          await saveChapterOffline(
-            {
-              seriesId: t.seriesId,
-              seriesTitle: t.seriesTitle,
-              chapterKey: key,
-              chapterNumber: t.chapterNumber,
-              pageUrls,
-            },
-            (pageDone, pageTotal) =>
-              setBatch((b) => ({
-                ...b,
-                progress: { chapterIndex: i, chapterCount: targets.length, chapterNumber: t.chapterNumber, pageDone, pageTotal },
-              })),
-          );
-          saved++;
-        } catch {
-          /* keep going — one bad chapter shouldn't abort the trip download */
-        } finally {
-          mark(key, false);
-          setBatch((b) => ({ ...b, done: i + 1 }));
-        }
+      } finally {
+        fgStop();
       }
       setBatch({ active: false, done: targets.length, total: targets.length, progress: null });
       toast({ title: "Offline download complete", description: `${saved} of ${targets.length} chapter${targets.length === 1 ? "" : "s"} saved.` });

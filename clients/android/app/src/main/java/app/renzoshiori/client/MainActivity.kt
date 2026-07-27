@@ -118,6 +118,17 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
         }
 
+        // Notification permission (API 33+) so the background-download progress shows.
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+            } catch (_: Exception) {
+            }
+        }
+
         connectButton.setOnClickListener { connect(addressInput.text.toString()) }
         addressInput.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_GO) {

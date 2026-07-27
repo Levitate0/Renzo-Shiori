@@ -1,8 +1,10 @@
 package app.renzoshiori.client
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
+import android.os.Build
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Base64
@@ -138,6 +140,35 @@ class RenzoNativeBridge(
         val net = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(net) ?: return false
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    // ── background download (foreground service) ─────────────────────────────
+    /** Show/refresh the ongoing-download notification and hold foreground
+     *  importance so the JS download keeps running when the app is tabbed out. */
+    @JavascriptInterface
+    fun startDownloadService(text: String) {
+        val i = Intent(context, RenzoDownloadService::class.java)
+            .setAction(RenzoDownloadService.ACTION_START)
+            .putExtra(RenzoDownloadService.EXTRA_TEXT, text)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
+            else context.startService(i)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Update the notification text (re-issues start). */
+    @JavascriptInterface
+    fun updateDownloadService(text: String) = startDownloadService(text)
+
+    @JavascriptInterface
+    fun stopDownloadService() {
+        try {
+            context.startService(
+                Intent(context, RenzoDownloadService::class.java).setAction(RenzoDownloadService.ACTION_STOP)
+            )
+        } catch (_: Exception) {
+        }
     }
 
     // ── folder selection ───────────────────────────────────────────────────────
