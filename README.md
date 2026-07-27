@@ -174,13 +174,24 @@ Renzo Shiori hosts its **own** OAuth service inside the container (on loopback `
 
 ## 🧱 Build it yourself
 
+**Full, per-artifact build instructions live in [BUILD.md](./BUILD.md)** — the
+server (with its embedded UI), the web frontend, the **Android** and **Windows**
+native clients, the auxiliary projects, the deploy cycle, and the release
+checklist.
+
+Quick start (Windows helper scripts):
+
 ```powershell
 .\build_frontend.ps1   # builds the Next.js UI → wwwroot.zip
-.\build_docker.ps1     # publishes the backend (+ bundled OAuth proxy) and builds a multi-arch image
+.\build_docker.ps1     # publishes the backend (+ bundled OAuth proxy) and builds the image
 .\build_apps.ps1       # publishes backend + tray app for win/linux/osx
 ```
 
-The backend serves the pre-built frontend from `wwwroot`. The Docker image also bundles the OAuth proxy under `/app/oauthproxy`, started automatically by the entrypoint.
+The backend serves the pre-built frontend embedded as `wwwroot.zip` (extracted
+on startup when its checksum changes — see BUILD.md). The Docker image bundles
+the OAuth proxy under `/app/oauthproxy`, started automatically by the entrypoint.
+The native clients (APK / Windows installer) are built and signed separately —
+see [BUILD.md](./BUILD.md).
 
 ---
 
