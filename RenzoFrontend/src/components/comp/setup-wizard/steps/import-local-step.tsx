@@ -430,7 +430,7 @@ export function ImportLocalStep({ setError, setIsLoading, setCanProgress, onProc
 
       <div
         ref={containerRef}
-        className={`max-h-[60vh] p-0.5 overflow-y-auto max-[768px]:max-h-none max-[768px]:overflow-visible ${hasScrollbar ? 'pr-2' : ''}`}
+        className={`p-0.5 ${hasScrollbar ? 'pr-2' : ''}`}
       >
         <div className="space-y-3">
           {actions.map((action, index) => {
