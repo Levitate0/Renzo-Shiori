@@ -102,6 +102,62 @@ export async function saveChapterOffline(
   return entry;
 }
 
+export interface SeriesChapterDownload {
+  chapterKey: string;
+  chapterNumber: number;
+  pageUrls: string[];
+}
+
+export interface BatchProgress {
+  chapterIndex: number;   // 0-based
+  chapterCount: number;
+  chapterNumber: number;
+  pageDone: number;
+  pageTotal: number;
+}
+
+/**
+ * Download many chapters of one series for offline (a whole series / a range —
+ * "grab a few for the trip"). Sequential so a big grab doesn't hammer the
+ * source; already-saved chapters are skipped. Returns how many were newly saved.
+ */
+export async function saveSeriesOffline(
+  series: { seriesId: string; seriesTitle: string },
+  chapters: SeriesChapterDownload[],
+  onProgress?: (p: BatchProgress) => void,
+): Promise<number> {
+  requireNative();
+  let saved = 0;
+  for (let i = 0; i < chapters.length; i++) {
+    const ch = chapters[i];
+    if (await isChapterOffline(ch.chapterKey)) continue;
+    await saveChapterOffline(
+      {
+        seriesId: series.seriesId,
+        seriesTitle: series.seriesTitle,
+        chapterKey: ch.chapterKey,
+        chapterNumber: ch.chapterNumber,
+        pageUrls: ch.pageUrls,
+      },
+      (pageDone, pageTotal) =>
+        onProgress?.({
+          chapterIndex: i,
+          chapterCount: chapters.length,
+          chapterNumber: ch.chapterNumber,
+          pageDone,
+          pageTotal,
+        }),
+    );
+    saved++;
+  }
+  return saved;
+}
+
+/** Total bytes across all downloaded chapters (for a storage readout). */
+export async function offlineBytes(): Promise<number> {
+  return Object.values((await getManifest()).chapters).reduce((sum, c) => sum + c.bytes, 0);
+}
+
 // ── query ────────────────────────────────────────────────────────────────────
 export async function isChapterOffline(chapterKey: string): Promise<boolean> {
   return !!(await getManifest()).chapters[chapterKey];

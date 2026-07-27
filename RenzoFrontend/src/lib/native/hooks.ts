@@ -17,11 +17,23 @@ export function useIsNative(): boolean {
 }
 
 /**
- * Mount once near the app root. When connectivity is restored, and auto-purge
- * is on, deletes downloaded chapters — sparing the one the reader currently has
- * open (via the current-read module). No-op on web / when nothing is downloaded.
+ * Reconnect purge, **confirmation-gated**. When connectivity is restored and
+ * auto-purge is enabled, this surfaces a prompt (count of purgeable chapters)
+ * instead of deleting anything — so a brief signal blip on a train can't silently
+ * wipe your trip downloads. The chapter currently open in the reader is always
+ * excluded from the count and the purge. No-op on web / when nothing is saved.
+ *
+ * Mount once near the app root; render the prompt from the returned state.
  */
-export function useOfflinePurgeWatcher(): void {
+export function useReconnectPurge(): {
+  pending: boolean;
+  count: number;
+  confirm: () => Promise<void>;
+  dismiss: () => void;
+} {
+  const [pending, setPending] = React.useState(false);
+  const [count, setCount] = React.useState(0);
+
   React.useEffect(() => {
     const nat = nativePrimitives();
     if (!nat) return;
@@ -30,12 +42,27 @@ export function useOfflinePurgeWatcher(): void {
       if (wasOnline === null) wasOnline = o;
     });
     return nat.onNetworkChange((online) => {
-      if (online && wasOnline === false && autoPurgeEnabled()) {
-        void purgeAll(getCurrentReadingChapter());
-      }
+      const prev = wasOnline;
       wasOnline = online;
+      if (!(online && prev === false && autoPurgeEnabled())) return;
+      void listOffline().then((items) => {
+        const current = getCurrentReadingChapter();
+        const purgeable = items.filter((c) => c.chapterKey !== current).length;
+        if (purgeable > 0) {
+          setCount(purgeable);
+          setPending(true);
+        }
+      });
     });
   }, []);
+
+  const confirm = React.useCallback(async () => {
+    await purgeAll(getCurrentReadingChapter());
+    setPending(false);
+  }, []);
+  const dismiss = React.useCallback(() => setPending(false), []);
+
+  return { pending, count, confirm, dismiss };
 }
 
 /** Live list of downloaded chapters for a management view. */
