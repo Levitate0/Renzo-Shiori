@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, CheckCheck, Circle, Download, ListChecks, Loader2, Search, Trash2, X } from "lucide-react";
+import { ArrowLeftRight, CheckCheck, Circle, CloudDownload, Download, ListChecks, Loader2, Search, Trash2, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -79,7 +79,7 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
 
   // ── Offline (native apps): save chapters to the device ──
   const native = useIsNative();
-  const { downloadChapter, inFlight } = useOfflineDownload();
+  const { downloadChapter, downloadMany, inFlight, batch } = useOfflineDownload();
   const filenameByNumber = useMemo(() => {
     const map = new Map<number, string>();
     readerChapters?.chapters.forEach((c) => {
@@ -104,6 +104,21 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
       void refreshOfflineSaved();
     },
     [filenameByNumber, readerChapters, downloadChapter, seriesId, refreshOfflineSaved],
+  );
+  /** Batch-save many chapters for offline (a selection / whole series for a trip). */
+  const handleBulkSaveOffline = useCallback(
+    async (numbers: number[]) => {
+      if (!readerChapters) return;
+      const targets = numbers
+        .map((n) => {
+          const filename = filenameByNumber.get(n);
+          return filename ? { seriesId, seriesTitle: readerChapters.title, chapterNumber: n, filename } : null;
+        })
+        .filter((t): t is NonNullable<typeof t> => t !== null);
+      await downloadMany(targets);
+      void refreshOfflineSaved();
+    },
+    [filenameByNumber, readerChapters, downloadMany, seriesId, refreshOfflineSaved],
   );
 
   // Opening a series kicks a stale-guarded source scan (backend skips providers
@@ -661,6 +676,21 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
                       >
                         {bulkPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                         Download
+                      </button>
+                    )}
+                    {native && (
+                      <button
+                        type="button"
+                        onClick={() => void handleBulkSaveOffline(selectedDownloadedNumbers)}
+                        disabled={selectedDownloadedNumbers.length === 0 || batch.active}
+                        title="Save the selected downloaded chapters to this device for offline reading"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-[11px] font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {batch.active ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CloudDownload className="h-3.5 w-3.5" />}
+                        {batch.active ? `Saving ${batch.done}/${batch.total}` : "Save offline"}
+                        {!batch.active && selectedDownloadedNumbers.length > 0 && (
+                          <span className="tabular-nums opacity-80">({selectedDownloadedNumbers.length})</span>
+                        )}
                       </button>
                     )}
                     {canManage && (

@@ -179,7 +179,7 @@ export function ChapterRow({
       {/* Chapter number + title */}
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className={cn("text-sm font-medium tabular-nums", readCompleted && "text-muted-foreground/60")}>
+          <span className={cn("whitespace-nowrap text-sm font-medium tabular-nums", readCompleted && "text-muted-foreground/60")}>
             {formatChapter(num)}
           </span>
           {chapter.name && (
@@ -197,9 +197,9 @@ export function ChapterRow({
             </span>
           )}
         </div>
-        <div className="mt-0.5 text-[11px]">
+        <div className="mt-0.5 flex items-center gap-1 truncate text-[11px]">
           {chapter.downloaded ? (
-            <span className="text-muted-foreground">
+            <span className="truncate text-muted-foreground">
               from{" "}
               <span className="font-medium text-foreground/80">
                 {chapter.sourceProviderName ?? "unknown source"}
@@ -228,7 +228,7 @@ export function ChapterRow({
       {/* Action cluster — clicks here must not trigger the row-open. Hidden in
           multi-select mode so the whole row is a selection target. */}
       {!selecting && (
-      <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center gap-1 shrink-0 sm:gap-2" onClick={(e) => e.stopPropagation()}>
       {/* Save-offline (native apps only) — download this chapter to the device */}
       {onSaveOffline && (
         <Tooltip>
@@ -293,7 +293,7 @@ export function ChapterRow({
                     ) : (
                       <Download className="h-3.5 w-3.5" />
                     )}
-                    {label}
+                    <span className="hidden sm:inline">{label}</span>
                   </Button>
                 </span>
               </TooltipTrigger>
@@ -320,7 +320,7 @@ export function ChapterRow({
                 ) : (
                   <Download className="h-3.5 w-3.5" />
                 )}
-                {label}
+                <span className="hidden sm:inline">{label}</span>
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
