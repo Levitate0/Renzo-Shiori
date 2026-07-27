@@ -6,6 +6,7 @@ import { isNative } from "./bridge";
 import {
   isChapterOffline,
   saveChapterOffline,
+  saveSeriesMeta,
   type BatchProgress,
 } from "./offline";
 
@@ -20,6 +21,23 @@ interface DownloadTarget {
   chapterNumber: number;
   /** Server archive filename (downloaded library chapters only). */
   filename: string;
+  // Series metadata — cloned into the offline copy on the first save so the
+  // offline library shows a cover + info, not just chapter numbers.
+  coverUrl?: string;
+  description?: string;
+  author?: string;
+  status?: string;
+}
+
+function seriesMetaOf(t: DownloadTarget) {
+  return {
+    seriesId: t.seriesId,
+    title: t.seriesTitle,
+    coverUrl: t.coverUrl,
+    description: t.description,
+    author: t.author,
+    status: t.status,
+  };
 }
 
 /** Build the ordered page-image URLs for a downloaded library chapter. */
@@ -69,6 +87,7 @@ export function useOfflineDownload(): {
       }
       mark(key, true);
       try {
+        await saveSeriesMeta(seriesMetaOf(t));
         const pageUrls = await pageUrlsFor(t.seriesId, t.filename);
         await saveChapterOffline({
           seriesId: t.seriesId,
@@ -95,6 +114,8 @@ export function useOfflineDownload(): {
     async (targets: DownloadTarget[]) => {
       if (!isNative() || targets.length === 0) return;
       setBatch({ active: true, done: 0, total: targets.length, progress: null });
+      // Clone the series info + cover once for the whole batch.
+      await saveSeriesMeta(seriesMetaOf(targets[0]));
       let saved = 0;
       for (let i = 0; i < targets.length; i++) {
         const t = targets[i];

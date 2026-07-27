@@ -37,9 +37,23 @@ export interface ChaptersSectionProps {
   paused: boolean;
   /** User may queue downloads. */
   canManage: boolean;
+  /** Series info cloned into offline saves (cover/description/author) so the
+   *  offline library looks like it does online. */
+  seriesCoverUrl?: string;
+  seriesDescription?: string;
+  seriesAuthor?: string;
+  seriesStatus?: string;
 }
 
-export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSectionProps) {
+export function ChaptersSection({
+  seriesId,
+  paused,
+  canManage,
+  seriesCoverUrl,
+  seriesDescription,
+  seriesAuthor,
+  seriesStatus,
+}: ChaptersSectionProps) {
   const [missingOnly, setMissingOnly] = useState(false);
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState<Set<number>>(new Set());
@@ -96,14 +110,27 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
   useEffect(() => {
     void refreshOfflineSaved();
   }, [refreshOfflineSaved]);
+  const offlineSeriesMeta = useMemo(
+    () => ({
+      coverUrl: seriesCoverUrl,
+      description: seriesDescription,
+      author: seriesAuthor,
+      status: seriesStatus,
+    }),
+    [seriesCoverUrl, seriesDescription, seriesAuthor, seriesStatus],
+  );
+  const allDownloadedNumbers = useMemo(
+    () => (chapters ?? []).filter((c) => c.downloaded && c.number != null).map((c) => c.number as number),
+    [chapters],
+  );
   const handleSaveOffline = useCallback(
     async (chapterNumber: number) => {
       const filename = filenameByNumber.get(chapterNumber);
       if (!filename || !readerChapters) return;
-      await downloadChapter({ seriesId, seriesTitle: readerChapters.title, chapterNumber, filename });
+      await downloadChapter({ seriesId, seriesTitle: readerChapters.title, chapterNumber, filename, ...offlineSeriesMeta });
       void refreshOfflineSaved();
     },
-    [filenameByNumber, readerChapters, downloadChapter, seriesId, refreshOfflineSaved],
+    [filenameByNumber, readerChapters, downloadChapter, seriesId, refreshOfflineSaved, offlineSeriesMeta],
   );
   /** Batch-save many chapters for offline (a selection / whole series for a trip). */
   const handleBulkSaveOffline = useCallback(
@@ -112,13 +139,13 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
       const targets = numbers
         .map((n) => {
           const filename = filenameByNumber.get(n);
-          return filename ? { seriesId, seriesTitle: readerChapters.title, chapterNumber: n, filename } : null;
+          return filename ? { seriesId, seriesTitle: readerChapters.title, chapterNumber: n, filename, ...offlineSeriesMeta } : null;
         })
         .filter((t): t is NonNullable<typeof t> => t !== null);
       await downloadMany(targets);
       void refreshOfflineSaved();
     },
-    [filenameByNumber, readerChapters, downloadMany, seriesId, refreshOfflineSaved],
+    [filenameByNumber, readerChapters, downloadMany, seriesId, refreshOfflineSaved, offlineSeriesMeta],
   );
 
   // Opening a series kicks a stale-guarded source scan (backend skips providers
@@ -555,6 +582,19 @@ export function ChaptersSection({ seriesId, paused, canManage }: ChaptersSection
                       )}
                       Delete downloads
                       <span className="tabular-nums opacity-80">({downloadedCount})</span>
+                    </button>
+                  )}
+                  {native && allDownloadedNumbers.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void handleBulkSaveOffline(allDownloadedNumbers)}
+                      disabled={batch.active}
+                      title="Save the whole series to this device for offline reading"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-[11px] font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {batch.active ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CloudDownload className="h-3.5 w-3.5" />}
+                      {batch.active ? `Saving ${batch.done}/${batch.total}` : "Save series offline"}
+                      {!batch.active && <span className="tabular-nums opacity-80">({allDownloadedNumbers.length})</span>}
                     </button>
                   )}
                   {readerEnabled && total > 0 && (

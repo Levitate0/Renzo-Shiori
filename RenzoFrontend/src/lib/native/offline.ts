@@ -5,7 +5,7 @@
  * circuits (no native → no-op), so the browser build is unaffected.
  */
 import { nativePrimitives, requireNative } from "./bridge";
-import type { OfflineChapter, OfflineManifest } from "./types";
+import type { NativePrimitives, OfflineChapter, OfflineManifest, OfflineSeries } from "./types";
 
 const MANIFEST_KEY = "renzo.offline.manifest.v1";
 const AUTOPURGE_KEY = "renzo.offline.autopurge";
@@ -29,16 +29,19 @@ function extFromContentType(ct: string | null): string {
 // ── manifest ───────────────────────────────────────────────────────────────
 export async function getManifest(): Promise<OfflineManifest> {
   const nat = nativePrimitives();
-  if (!nat) return { version: 1, chapters: {} };
+  if (!nat) return { version: 2, series: {}, chapters: {} };
   const raw = await nat.kvGet(MANIFEST_KEY);
-  if (!raw) return { version: 1, chapters: {} };
+  if (!raw) return { version: 2, series: {}, chapters: {} };
   try {
-    const parsed = JSON.parse(raw) as OfflineManifest;
-    if (parsed?.version === 1 && parsed.chapters) return parsed;
+    const parsed = JSON.parse(raw) as Partial<OfflineManifest> & { version?: number };
+    if (parsed?.chapters) {
+      // Migrate v1 (no series map) forward.
+      return { version: 2, series: parsed.series ?? {}, chapters: parsed.chapters };
+    }
   } catch {
     /* corrupt manifest — start fresh */
   }
-  return { version: 1, chapters: {} };
+  return { version: 2, series: {}, chapters: {} };
 }
 
 async function saveManifest(m: OfflineManifest): Promise<void> {
@@ -53,6 +56,96 @@ export function autoPurgeEnabled(): boolean {
 export function setAutoPurge(on: boolean): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(AUTOPURGE_KEY, on ? "on" : "off");
+}
+
+// ── series metadata (cloned so offline looks like online) ────────────────────
+const COVERS = `${ROOT}/covers`;
+
+export interface SaveSeriesInput {
+  seriesId: string;
+  title: string;
+  /** Fully-qualified cover image URL (downloaded once). */
+  coverUrl?: string;
+  description?: string;
+  author?: string;
+  status?: string;
+}
+
+/** Clone a series' info + cover for offline. Cover is fetched once and reused. */
+export async function saveSeriesMeta(input: SaveSeriesInput): Promise<void> {
+  const nat = nativePrimitives();
+  if (!nat) return;
+  const m = await getManifest();
+  let coverPath = m.series[input.seriesId]?.coverPath;
+  if (!coverPath && input.coverUrl) {
+    try {
+      const res = await fetch(input.coverUrl);
+      if (res.ok) {
+        const buf = await res.arrayBuffer();
+        const rel = `${COVERS}/${sanitize(input.seriesId)}.${extFromContentType(res.headers.get("content-type"))}`;
+        await nat.writeFile(rel, buf);
+        coverPath = rel;
+      }
+    } catch {
+      /* cover is best-effort */
+    }
+  }
+  m.series[input.seriesId] = {
+    seriesId: input.seriesId,
+    title: input.title,
+    coverPath,
+    description: input.description,
+    author: input.author,
+    status: input.status,
+  };
+  await saveManifest(m);
+}
+
+export interface OfflineSeriesView extends OfflineSeries {
+  coverSrc?: string;
+  chapterCount: number;
+  bytes: number;
+}
+
+/** Downloaded series with a displayable cover + chapter aggregate (for the library). */
+export async function getOfflineSeries(): Promise<OfflineSeriesView[]> {
+  const nat = nativePrimitives();
+  if (!nat) return [];
+  const m = await getManifest();
+  const agg = new Map<string, { count: number; bytes: number }>();
+  for (const c of Object.values(m.chapters)) {
+    const e = agg.get(c.seriesId) ?? { count: 0, bytes: 0 };
+    e.count++;
+    e.bytes += c.bytes;
+    agg.set(c.seriesId, e);
+  }
+  const out: OfflineSeriesView[] = [];
+  for (const s of Object.values(m.series)) {
+    const a = agg.get(s.seriesId);
+    if (!a) continue; // no chapters saved → don't list
+    let coverSrc: string | undefined;
+    if (s.coverPath) {
+      try {
+        coverSrc = await nat.readFileSrc(s.coverPath);
+      } catch {
+        /* cover missing */
+      }
+    }
+    out.push({ ...s, coverSrc, chapterCount: a.count, bytes: a.bytes });
+  }
+  return out.sort((x, y) => x.title.localeCompare(y.title));
+}
+
+/** Drop series entries (and their covers) that no longer have any saved chapters. */
+async function pruneOrphanSeries(m: OfflineManifest, nat: NativePrimitives): Promise<void> {
+  const withChapters = new Set(Object.values(m.chapters).map((c) => c.seriesId));
+  for (const sid of Object.keys(m.series)) {
+    if (!withChapters.has(sid)) {
+      const cp = m.series[sid].coverPath;
+      if (cp) await nat.deletePath(cp).catch(() => {});
+      delete m.series[sid];
+    }
+  }
 }
 
 // ── download ─────────────────────────────────────────────────────────────────
@@ -185,6 +278,7 @@ export async function deleteOffline(chapterKey: string): Promise<void> {
   await nat.deletePath(chapterDir(chapterKey)).catch(() => {});
   const m = await getManifest();
   delete m.chapters[chapterKey];
+  await pruneOrphanSeries(m, nat);
   await saveManifest(m);
 }
 
@@ -204,6 +298,7 @@ export async function purgeAll(exceptChapterKey?: string): Promise<number> {
     delete m.chapters[key];
     purged++;
   }
+  await pruneOrphanSeries(m, nat);
   await saveManifest(m);
   return purged;
 }

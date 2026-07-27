@@ -1,6 +1,7 @@
 "use client";
 import * as React from "react";
-import { FolderOpen, Trash2, HardDrive, WifiOff } from "lucide-react";
+import Link from "next/link";
+import { ArrowLeft, FolderOpen, Trash2, HardDrive, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
@@ -82,11 +83,20 @@ export default function DownloadsPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
       <div className="flex items-center justify-between gap-3">
-        <div>
+        <div className="flex items-center gap-2 min-w-0">
+          <Link
+            href="/library"
+            aria-label="Back to library"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <div className="min-w-0">
           <h1 className="text-xl font-semibold">Offline downloads</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {items.length} chapter{items.length === 1 ? "" : "s"} · {formatBytes(bytes)} on device
           </p>
+          </div>
         </div>
         {items.length > 0 && (
           <Button variant="outline" size="sm" onClick={() => void removeAll()} className="gap-1.5">

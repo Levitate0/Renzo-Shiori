@@ -23,8 +23,20 @@ export interface OfflineChapter {
   savedAt: number;
 }
 
+/** Series-level info cloned for offline so the library looks like it does online. */
+export interface OfflineSeries {
+  seriesId: string;
+  title: string;
+  /** Saved cover image (app-relative path), if downloaded. */
+  coverPath?: string;
+  description?: string;
+  author?: string;
+  status?: string;
+}
+
 export interface OfflineManifest {
-  version: 1;
+  version: 2;
+  series: Record<string, OfflineSeries>;
   chapters: Record<string, OfflineChapter>;
 }
 

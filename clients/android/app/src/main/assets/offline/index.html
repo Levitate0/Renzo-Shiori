@@ -5,135 +5,168 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Renzo Shiori — Offline</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --bg:#0a0a0a; --card:#141414; --border:#262626; --fg:#fafafa; --muted:#a1a1aa; --accent:#e11d48; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; background: #0a0a0a; color: #fafafa;
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-  header { position: sticky; top: 0; display: flex; align-items: center; gap: 12px;
-    padding: calc(env(safe-area-inset-top,0px) + 12px) 14px 12px; background: #0a0a0acc;
-    backdrop-filter: blur(8px); border-bottom: 1px solid #27272a; z-index: 10; }
-  header h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; }
-  button { font: inherit; color: inherit; background: #18181b; border: 1px solid #3f3f46;
-    border-radius: 8px; padding: 8px 12px; cursor: pointer; }
-  button:active { background: #27272a; }
-  .muted { color: #a1a1aa; }
-  #list { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-  .series-title { font-size: 12px; font-weight: 600; color: #a1a1aa; margin: 14px 4px 2px;
-    text-transform: uppercase; letter-spacing: .04em; }
-  .chapter { display: flex; align-items: center; gap: 10px; padding: 12px 14px;
-    background: #141414; border: 1px solid #262626; border-radius: 10px; cursor: pointer; }
-  .chapter:active { background: #1c1c1c; }
-  .chapter .n { font-weight: 600; }
-  .chapter .meta { font-size: 12px; color: #71717a; margin-left: auto; }
-  .empty { text-align: center; color: #71717a; padding: 64px 24px; }
-  #reader { display: none; }
-  #reader img { display: block; width: 100%; height: auto; }
-  #pages { max-width: 900px; margin: 0 auto; }
-  .spinner { text-align: center; padding: 40px; color: #71717a; }
+  html, body { margin:0; background:var(--bg); color:var(--fg);
+    font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:12px;
+    padding: calc(env(safe-area-inset-top,0px) + 12px) 14px 12px;
+    background:#0a0a0acc; backdrop-filter:blur(10px); border-bottom:1px solid var(--border); }
+  header .brand { display:flex; align-items:center; gap:8px; flex:1; min-width:0; }
+  header h1 { font-size:15px; font-weight:600; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  header .badge { font-size:10px; font-weight:700; letter-spacing:.06em; color:var(--muted);
+    border:1px solid var(--border); border-radius:999px; padding:2px 8px; text-transform:uppercase; }
+  button { font:inherit; color:inherit; background:var(--card); border:1px solid #3f3f46;
+    border-radius:8px; padding:8px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  button:active { background:#27272a; }
+  .reconnect { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .iconbtn { padding:8px 10px; }
+  main { padding:14px; padding-bottom:40px; }
+  /* library grid */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:14px; }
+  .card { cursor:pointer; }
+  .cover { position:relative; width:100%; aspect-ratio:2/3; border-radius:12px; overflow:hidden;
+    background:linear-gradient(135deg,#1c1c22,#0e0e12); border:1px solid var(--border); }
+  .cover img { width:100%; height:100%; object-fit:cover; display:block; }
+  .cover .ph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#52525b; font-size:28px; }
+  .cover .count { position:absolute; right:8px; top:8px; background:#000000b3; color:#fff;
+    font-size:11px; font-weight:600; padding:3px 8px; border-radius:999px; backdrop-filter:blur(4px); }
+  .card .t { margin-top:8px; font-size:13px; font-weight:600; line-height:1.3;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .card .s { font-size:11px; color:var(--muted); margin-top:2px; }
+  /* series detail */
+  .hero { display:flex; gap:14px; margin-bottom:16px; }
+  .hero .cover { width:110px; flex:0 0 110px; }
+  .hero h2 { margin:0 0 4px; font-size:18px; }
+  .hero .by { color:var(--muted); font-size:12px; }
+  .hero .desc { color:#c4c4c8; font-size:12px; margin-top:8px; line-height:1.5;
+    display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden; }
+  .chapter { display:flex; align-items:center; gap:10px; padding:12px 14px; margin-bottom:8px;
+    background:var(--card); border:1px solid var(--border); border-radius:10px; cursor:pointer; }
+  .chapter:active { background:#1c1c1c; }
+  .chapter .n { font-weight:600; }
+  .chapter .meta { font-size:12px; color:#71717a; margin-left:auto; }
+  .empty { text-align:center; color:#71717a; padding:64px 24px; line-height:1.6; }
+  /* reader */
+  #readerPages { max-width:900px; margin:0 auto; }
+  #readerPages img { display:block; width:100%; height:auto; }
+  .spinner { text-align:center; padding:40px; color:#71717a; }
+  .hidden { display:none !important; }
+  .section-label { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase;
+    letter-spacing:.05em; margin:0 0 10px; }
 </style>
 </head>
 <body>
 <header>
-  <button id="backBtn" style="display:none">‹ Back</button>
-  <h1 id="title">Offline downloads</h1>
-  <button id="reconnectBtn">Reconnect</button>
+  <button id="backBtn" class="iconbtn hidden" aria-label="Back">‹</button>
+  <div class="brand"><h1 id="title">Offline library</h1><span class="badge">Offline</span></div>
+  <button id="reconnectBtn" class="reconnect">Reconnect</button>
 </header>
-
-<div id="list"></div>
-<div id="reader"><div id="pages"></div></div>
+<main>
+  <div id="library"></div>
+  <div id="series" class="hidden"></div>
+  <div id="reader" class="hidden"><div id="readerPages"></div></div>
+</main>
 
 <script>
 (function () {
   var A = window.__RenzoAndroid;
-  var listEl = document.getElementById('list');
+  var libraryEl = document.getElementById('library');
+  var seriesEl = document.getElementById('series');
   var readerEl = document.getElementById('reader');
-  var pagesEl = document.getElementById('pages');
+  var readerPagesEl = document.getElementById('readerPages');
   var titleEl = document.getElementById('title');
   var backBtn = document.getElementById('backBtn');
+  var view = 'library';
+  var currentSeriesId = null;
 
   document.getElementById('reconnectBtn').addEventListener('click', function () {
     try { A && A.reconnect(); } catch (e) {}
   });
-  backBtn.addEventListener('click', showList);
+  backBtn.addEventListener('click', function () {
+    if (view === 'reader') showSeries(currentSeriesId);
+    else showLibrary();
+  });
 
-  function mimeFromPath(p) {
-    var e = (p.split('.').pop() || '').toLowerCase();
-    return e === 'png' ? 'image/png' : e === 'webp' ? 'image/webp'
-      : e === 'gif' ? 'image/gif' : e === 'avif' ? 'image/avif' : 'image/jpeg';
-  }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function mime(p){ var e=(p.split('.').pop()||'').toLowerCase();
+    return e==='png'?'image/png':e==='webp'?'image/webp':e==='gif'?'image/gif':e==='avif'?'image/avif':'image/jpeg'; }
+  function dataUri(path){ if(!path) return null; try { var b=A.readFileB64(path); return b?('data:'+mime(path)+';base64,'+b):null; } catch(e){ return null; } }
+  function manifest(){ if(!A) return {series:{},chapters:{}};
+    try { var m=JSON.parse(A.kvGet('renzo.offline.manifest.v1')||'{}'); m.series=m.series||{}; m.chapters=m.chapters||{}; return m; }
+    catch(e){ return {series:{},chapters:{}}; } }
+  function chaptersOf(m, sid){ return Object.keys(m.chapters).map(function(k){return m.chapters[k];})
+    .filter(function(c){return c.seriesId===sid;}).sort(function(a,b){return a.chapterNumber-b.chapterNumber;}); }
 
-  function manifest() {
-    if (!A) return { chapters: {} };
-    try { return JSON.parse(A.kvGet('renzo.offline.manifest.v1') || '{"chapters":{}}'); }
-    catch (e) { return { chapters: {} }; }
-  }
-
-  function showList() {
-    readerEl.style.display = 'none';
-    listEl.style.display = 'flex';
-    backBtn.style.display = 'none';
-    titleEl.textContent = 'Offline downloads';
-    pagesEl.innerHTML = '';
-    render();
-  }
-
-  function render() {
-    var m = manifest();
-    var chapters = Object.keys(m.chapters).map(function (k) { return m.chapters[k]; });
-    if (!A) { listEl.innerHTML = '<div class="empty">Open this from the Renzo Shiori app.</div>'; return; }
-    if (chapters.length === 0) {
-      listEl.innerHTML = '<div class="empty">No downloaded chapters.<br>Save some for offline while you’re online.</div>';
-      return;
-    }
-    // group by series
-    var bySeries = {};
-    chapters.forEach(function (c) { (bySeries[c.seriesTitle] = bySeries[c.seriesTitle] || []).push(c); });
-    var html = '';
-    Object.keys(bySeries).sort().forEach(function (title) {
-      html += '<div class="series-title">' + esc(title) + '</div>';
-      bySeries[title].sort(function (a, b) { return a.chapterNumber - b.chapterNumber; }).forEach(function (c) {
-        html += '<div class="chapter" data-key="' + esc(c.chapterKey) + '">' +
-          '<span class="n">Ch. ' + esc(String(c.chapterNumber)) + '</span>' +
-          '<span class="meta">' + c.pageCount + ' pages</span></div>';
-      });
+  function showLibrary(){
+    view='library'; currentSeriesId=null;
+    libraryEl.classList.remove('hidden'); seriesEl.classList.add('hidden'); readerEl.classList.add('hidden');
+    backBtn.classList.add('hidden'); titleEl.textContent='Offline library';
+    var m=manifest();
+    var counts={}; Object.keys(m.chapters).forEach(function(k){var c=m.chapters[k]; counts[c.seriesId]=(counts[c.seriesId]||0)+1;});
+    var series=Object.keys(m.series).map(function(id){return m.series[id];})
+      .filter(function(s){return counts[s.seriesId]>0;})
+      .sort(function(a,b){return String(a.title).localeCompare(String(b.title));});
+    if(!A){ libraryEl.innerHTML='<div class="empty">Open this from the Renzo Shiori app.</div>'; return; }
+    if(series.length===0){ libraryEl.innerHTML='<div class="empty">No downloaded series yet.<br>Save some for offline while you’re online.</div>'; return; }
+    var html='<div class="grid">';
+    series.forEach(function(s){
+      var cov=dataUri(s.coverPath);
+      html+='<div class="card" data-id="'+esc(s.seriesId)+'">'+
+        '<div class="cover">'+(cov?('<img src="'+cov+'" alt="">'):'<div class="ph">⛩</div>')+
+        '<span class="count">'+counts[s.seriesId]+'</span></div>'+
+        '<div class="t">'+esc(s.title)+'</div>'+
+        '<div class="s">'+counts[s.seriesId]+' chapter'+(counts[s.seriesId]===1?'':'s')+'</div></div>';
     });
-    listEl.innerHTML = html;
-    Array.prototype.forEach.call(listEl.querySelectorAll('.chapter'), function (el) {
-      el.addEventListener('click', function () { openChapter(el.getAttribute('data-key')); });
+    html+='</div>';
+    libraryEl.innerHTML=html;
+    Array.prototype.forEach.call(libraryEl.querySelectorAll('.card'), function(el){
+      el.addEventListener('click', function(){ showSeries(el.getAttribute('data-id')); });
     });
   }
 
-  function openChapter(key) {
-    var m = manifest();
-    var c = m.chapters[key];
-    if (!c) return;
-    listEl.style.display = 'none';
-    readerEl.style.display = 'block';
-    backBtn.style.display = 'inline-block';
-    titleEl.textContent = c.seriesTitle + ' · Ch. ' + c.chapterNumber;
-    pagesEl.innerHTML = '<div class="spinner">Loading…</div>';
-    // Render pages sequentially to keep memory bounded on large chapters.
-    var frag = document.createDocumentFragment();
-    for (var i = 0; i < c.pagePaths.length; i++) {
-      var path = c.pagePaths[i];
-      var b64 = '';
-      try { b64 = A.readFileB64(path); } catch (e) {}
-      if (!b64) continue;
-      var img = document.createElement('img');
-      img.loading = 'lazy';
-      img.src = 'data:' + mimeFromPath(path) + ';base64,' + b64;
-      frag.appendChild(img);
-    }
-    pagesEl.innerHTML = '';
-    pagesEl.appendChild(frag);
-    window.scrollTo(0, 0);
+  function showSeries(sid){
+    view='series'; currentSeriesId=sid;
+    libraryEl.classList.add('hidden'); seriesEl.classList.remove('hidden'); readerEl.classList.add('hidden');
+    backBtn.classList.remove('hidden');
+    var m=manifest(); var s=m.series[sid]; if(!s){ showLibrary(); return; }
+    titleEl.textContent=s.title;
+    var cov=dataUri(s.coverPath);
+    var chs=chaptersOf(m, sid);
+    var html='<div class="hero"><div class="cover">'+(cov?('<img src="'+cov+'" alt="">'):'<div class="ph">⛩</div>')+'</div>'+
+      '<div><h2>'+esc(s.title)+'</h2>'+
+      (s.author?('<div class="by">by '+esc(s.author)+'</div>'):'')+
+      (s.description?('<div class="desc">'+esc(s.description)+'</div>'):'')+'</div></div>';
+    html+='<p class="section-label">'+chs.length+' chapter'+(chs.length===1?'':'s')+' offline</p>';
+    chs.forEach(function(c){
+      html+='<div class="chapter" data-key="'+esc(c.chapterKey)+'"><span class="n">Ch. '+esc(String(c.chapterNumber))+'</span>'+
+        '<span class="meta">'+c.pageCount+' pages</span></div>';
+    });
+    seriesEl.innerHTML=html;
+    Array.prototype.forEach.call(seriesEl.querySelectorAll('.chapter'), function(el){
+      el.addEventListener('click', function(){ openChapter(el.getAttribute('data-key')); });
+    });
+    window.scrollTo(0,0);
   }
 
-  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function openChapter(key){
+    var m=manifest(); var c=m.chapters[key]; if(!c) return;
+    view='reader';
+    libraryEl.classList.add('hidden'); seriesEl.classList.add('hidden'); readerEl.classList.remove('hidden');
+    backBtn.classList.remove('hidden');
+    titleEl.textContent=(m.series[c.seriesId]?m.series[c.seriesId].title:c.seriesTitle)+' · Ch. '+c.chapterNumber;
+    readerPagesEl.innerHTML='<div class="spinner">Loading…</div>';
+    var frag=document.createDocumentFragment();
+    for(var i=0;i<c.pagePaths.length;i++){
+      var uri=dataUri(c.pagePaths[i]); if(!uri) continue;
+      var img=document.createElement('img'); img.loading='lazy'; img.src=uri; frag.appendChild(img);
+    }
+    readerPagesEl.innerHTML=''; readerPagesEl.appendChild(frag);
+    window.scrollTo(0,0);
+  }
 
-  render();
+  showLibrary();
 })();
 </script>
 </body>
