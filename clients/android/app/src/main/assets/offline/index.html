@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Renzo Shiori — Offline</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: #0a0a0a; color: #fafafa;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { position: sticky; top: 0; display: flex; align-items: center; gap: 12px;
+    padding: calc(env(safe-area-inset-top,0px) + 12px) 14px 12px; background: #0a0a0acc;
+    backdrop-filter: blur(8px); border-bottom: 1px solid #27272a; z-index: 10; }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  button { font: inherit; color: inherit; background: #18181b; border: 1px solid #3f3f46;
+    border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+  button:active { background: #27272a; }
+  .muted { color: #a1a1aa; }
+  #list { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .series-title { font-size: 12px; font-weight: 600; color: #a1a1aa; margin: 14px 4px 2px;
+    text-transform: uppercase; letter-spacing: .04em; }
+  .chapter { display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+    background: #141414; border: 1px solid #262626; border-radius: 10px; cursor: pointer; }
+  .chapter:active { background: #1c1c1c; }
+  .chapter .n { font-weight: 600; }
+  .chapter .meta { font-size: 12px; color: #71717a; margin-left: auto; }
+  .empty { text-align: center; color: #71717a; padding: 64px 24px; }
+  #reader { display: none; }
+  #reader img { display: block; width: 100%; height: auto; }
+  #pages { max-width: 900px; margin: 0 auto; }
+  .spinner { text-align: center; padding: 40px; color: #71717a; }
+</style>
+</head>
+<body>
+<header>
+  <button id="backBtn" style="display:none">‹ Back</button>
+  <h1 id="title">Offline downloads</h1>
+  <button id="reconnectBtn">Reconnect</button>
+</header>
+
+<div id="list"></div>
+<div id="reader"><div id="pages"></div></div>
+
+<script>
+(function () {
+  var A = window.__RenzoAndroid;
+  var listEl = document.getElementById('list');
+  var readerEl = document.getElementById('reader');
+  var pagesEl = document.getElementById('pages');
+  var titleEl = document.getElementById('title');
+  var backBtn = document.getElementById('backBtn');
+
+  document.getElementById('reconnectBtn').addEventListener('click', function () {
+    try { A && A.reconnect(); } catch (e) {}
+  });
+  backBtn.addEventListener('click', showList);
+
+  function mimeFromPath(p) {
+    var e = (p.split('.').pop() || '').toLowerCase();
+    return e === 'png' ? 'image/png' : e === 'webp' ? 'image/webp'
+      : e === 'gif' ? 'image/gif' : e === 'avif' ? 'image/avif' : 'image/jpeg';
+  }
+
+  function manifest() {
+    if (!A) return { chapters: {} };
+    try { return JSON.parse(A.kvGet('renzo.offline.manifest.v1') || '{"chapters":{}}'); }
+    catch (e) { return { chapters: {} }; }
+  }
+
+  function showList() {
+    readerEl.style.display = 'none';
+    listEl.style.display = 'flex';
+    backBtn.style.display = 'none';
+    titleEl.textContent = 'Offline downloads';
+    pagesEl.innerHTML = '';
+    render();
+  }
+
+  function render() {
+    var m = manifest();
+    var chapters = Object.keys(m.chapters).map(function (k) { return m.chapters[k]; });
+    if (!A) { listEl.innerHTML = '<div class="empty">Open this from the Renzo Shiori app.</div>'; return; }
+    if (chapters.length === 0) {
+      listEl.innerHTML = '<div class="empty">No downloaded chapters.<br>Save some for offline while you’re online.</div>';
+      return;
+    }
+    // group by series
+    var bySeries = {};
+    chapters.forEach(function (c) { (bySeries[c.seriesTitle] = bySeries[c.seriesTitle] || []).push(c); });
+    var html = '';
+    Object.keys(bySeries).sort().forEach(function (title) {
+      html += '<div class="series-title">' + esc(title) + '</div>';
+      bySeries[title].sort(function (a, b) { return a.chapterNumber - b.chapterNumber; }).forEach(function (c) {
+        html += '<div class="chapter" data-key="' + esc(c.chapterKey) + '">' +
+          '<span class="n">Ch. ' + esc(String(c.chapterNumber)) + '</span>' +
+          '<span class="meta">' + c.pageCount + ' pages</span></div>';
+      });
+    });
+    listEl.innerHTML = html;
+    Array.prototype.forEach.call(listEl.querySelectorAll('.chapter'), function (el) {
+      el.addEventListener('click', function () { openChapter(el.getAttribute('data-key')); });
+    });
+  }
+
+  function openChapter(key) {
+    var m = manifest();
+    var c = m.chapters[key];
+    if (!c) return;
+    listEl.style.display = 'none';
+    readerEl.style.display = 'block';
+    backBtn.style.display = 'inline-block';
+    titleEl.textContent = c.seriesTitle + ' · Ch. ' + c.chapterNumber;
+    pagesEl.innerHTML = '<div class="spinner">Loading…</div>';
+    // Render pages sequentially to keep memory bounded on large chapters.
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < c.pagePaths.length; i++) {
+      var path = c.pagePaths[i];
+      var b64 = '';
+      try { b64 = A.readFileB64(path); } catch (e) {}
+      if (!b64) continue;
+      var img = document.createElement('img');
+      img.loading = 'lazy';
+      img.src = 'data:' + mimeFromPath(path) + ';base64,' + b64;
+      frag.appendChild(img);
+    }
+    pagesEl.innerHTML = '';
+    pagesEl.appendChild(frag);
+    window.scrollTo(0, 0);
+  }
+
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  render();
+})();
+</script>
+</body>
+</html>

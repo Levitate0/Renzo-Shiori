@@ -8,6 +8,7 @@ import android.net.Uri
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import androidx.documentfile.provider.DocumentFile
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -31,6 +32,7 @@ import java.io.File
 class RenzoNativeBridge(
     private val context: Context,
     private val onPickFolder: () -> Unit,
+    private val onReconnect: () -> Unit,
 ) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("renzo_offline", Context.MODE_PRIVATE)
@@ -149,6 +151,23 @@ class RenzoNativeBridge(
             DocumentFile.fromTreeUri(context, tree)?.name ?: Uri.decode(tree.lastPathSegment)
         } catch (_: Exception) {
             null
+        }
+    }
+
+    // ── offline reader ↔ shell ───────────────────────────────────────────────
+    /** From the bundled offline reader: try to reach the server again. */
+    @JavascriptInterface
+    fun reconnect() = onReconnect()
+
+    /** Kotlin-side: are there any downloaded chapters? (used to decide whether to
+     *  drop into the offline reader when the server is unreachable). */
+    fun hasDownloads(): Boolean {
+        val raw = prefs.getString("kv_renzo.offline.manifest.v1", null) ?: return false
+        return try {
+            val chapters = JSONObject(raw).optJSONObject("chapters")
+            chapters != null && chapters.length() > 0
+        } catch (_: Exception) {
+            false
         }
     }
 

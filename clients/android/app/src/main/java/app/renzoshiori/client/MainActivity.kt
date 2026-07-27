@@ -176,7 +176,13 @@ class MainActivity : AppCompatActivity() {
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) {
-                    showServerPanel(getString(R.string.error_lost))
+                    // Server unreachable: drop into the bundled offline reader if there
+                    // are downloads, otherwise show the connect panel.
+                    if (::nativeBridge.isInitialized && nativeBridge.hasDownloads()) {
+                        loadOfflineReader()
+                    } else {
+                        showServerPanel(getString(R.string.error_lost))
+                    }
                 }
             }
 
@@ -205,7 +211,11 @@ class MainActivity : AppCompatActivity() {
 
         // Offline bridge — window.__RenzoAndroid. Only the trusted server UI runs
         // in this WebView (external links open in the system browser).
-        nativeBridge = RenzoNativeBridge(this) { folderPicker.launch(null) }
+        nativeBridge = RenzoNativeBridge(
+            this,
+            onPickFolder = { folderPicker.launch(null) },
+            onReconnect = { runOnUiThread { reconnectToServer() } },
+        )
         webView.addJavascriptInterface(nativeBridge, "__RenzoAndroid")
 
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
@@ -283,6 +293,20 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton(R.string.exit_dialog_change_server) { _, _ -> showServerPanel(null) }
             .setNegativeButton(R.string.exit_dialog_cancel, null)
             .show()
+    }
+
+    /** Load the bundled offline reader (reads downloads via window.__RenzoAndroid). */
+    private fun loadOfflineReader() {
+        serverPanel.visibility = View.GONE
+        errorText.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+        webView.loadUrl("file:///android_asset/offline/index.html")
+    }
+
+    /** From the offline reader's "Reconnect" button: retry the saved server. */
+    private fun reconnectToServer() {
+        val saved = serverUrl ?: prefs.getString("serverUrl", null)
+        if (saved != null) connect(saved) else showServerPanel(null)
     }
 
     private fun showServerPanel(error: String?) {
