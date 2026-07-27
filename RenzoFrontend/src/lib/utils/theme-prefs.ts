@@ -6,6 +6,8 @@
 export interface ThemePrefs {
   /** next-themes mode. */
   theme?: "light" | "dark" | "system";
+  /** Named theme preset id (renzo/amoled/midnight/…); drives the palette. */
+  preset?: string;
   /** Accent preset id, or "custom". */
   accent?: string;
   /** Custom accent as "H S% L%" (only meaningful when accent === "custom"). */

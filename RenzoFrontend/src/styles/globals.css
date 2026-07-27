@@ -3154,6 +3154,91 @@
     --primary-l: 46.9%;
   }
 
+  /* ── Named theme presets ──────────────────────────────────────────────
+     Selected via [data-theme] on <html>; each bundles a full background
+     palette + a default accent. "renzo" (base dark) and "daylight" (base
+     light) need no block — the :root / .dark defaults already are them.
+     Higher specificity than .dark so these win in dark mode. */
+  html[data-theme="amoled"] {
+    --background: 0 0% 0%;
+    --card: 0 0% 6%;
+    --card-foreground: 0 0% 95%;
+    --popover: 0 0% 5%;
+    --secondary: 0 0% 11%;
+    --muted: 0 0% 10%;
+    --accent: 0 0% 11%;
+    --border: 0 0% 14%;
+    --input: 0 0% 14%;
+  }
+  html[data-theme="midnight"] {
+    --background: 222 47% 8%;
+    --card: 222 40% 13%;
+    --card-foreground: 210 40% 96%;
+    --foreground: 210 40% 96%;
+    --popover: 222 44% 11%;
+    --secondary: 222 30% 19%;
+    --muted: 222 26% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 222 30% 19%;
+    --border: 222 26% 21%;
+    --input: 222 26% 21%;
+    --primary-h: 217.2;
+    --primary-s: 91.2%;
+    --primary-l: 59.8%;
+  }
+  html[data-theme="sakura"] {
+    --background: 330 22% 7%;
+    --card: 330 18% 12%;
+    --popover: 330 20% 10%;
+    --secondary: 330 15% 18%;
+    --muted: 330 12% 16%;
+    --accent: 330 15% 18%;
+    --border: 330 12% 20%;
+    --input: 330 12% 20%;
+    --primary-h: 340;
+    --primary-s: 82%;
+    --primary-l: 66%;
+  }
+  html[data-theme="matcha"] {
+    --background: 140 15% 6%;
+    --card: 140 12% 11%;
+    --popover: 140 14% 9%;
+    --secondary: 140 10% 17%;
+    --muted: 140 8% 15%;
+    --accent: 140 10% 17%;
+    --border: 140 8% 19%;
+    --input: 140 8% 19%;
+    --primary-h: 142.1;
+    --primary-s: 70.6%;
+    --primary-l: 45.3%;
+  }
+  html[data-theme="ember"] {
+    --background: 20 22% 6%;
+    --card: 20 18% 11%;
+    --popover: 20 20% 9%;
+    --secondary: 20 14% 17%;
+    --muted: 20 12% 15%;
+    --accent: 20 14% 17%;
+    --border: 20 12% 19%;
+    --input: 20 12% 19%;
+    --primary-h: 24.6;
+    --primary-s: 95%;
+    --primary-l: 53.1%;
+  }
+  html[data-theme="ocean"] {
+    --background: 195 40% 7%;
+    --card: 195 34% 12%;
+    --popover: 195 38% 10%;
+    --secondary: 195 28% 18%;
+    --muted: 195 24% 16%;
+    --accent: 195 28% 18%;
+    --border: 195 24% 20%;
+    --input: 195 24% 20%;
+    --primary-h: 172;
+    --primary-s: 66%;
+    --primary-l: 45%;
+  }
+
   * {
     border-color: hsl(var(--border));
     caret-color: transparent;

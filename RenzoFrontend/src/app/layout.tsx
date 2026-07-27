@@ -88,11 +88,17 @@ export default function RootLayout({
                 }
 
                 try {
-                  // Accent color theme — see src/lib/utils/accent-theme.ts.
-                  // "rose" is the default and needs no attribute (it's the
-                  // fallback CSS values), so only non-default accents apply one.
+                  // Named theme preset — palette via [data-theme]; see
+                  // src/lib/utils/theme-preset.ts. "renzo"/"daylight" are the
+                  // base dark/light and need no attribute.
+                  var preset = localStorage.getItem('renzo-preset');
+                  var base = ['renzo', 'daylight'];
+                  if (preset && base.indexOf(preset) === -1) {
+                    document.documentElement.setAttribute('data-theme', preset);
+                  }
+                  // Custom accent overrides the preset's accent. Non-custom means
+                  // "use the preset accent" (no inline vars, no data-accent).
                   var accent = localStorage.getItem('renzo-accent');
-                  var known = ['blue', 'green', 'purple', 'orange', 'slate'];
                   if (accent === 'custom') {
                     var hsl = (localStorage.getItem('renzo-accent-custom') || '').trim().split(/\\s+/);
                     if (hsl.length === 3) {
@@ -102,8 +108,6 @@ export default function RootLayout({
                       d.setProperty('--primary-l', hsl[2]);
                       document.documentElement.setAttribute('data-accent', 'custom');
                     }
-                  } else if (accent && known.indexOf(accent) !== -1) {
-                    document.documentElement.setAttribute('data-accent', accent);
                   }
                 } catch (_) {
                   // Fall back to the default rose accent.
