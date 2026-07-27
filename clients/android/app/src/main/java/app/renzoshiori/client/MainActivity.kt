@@ -5,6 +5,8 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -54,6 +56,50 @@ class MainActivity : AppCompatActivity() {
 
     private val prefs by lazy { getSharedPreferences("renzo", Context.MODE_PRIVATE) }
 
+    private lateinit var nativeBridge: RenzoNativeBridge
+
+    // User's offline download folder (Storage Access Framework). Result is
+    // reported back to the web UI via a `renzo:folderpicked` event.
+    private val folderPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            var label: String? = null
+            if (uri != null) {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (_: Exception) {
+                }
+                nativeBridge.setFolder(uri)
+                label = nativeBridge.getFolder()
+            }
+            val labelJs = if (label != null) JSONObject.quote(label) else "null"
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('renzo:folderpicked',{detail:{label:$labelJs}}))",
+                null
+            )
+        }
+
+    private val connectivityManager by lazy {
+        getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    }
+    private val netCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = emitNet(true)
+        override fun onLost(network: Network) = emitNet(false)
+    }
+
+    private fun emitNet(online: Boolean) {
+        runOnUiThread {
+            if (::webView.isInitialized && webView.visibility == View.VISIBLE) {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('renzo:netchange',{detail:{online:$online}}))",
+                    null
+                )
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -66,6 +112,11 @@ class MainActivity : AppCompatActivity() {
         progress = findViewById(R.id.progress)
 
         setupWebView()
+
+        try {
+            connectivityManager.registerDefaultNetworkCallback(netCallback)
+        } catch (_: Exception) {
+        }
 
         connectButton.setOnClickListener { connect(addressInput.text.toString()) }
         addressInput.setOnEditorActionListener { _, actionId, _ ->
@@ -151,6 +202,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // Offline bridge — window.__RenzoAndroid. Only the trusted server UI runs
+        // in this WebView (external links open in the system browser).
+        nativeBridge = RenzoNativeBridge(this) { folderPicker.launch(null) }
+        webView.addJavascriptInterface(nativeBridge, "__RenzoAndroid")
 
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             try {
@@ -254,6 +310,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        try {
+            connectivityManager.unregisterNetworkCallback(netCallback)
+        } catch (_: Exception) {
+        }
         executor.shutdownNow()
         super.onDestroy()
     }

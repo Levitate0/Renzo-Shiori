@@ -5,7 +5,7 @@
  * fulfil at runtime by injecting `window.__RENZO_NATIVE__`.
  */
 
-export type NativePlatform = "web" | "capacitor" | "electron";
+export type NativePlatform = "web" | "android" | "windows";
 
 /** One downloaded-for-offline chapter, tracked in the manifest. */
 export interface OfflineChapter {
@@ -37,6 +37,13 @@ export interface OfflineManifest {
  */
 export interface NativePrimitives {
   platform: Exclude<NativePlatform, "web">;
+
+  // Download location. Files are stored under the user-chosen folder if set,
+  // else an app-private default. `pickFolder` opens the native folder picker
+  // (Android SAF / desktop dialog) and returns a display label, or null if
+  // cancelled. `getFolder` returns the current label, or null for the default.
+  pickFolder(): Promise<string | null>;
+  getFolder(): Promise<string | null>;
 
   // Filesystem (paths are app-relative; the shell picks the real base dir).
   writeFile(relPath: string, data: ArrayBuffer): Promise<void>;

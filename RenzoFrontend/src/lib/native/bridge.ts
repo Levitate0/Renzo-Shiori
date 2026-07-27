@@ -5,13 +5,32 @@
  * startup (before the web bundle mounts).
  */
 import type { NativePlatform, NativePrimitives } from "./types";
+import { interfaceAdapter, type RawNativeInterface } from "./adapters";
 
 const GLOBAL_KEY = "__RENZO_NATIVE__";
 
 export function nativePrimitives(): NativePrimitives | null {
   if (typeof window === "undefined") return null;
-  const injected = (window as unknown as Record<string, unknown>)[GLOBAL_KEY];
-  return (injected as NativePrimitives | undefined) ?? null;
+  const w = window as unknown as Record<string, unknown>;
+
+  // Already resolved (or a future shell that injects the full contract).
+  const existing = w[GLOBAL_KEY];
+  if (existing) return existing as NativePrimitives;
+
+  // Build (and cache) an adapter from whichever raw shell interface is present.
+  const android = w["__RenzoAndroid"] as RawNativeInterface | undefined;
+  if (android) {
+    const adapter = interfaceAdapter(android, "android");
+    w[GLOBAL_KEY] = adapter;
+    return adapter;
+  }
+  const windows = w["__RenzoWindows"] as RawNativeInterface | undefined;
+  if (windows) {
+    const adapter = interfaceAdapter(windows, "windows");
+    w[GLOBAL_KEY] = adapter;
+    return adapter;
+  }
+  return null;
 }
 
 export function isNative(): boolean {
