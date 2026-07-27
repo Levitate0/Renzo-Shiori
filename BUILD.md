@@ -140,8 +140,20 @@ breaks in release builds).
 
 ## 4. Windows client (`clients/windows`)
 
-A self-contained WebView2 WPF shell, packaged with NSIS. Bump the version in
-**both** `RenzoWindows.csproj` (`<Version>`) and `renzoshiori-installer.nsi`
+A self-contained WebView2 WPF shell, packaged with NSIS. Like Android it is
+remote-first (probes `/api/system/info/public`, then loads the server UI) and
+carries a native offline stack — feature-parity with Android since v1.2.0:
+
+| File | Role |
+|---|---|
+| `RenzoStore.cs` | File/KV/manifest (v2) storage + the download job queue, under a chosen or app-default folder. |
+| `RenzoDownloader.cs` | Native background downloader (parallel page fetch, Bearer auth); keeps running when the window is hidden and resumes a queued job on launch. |
+| `RenzoBridge.cs` | `[ComVisible]` host object added via `CoreWebView2.AddHostObjectToScript`. |
+| `NativeAssets.cs` | The JS shim that exposes the host object as the synchronous `window.__RenzoWindows` the shared frontend expects, plus the bundled offline reader (shown when the server is unreachable). |
+
+These `.cs` files are auto-included by the SDK-style project — no `.csproj`
+edit is needed when adding sources. Bump the version in **both**
+`RenzoWindows.csproj` (`<Version>`) and `renzoshiori-installer.nsi`
 (`!define VERSION`), then:
 
 ```bash
@@ -205,9 +217,15 @@ The whole solution can be restored/built with `dotnet build Renzo.sln -c Release
 - **Clients are thin & remote-first.** They render the server's UI, so a
   server-side change reaches every client instantly (the version poller reloads
   stale pages silently).
-- **Offline** (Android) is delivered by injecting `window.__RENZO_NATIVE__`; the
-  shared logic lives in `RenzoFrontend/src/lib/native/` and is a complete no-op
-  on the web build. Only chapters already downloaded on the server can be saved
-  offline.
+- **Offline** works on **both native clients** (Android + Windows desktop). All
+  offline *logic* lives once in `RenzoFrontend/src/lib/native/` and is a complete
+  no-op on the web build; each shell only injects dumb primitives, which the
+  frontend adapter (`adapters.ts`) wraps into the shared contract:
+  - **Android** exposes `window.__RenzoAndroid` via `@JavascriptInterface`.
+  - **Windows** exposes `window.__RenzoWindows` via a WebView2 host object + a
+    small injected JS shim (section 4).
+  Downloads run in a native background service on each platform (not in the
+  WebView), so they continue when the app is tabbed out. Only chapters already
+  downloaded on the server can be saved offline.
 - **Back up `/config`** (SQLite DB + extracted UI) before upgrading — the server
   migrates on startup.
