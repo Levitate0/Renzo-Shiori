@@ -549,7 +549,7 @@ export function ChaptersSection({
                     className="h-8 pl-8 text-sm"
                   />
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                   {canManage && missingCount > 0 && (
                     <button
                       type="button"
