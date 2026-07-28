@@ -84,11 +84,21 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             psi.Environment["RENZO_SIDECAR_PORT"] = _opts.Port.ToString();
             if (_opts.DisableJcef) psi.Environment["RENZO_SIDECAR_NO_JCEF"] = "1";
             if (!string.IsNullOrEmpty(_opts.EnjarifyDir)) psi.Environment["RENZO_ENJARIFY_DIR"] = _opts.EnjarifyDir!;
+            // The app runs with LD_LIBRARY_PATH pointed at IKVM's native libs (/app/ikvm/.../bin).
+            // A real JVM must NOT inherit that: it would load IKVM's incompatible libjava.so and die
+            // with "symbol lookup error: ... undefined symbol: JVM_GetInterfaceVersion" (exit 127).
+            // Replace it with the JRE's own lib dir (RENZO_SIDECAR_LDPATH, set in the image) so the
+            // sidecar's OpenJDK finds the CORRECT libjava.so and libjawt.so (the latter is needed by
+            // JCEF). Empty if unset -> the JRE still finds its libs via its own rpath.
+            psi.Environment["LD_LIBRARY_PATH"] = Environment.GetEnvironmentVariable("RENZO_SIDECAR_LDPATH") ?? "";
 
+            var logPath = Path.Combine(Path.GetTempPath(), "renzo-sidecar-jvm.log");
+            System.IO.StreamWriter? sw = null;
+            try { sw = new System.IO.StreamWriter(logPath, append: false) { AutoFlush = true }; } catch { /* logging is best-effort */ }
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            proc.OutputDataReceived += (_, e) => { if (e.Data != null) _logger.LogDebug("[sidecar] {Line}", e.Data); };
-            proc.ErrorDataReceived += (_, e) => { if (e.Data != null) _logger.LogDebug("[sidecar] {Line}", e.Data); };
-            proc.Exited += (_, _) => { _ready = false; _logger.LogWarning("Sidecar process exited (code {Code}).", SafeExit(proc)); };
+            proc.OutputDataReceived += (_, e) => { if (e.Data != null) { _logger.LogDebug("[sidecar] {Line}", e.Data); try { sw?.WriteLine(e.Data); } catch { } } };
+            proc.ErrorDataReceived += (_, e) => { if (e.Data != null) { _logger.LogDebug("[sidecar] {Line}", e.Data); try { sw?.WriteLine(e.Data); } catch { } } };
+            proc.Exited += (_, _) => { _ready = false; _logger.LogWarning("Sidecar process exited (code {Code}); output at {Log}.", SafeExit(proc), logPath); };
             proc.Start();
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
