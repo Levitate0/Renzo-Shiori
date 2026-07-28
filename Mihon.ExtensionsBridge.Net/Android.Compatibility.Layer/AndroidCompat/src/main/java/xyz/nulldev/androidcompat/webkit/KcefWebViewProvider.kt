@@ -1468,7 +1468,7 @@ class KcefWebViewProvider(
     ): Unit = throw RuntimeException("Stub!")
 
     override fun stopLoading() {
-        browser!!.stopLoad()
+        browser?.stopLoad()
     }
 
     override fun reload() {

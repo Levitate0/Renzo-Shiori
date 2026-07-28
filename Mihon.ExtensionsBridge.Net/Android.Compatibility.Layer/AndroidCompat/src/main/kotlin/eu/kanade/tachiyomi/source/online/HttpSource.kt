@@ -267,6 +267,22 @@ abstract class HttpSource : CatalogueSource {
         return fetchChapterList(manga).awaitSingle()
     }
 
+    /**
+     * extensions-lib 1.6 combined details+chapters call. Newer sources override this and leave the
+     * individual getMangaDetails/getChapterList throwing; the default here bridges old sources by
+     * delegating to them. [fetchManga]/[fetchChapters] gate which halves are (re)fetched.
+     */
+    open suspend fun getMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchManga: Boolean,
+        fetchChapters: Boolean,
+    ): eu.kanade.tachiyomi.source.model.SMangaUpdate =
+        eu.kanade.tachiyomi.source.model.SMangaUpdate(
+            if (fetchManga) getMangaDetails(manga) else manga,
+            if (fetchChapters) getChapterList(manga) else chapters,
+        )
+
     @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getChapterList"))
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> =
         client

@@ -149,7 +149,10 @@ object SidecarServer {
     private fun details(req: JsonObject): String {
         val s = src(req)
         val manga = mangaFrom(req["manga"]!! as JsonObject)
-        val out = runBlocking { s.getMangaDetails(manga) }
+        // Go through the 1.6 combined call: newer sources implement getMangaUpdate and leave
+        // getMangaDetails throwing; the compat default delegates to getMangaDetails for old sources.
+        val out = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), true, false).manga }
+                  else runBlocking { s.getMangaDetails(manga) }
         val realUrl = if (s is HttpSource) runCatching { s.getMangaUrl(out) }.getOrNull() else null
         return buildJsonObject {
             put("manga", mangaJson(out))
@@ -160,7 +163,8 @@ object SidecarServer {
     private fun chapters(req: JsonObject): String {
         val s = src(req)
         val manga = mangaFrom(req["manga"]!! as JsonObject)
-        val list = runBlocking { s.getChapterList(manga) }
+        val list = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
+                   else runBlocking { s.getChapterList(manga) }
         return buildJsonArray { for (c in list) add(chapterJson(c)) }.toString()
     }
 
@@ -241,6 +245,8 @@ object SidecarServer {
         put("status", m.status)
         m.thumbnail_url?.let { put("thumbnail_url", it) }
         put("initialized", m.initialized)
+        // carry the 1.6 memo blob so a source can thread data from search -> details/chapters
+        if (m.memo.isNotEmpty()) put("memo", m.memo)
     }
 
     private fun chapterJson(c: SChapter) = buildJsonObject {
@@ -249,6 +255,8 @@ object SidecarServer {
         put("date_upload", c.date_upload)
         put("chapter_number", c.chapter_number)
         c.scanlator?.let { put("scanlator", it) }
+        // memo carries per-chapter context (e.g. GraphQL ids) that getPageList needs
+        if (c.memo.isNotEmpty()) put("memo", c.memo)
     }
 
     private fun pageJson(p: Page) = buildJsonObject {
@@ -266,12 +274,14 @@ object SidecarServer {
         o["genre"]?.let { genre = it.jsonPrimitive.content }
         o["status"]?.let { status = it.jsonPrimitive.content.toInt() }
         o["thumbnail_url"]?.let { thumbnail_url = it.jsonPrimitive.content }
+        (o["memo"] as? JsonObject)?.let { memo = it }
     }
 
     private fun chapterFrom(o: JsonObject): SChapter = SChapter.create().apply {
         url = o["url"]?.jsonPrimitive?.content ?: ""
         name = o["name"]?.jsonPrimitive?.content ?: ""
         o["scanlator"]?.let { scanlator = it.jsonPrimitive.content }
+        (o["memo"] as? JsonObject)?.let { memo = it }
     }
 
     private fun pageFrom(o: JsonObject): Page {
@@ -311,6 +321,7 @@ object SidecarServer {
             put("type", t.javaClass.name)
             put("rootType", root.javaClass.name)
             put("rootMessage", (root.message ?: ""))
+            put("stack", root.stackTrace.take(10).joinToString("\n") { it.toString() })
         }.toString()
     }
 }
