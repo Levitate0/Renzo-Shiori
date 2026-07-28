@@ -6,6 +6,7 @@ import com.googlecode.dex2jar.tools.BaksmaliBaseDexExceptionHandler
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassVisitor
 import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.FieldVisitor
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import java.io.File
@@ -29,30 +30,107 @@ object SidecarConvert {
         "org.brotli.dec",
     )
 
-    /** Full pipeline: APK -> JAR (dex2jar) -> android-class fixes -> assets merge -> reframe. */
+    /**
+     * Full pipeline. Preferred path (handles the newest keiyoushi builds that dex2jar mistranslates):
+     *   dex2jar  -> sigJar  (correct generic Signatures, but R8 lambdas broken: `new Object`)
+     *   enjarify -> enjJar  (correct lambdas/putfields, but drops Signatures)
+     *   merge    -> outJar  (enjarify bytecode + dex2jar Signatures)  [+ android fixes + assets]
+     * The sidecar runs -Xverify:none, so enjarify's stricter-verifier quirks don't matter.
+     *
+     * Fallback when enjarify is unavailable: dex2jar + Java-6 downgrade (older extensions only).
+     */
     fun convert(apkPath: String, outJarPath: String) {
         val apk = File(apkPath)
-        val jar = File(outJarPath)
-        val data = apk.readBytes()
+        val outJar = File(outJarPath)
 
-        val reader = MultiDexFileReader.open(data)
+        val sigJar = File(outJar.parentFile, outJar.name + ".d2j.jar")
+        dex2jar(apk, sigJar)
+
+        val enjJar = File(outJar.parentFile, outJar.name + ".enj.jar")
+        val enjOk = runCatching { runEnjarify(apk, enjJar) }.getOrDefault(false)
+
+        try {
+            if (enjOk && enjJar.exists() && enjJar.length() > 0) {
+                mergeSignatures(sigJar, enjJar, outJar)
+                fixAndroidClasses(outJar)
+                extractAssets(apk, outJar)
+                // no reframe: enjarify output is runtime-correct; verification is off in the sidecar
+            } else {
+                sigJar.copyTo(outJar, overwrite = true)
+                fixAndroidClasses(outJar)
+                extractAssets(apk, outJar)
+                reframe(outJar)
+            }
+        } finally {
+            sigJar.delete(); enjJar.delete()
+        }
+    }
+
+    private fun dex2jar(apk: File, out: File) {
+        val reader = MultiDexFileReader.open(apk.readBytes())
         val handler = BaksmaliBaseDexExceptionHandler()
         Dex2jar.from(reader)
             .withExceptionHandler(handler)
-            .reUseReg(false)
-            .topoLogicalSort()
-            .skipDebug(true)
-            .optimizeSynchronized(false)
-            .printIR(false)
-            .noCode(false)
-            .skipExceptions(false)
-            .dontSanitizeNames(true)
-            .to(jar.toPath())
-        if (handler.hasException()) throw RuntimeException("dex2jar reported exceptions for $apkPath")
+            .reUseReg(false).topoLogicalSort().skipDebug(true).optimizeSynchronized(false)
+            .printIR(false).noCode(false).skipExceptions(false).dontSanitizeNames(true)
+            .to(out.toPath())
+        if (handler.hasException()) throw RuntimeException("dex2jar reported exceptions for $apk")
+    }
 
-        fixAndroidClasses(jar)
-        extractAssets(apk, jar)
-        reframe(jar)
+    /** Shell out to a bundled enjarify (Python). Returns false if enjarify isn't configured/available. */
+    private fun runEnjarify(apk: File, out: File): Boolean {
+        val enjDir = System.getenv("RENZO_ENJARIFY_DIR")?.takeIf { File(it).isDirectory } ?: return false
+        val py = System.getenv("RENZO_PYTHON") ?: "python3"
+        val pb = ProcessBuilder(py, "-O", "-m", "enjarify.main", apk.absolutePath, "-o", out.absolutePath, "-f")
+            .directory(File(enjDir))
+            .redirectErrorStream(true)
+        val p = pb.start()
+        val log = p.inputStream.bufferedReader().readText()
+        val ok = p.waitFor() == 0 && out.exists() && out.length() > 0
+        if (!ok) System.err.println("[enjarify] failed for ${apk.name}: ${log.takeLast(400)}")
+        return ok
+    }
+
+    /** Inject the generic Signature attributes from [sigJar] into [enjJar]'s bytecode -> [out]. */
+    private fun mergeSignatures(sigJar: File, enjJar: File, out: File) {
+        val classSig = HashMap<String, String>()
+        val methSig = HashMap<String, MutableMap<String, String>>()
+        val fieldSig = HashMap<String, MutableMap<String, String>>()
+        ZipFile(sigJar).use { zf ->
+            val en = zf.entries()
+            while (en.hasMoreElements()) {
+                val e = en.nextElement()
+                if (e.isDirectory || !e.name.endsWith(".class")) continue
+                val bytes = zf.getInputStream(e).use { it.readBytes() }
+                ClassReader(bytes).accept(object : ClassVisitor(Opcodes.ASM9) {
+                    var cn: String? = null
+                    override fun visit(v: Int, ac: Int, n: String?, sig: String?, sup: String?, i: Array<String>?) { cn = n; if (sig != null && n != null) classSig[n] = sig }
+                    override fun visitField(ac: Int, n: String?, d: String?, sig: String?, value: Any?): FieldVisitor? { if (sig != null && cn != null) fieldSig.getOrPut(cn!!) { HashMap() }["$n::$d"] = sig; return null }
+                    override fun visitMethod(ac: Int, n: String?, d: String?, sig: String?, ex: Array<String>?): MethodVisitor? { if (sig != null && cn != null) methSig.getOrPut(cn!!) { HashMap() }["$n::$d"] = sig; return null }
+                }, ClassReader.SKIP_CODE)
+            }
+        }
+        val entries = LinkedHashMap<String, ByteArray>()
+        ZipFile(enjJar).use { zf ->
+            val en = zf.entries()
+            while (en.hasMoreElements()) { val e = en.nextElement(); if (!e.isDirectory) entries[e.name] = zf.getInputStream(e).use { it.readBytes() } }
+        }
+        val outMap = LinkedHashMap<String, ByteArray>()
+        for ((name, bytes) in entries) {
+            if (!name.endsWith(".class") || !isClass(bytes)) { outMap[name] = bytes; continue }
+            outMap[name] = try {
+                val cr = ClassReader(bytes)
+                val cw = ClassWriter(0)
+                cr.accept(object : ClassVisitor(Opcodes.ASM9, cw) {
+                    var cn: String? = null
+                    override fun visit(v: Int, ac: Int, n: String?, sig: String?, sup: String?, i: Array<String>?) { cn = n; super.visit(v, ac, n, sig ?: classSig[n], sup, i) }
+                    override fun visitField(ac: Int, n: String?, d: String?, sig: String?, value: Any?): FieldVisitor? = super.visitField(ac, n, d, sig ?: fieldSig[cn]?.get("$n::$d"), value)
+                    override fun visitMethod(ac: Int, n: String?, d: String?, sig: String?, ex: Array<String>?): MethodVisitor = super.visitMethod(ac, n, d, sig ?: methSig[cn]?.get("$n::$d"), ex)
+                }, 0)
+                cw.toByteArray()
+            } catch (_: Throwable) { bytes }
+        }
+        writeZip(out, outMap)
     }
 
     // ---- pass 1: android class replacements + namespace removal (frames preserved) ----
@@ -160,7 +238,7 @@ object SidecarConvert {
                 zos.closeEntry()
             }
         }
-        if (!jar.delete()) throw RuntimeException("could not replace $jar")
+        if (jar.exists() && !jar.delete()) throw RuntimeException("could not replace $jar")
         if (!tmp.renameTo(jar)) throw RuntimeException("could not rename ${tmp} -> $jar")
     }
 
