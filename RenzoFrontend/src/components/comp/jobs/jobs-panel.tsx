@@ -49,9 +49,9 @@ function JobProgress({
       <CardContent className="pt-0">
         <div className="space-y-2">
           <Progress value={progress} className="h-2" />
-          <div className="flex justify-between text-sm text-muted-foreground">
-            <span>{message ?? 'Waiting...'}</span>
-            <span>{Math.round(progress)}%</span>
+          <div className="flex justify-between gap-2 text-sm text-muted-foreground">
+            <span className="min-w-0 truncate">{message ?? 'Waiting...'}</span>
+            <span className="shrink-0">{Math.round(progress)}%</span>
           </div>
           {errorMessage && (
             <div className="text-sm text-destructive bg-destructive/10 p-2 rounded">

@@ -554,7 +554,7 @@ export function ProviderManager({
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
             {nsfwVisibility !== NsfwVisibility.AlwaysHide && (
               <div className="flex items-center gap-1.5">
                 <Checkbox
@@ -572,7 +572,7 @@ export function ProviderManager({
                 </Label>
               </div>
             )}
-            <div className="w-48">
+            <div className="w-full sm:w-48">
               <MultiSelect
                 options={availableLanguageOptions}
                 selectedValues={filteredLanguages ?? []}

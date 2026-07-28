@@ -558,14 +558,14 @@ export function ProviderMatchDialog({
 
             {/* Bottom control area */}
             <div className="flex flex-col gap-3 p-3 border rounded-md bg-muted/20">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-4">
                   <Label className="text-sm font-medium">Providers:</Label>
-                  <Select 
-                    value={selectedMatchInfoId === NEW_PROVIDER_SENTINEL ? "__new__" : selectedMatchInfoId} 
+                  <Select
+                    value={selectedMatchInfoId === NEW_PROVIDER_SENTINEL ? "__new__" : selectedMatchInfoId}
                     onValueChange={handleProviderSelect}
                   >
-                    <SelectTrigger className="w-48">
+                    <SelectTrigger className="w-full sm:w-48">
                       <SelectValue placeholder="Select source">
                         {selectedMatchInfoId && renderProviderWithFlag(selectedMatchInfoId)}
                       </SelectValue>
@@ -593,7 +593,7 @@ export function ProviderMatchDialog({
                   </Button>
                 </div>
 
-                <div className="flex items-center gap-4">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-4">
                   <Label className="text-sm font-medium">Range Fill:</Label>
                   <Input
                     type="number"
@@ -623,32 +623,32 @@ export function ProviderMatchDialog({
 
               {/* New provider creation form - shown when "Create New Provider" is selected */}
               {showNewProviderForm && (
-                <div className="flex items-center gap-4 p-3 bg-background border rounded-md">
-                  <div className="flex flex-col gap-1">
+                <div className="flex flex-wrap items-end gap-3 p-3 bg-background border rounded-md">
+                  <div className="flex flex-col gap-1 flex-1 min-w-[8rem]">
                     <Label className="text-xs text-muted-foreground">Name</Label>
                     <Input
                       placeholder="Provider name"
                       value={newProviderName}
                       onChange={(e) => setNewProviderName(e.target.value)}
-                      className="h-8 w-44"
+                      className="h-8 w-full"
                     />
                   </div>
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 flex-1 min-w-[8rem]">
                     <Label className="text-xs text-muted-foreground">Scanlator</Label>
                     <Input
                       placeholder="Scanlator (optional)"
                       value={newProviderScanlator}
                       onChange={(e) => setNewProviderScanlator(e.target.value)}
-                      className="h-8 w-36"
+                      className="h-8 w-full"
                     />
                   </div>
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 w-20">
                     <Label className="text-xs text-muted-foreground">Language</Label>
                     <Input
                       placeholder="en"
                       value={newProviderLanguage}
                       onChange={(e) => setNewProviderLanguage(e.target.value)}
-                      className="h-8 w-20"
+                      className="h-8 w-full"
                     />
                   </div>
                   <div className="flex items-end gap-2 mt-auto">

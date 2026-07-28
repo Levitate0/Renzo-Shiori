@@ -120,7 +120,7 @@ export function ScrobblerSearchRequester({
   return (
     <TooltipProvider>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="w-[65vw] max-w-4xl h-[70vh] max-h-[70vh] flex flex-col">
+        <DialogContent className="w-[95vw] sm:w-[65vw] max-w-4xl h-[70vh] max-h-[70vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>Search {ScrobblerProvider[provider]}</DialogTitle>
             <DialogDescription>

@@ -385,7 +385,7 @@ export default function UpdatesPage() {
     <div className="mx-auto max-w-[1100px] py-6 sm:py-10">
       {/* Header */}
       <header className="mb-8">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-[22px] font-semibold tracking-tight">Updates</h1>
           <span className="text-sm tabular-nums text-muted-foreground/70">
             {rows.length}
