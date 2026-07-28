@@ -1365,14 +1365,21 @@ class KcefWebViewProvider(
         script: String,
         resultCallback: ValueCallback<String>,
     ) {
+        // Extensions may call evaluateJavascript(script, null) (legal on Android). resultCallback is
+        // typed non-null here, but a null slips through from the extension's Java call and NPEs the
+        // ConcurrentHashMap.put below. Substitute a no-op so the eval still runs. (Previously handled
+        // by the .NET SafeWebViewProvider shim; fixed at the root now that we run on a real JVM.)
+        @Suppress("SENSELESS_COMPARISON")
+        val cb: ValueCallback<String> = resultCallback ?: ValueCallback<String> { }
+
         val activeBrowser = browser
         if (activeBrowser == null) {
-            handler.post { resultCallback.onReceiveValue(null) }
+            handler.post { cb.onReceiveValue(null) }
             return
         }
 
         val token = UUID.randomUUID().toString()
-        evalCallbacks[token] = resultCallback
+        evalCallbacks[token] = cb
 
         val js = buildEvalScript(token, script.removePrefix("javascript:"))
         activeBrowser.mainFrame?.executeJavaScript(js, "suwayomi://eval", 0)

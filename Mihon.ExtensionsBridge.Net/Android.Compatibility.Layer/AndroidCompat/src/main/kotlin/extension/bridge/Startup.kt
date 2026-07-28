@@ -355,15 +355,22 @@ fun applicationSetup(dataRoot: String, tempRoot: String, sink: AndroidCompatLogS
 
     TrustManagerBridge.ensureSubjectKeyIdentifierTolerance()
     
-    mutableConfigValueScope.launch(Dispatchers.IO) {
-        logger.info { "Initializing JCEF runtime — this may take a while" }
-        runCatching { KcefWebViewProvider.ensureRuntimeReady() }
-            .onSuccess {
-                logger.info { "JCEF runtime initialized" }
-            }
-            .onFailure { throwable ->
-                logger.warn(throwable) { "Unable to warm up KCEF runtime" }
-            }
+    // JCEF/Chromium warm-up can be disabled (e.g. sandboxes that can't spawn Chromium helpers, or
+    // deployments that don't need WebView/Cloudflare bypass). Cloudflare-protected sources will then
+    // fail until it's enabled; everything else works without it.
+    if (System.getenv("RENZO_SIDECAR_NO_JCEF") != "1") {
+        mutableConfigValueScope.launch(Dispatchers.IO) {
+            logger.info { "Initializing JCEF runtime — this may take a while" }
+            runCatching { KcefWebViewProvider.ensureRuntimeReady() }
+                .onSuccess {
+                    logger.info { "JCEF runtime initialized" }
+                }
+                .onFailure { throwable ->
+                    logger.warn(throwable) { "Unable to warm up KCEF runtime" }
+                }
+        }
+    } else {
+        logger.info { "JCEF runtime warm-up skipped (RENZO_SIDECAR_NO_JCEF=1)" }
     }
 
     // AES/CBC/PKCS7Padding Cypher provider for zh.copymanga

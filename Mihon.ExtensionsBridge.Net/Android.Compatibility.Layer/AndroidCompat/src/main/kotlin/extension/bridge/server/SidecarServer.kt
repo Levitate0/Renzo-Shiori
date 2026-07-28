@@ -63,6 +63,7 @@ object SidecarServer {
 
         server.createContext("/health") { ex -> respond(ex, 200, """{"ok":true,"initialized":$initialized}""") }
         server.createContext("/setup") { ex -> guarded(ex) { setup(readObj(ex)) } }
+        server.createContext("/convert") { ex -> guarded(ex) { convert(readObj(ex)) } }
         server.createContext("/sources/load") { ex -> guarded(ex) { loadSources(readObj(ex)) } }
         server.createContext("/source/popular") { ex -> guarded(ex) { popular(readObj(ex)) } }
         server.createContext("/source/latest") { ex -> guarded(ex) { latest(readObj(ex)) } }
@@ -93,6 +94,13 @@ object SidecarServer {
             initialized = true
         }
         return """{"ok":true}"""
+    }
+
+    private fun convert(req: JsonObject): String {
+        val apkPath = req["apkPath"]!!.jsonPrimitive.content
+        val jarPath = req["jarPath"]!!.jsonPrimitive.content
+        SidecarConvert.convert(apkPath, jarPath)
+        return buildJsonObject { put("ok", true); put("jarPath", jarPath) }.toString()
     }
 
     private fun loadSources(req: JsonObject): String {
