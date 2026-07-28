@@ -35,7 +35,7 @@ export default function AccountPage() {
         </p>
       </div>
 
-      <div className="grid gap-6">
+      <div className="grid grid-cols-1 gap-6">
         <Card>
           <CardHeader>
             <CardTitle>Password</CardTitle>

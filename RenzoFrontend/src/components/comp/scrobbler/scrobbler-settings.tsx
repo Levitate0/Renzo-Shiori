@@ -209,7 +209,7 @@ export function ScrobblerSettings() {
       <Separator />
 
       {/* Provider Cards */}
-      <div className="grid gap-4">
+      <div className="grid grid-cols-1 gap-4">
         {configs?.map((config) => (
           <Card key={config.provider} className="overflow-hidden">
             <CardHeader className="pb-3">
@@ -401,7 +401,7 @@ export function ScrobblerSettings() {
 
       {/* Unmatched Series Section */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-lg font-semibold">Unmatched Series</h3>
             <p className="text-sm text-muted-foreground">
@@ -432,8 +432,8 @@ export function ScrobblerSettings() {
 
         {unmatched && unmatched.length > 0 && (
           <div className="rounded-md border">
-            <div className="p-4">
-              <table className="w-full text-sm">
+            <div className="overflow-x-auto p-4">
+              <table className="w-full min-w-[32rem] text-sm">
                 <thead>
                   <tr className="border-b text-left">
                     <th className="pb-2 font-medium">Series</th>

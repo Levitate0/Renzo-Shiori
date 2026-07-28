@@ -147,7 +147,7 @@ export function SeriesMatchDialog({ seriesId, provider, open, onOpenChange }: Se
         {searchResults.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-sm font-medium">Search Results</h4>
-            <div className="grid gap-2">
+            <div className="grid grid-cols-1 gap-2">
               {searchResults.map((result) => (
                 <div
                   key={result.externalId}

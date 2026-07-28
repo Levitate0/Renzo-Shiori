@@ -1795,7 +1795,7 @@ export function SettingsManager({
         </div>
       )}
 
-      <div className="grid gap-6">
+      <div className="grid grid-cols-1 gap-6">
         {sectionsToShow.map((section) => {
           const SectionComponent = section.component;
           return (
