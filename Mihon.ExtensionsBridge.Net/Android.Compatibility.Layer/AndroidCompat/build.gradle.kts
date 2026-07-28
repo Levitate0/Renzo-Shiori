@@ -21,6 +21,12 @@ dependencies {
     // Android stub library
     implementation(libs.android.stubs)
 
+    // okhttp3.CompressionInterceptor + okhttp3.zstd.Zstd + com.squareup.zstd.* — the compression
+    // stack Mihon/Suwayomi provide to extensions. Newer keiyoushi 1.6 extensions instantiate
+    // okhttp3.CompressionInterceptor (handles gzip/brotli/zstd themselves) and require these on the
+    // classpath. Bundled from the Suwayomi runtime; TODO: replace with the upstream Maven artifacts.
+    implementation(files("lib/compression-compat.jar"))
+
     // XML
     compileOnly(libs.xmlpull)
 

@@ -2,6 +2,7 @@
 
 package eu.kanade.tachiyomi.source.model
 
+import kotlinx.serialization.json.JsonObject
 import java.io.Serializable
 
 interface SChapter : Serializable {
@@ -15,12 +16,16 @@ interface SChapter : Serializable {
 
     var scanlator: String?
 
+    // extensions-lib 1.6: free-form JSON blob a source can attach to a chapter. Default empty.
+    var memo: JsonObject
+
     fun copyFrom(other: SChapter) {
         name = other.name
         url = other.url
         date_upload = other.date_upload
         chapter_number = other.chapter_number
         scanlator = other.scanlator
+        memo = other.memo
     }
 
     companion object {

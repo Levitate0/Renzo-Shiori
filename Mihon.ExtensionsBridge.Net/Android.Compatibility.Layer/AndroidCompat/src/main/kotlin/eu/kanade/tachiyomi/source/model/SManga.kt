@@ -2,6 +2,7 @@
 
 package eu.kanade.tachiyomi.source.model
 
+import kotlinx.serialization.json.JsonObject
 import java.io.Serializable
 
 interface SManga : Serializable {
@@ -24,6 +25,10 @@ interface SManga : Serializable {
     var update_strategy: UpdateStrategy
 
     var initialized: Boolean
+
+    // extensions-lib 1.6: a free-form JSON blob a source can attach to a manga to carry data
+    // between calls (e.g. from search results into details). Default empty.
+    var memo: JsonObject
 
     companion object {
         const val UNKNOWN = 0

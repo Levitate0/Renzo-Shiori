@@ -81,8 +81,12 @@ class NetworkHelper(
                         ),
                     ).addInterceptor(UncaughtExceptionInterceptor())
                     .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
-                    .addNetworkInterceptor(IgnoreGzipInterceptor())
-                    .addNetworkInterceptor(BrotliInterceptor)
+                    // NB: no IgnoreGzipInterceptor / BrotliInterceptor on the default client. okhttp
+                    // requests+decodes gzip transparently and doesn't ask for brotli unless told, so
+                    // older sources are unaffected; newer keiyoushi extensions ship their own
+                    // CompressionInterceptor and ASSERT both are absent from the default client
+                    // ("IgnoreGzipInterceptor/BrotliInterceptor must not be present in default client").
+                    // Matches current upstream Suwayomi/Mihon, which run the same 1.6 extensions.
 
             // if (preferences.verboseLogging().get()) {
             val httpLoggingInterceptor =
