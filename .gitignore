@@ -329,3 +329,6 @@ backup_chat.txt
 clients/android/local.properties
 clients/android/.gradle/
 clients/android/app/build/
+
+# Staged JVM sidecar assets (built by build_sidecar.ps1)
+RenzoBackend/sidecar/

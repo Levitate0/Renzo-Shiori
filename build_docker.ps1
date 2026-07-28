@@ -1,3 +1,5 @@
+& (Join-Path $PSScriptRoot 'build_sidecar.ps1')  # stage JVM sidecar assets into RenzoBackend/sidecar/ first
+
 $backendPath = "./RenzoBackend"
 $project = "RenzoBackend.csproj"
 
