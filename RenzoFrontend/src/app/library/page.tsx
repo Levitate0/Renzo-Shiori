@@ -4,6 +4,7 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { AddSeries } from "@/components/comp/series/add-series";
+import { TrackAllButton } from "@/components/comp/scrobbler/track-all-button";
 import { ListSeries } from "@/components/comp/series/list-series";
 import {
   Select,
@@ -418,6 +419,8 @@ export default function RootPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            <TrackAllButton />
 
             <div className="h-8">
               <AddSeries />

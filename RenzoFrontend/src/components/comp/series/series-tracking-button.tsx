@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Radio, Check, ListChecks, Plug } from "lucide-react";
+import { Radio, Check, Plug } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -18,7 +18,6 @@ import {
   useScrobblerConfigs,
   useScrobblerMatches,
   useAutoMatchSeries,
-  useAutoMatchAll,
   useDisableLink,
 } from "@/lib/api/hooks/useScrobbler";
 import { SeriesMatchDialog } from "@/components/comp/scrobbler/series-match-dialog";
@@ -38,7 +37,6 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
   const { data: configs } = useScrobblerConfigs();
   const { data: matches } = useScrobblerMatches();
   const autoMatch = useAutoMatchSeries();
-  const autoMatchAll = useAutoMatchAll();
   const disableLink = useDisableLink();
   const [dialogProvider, setDialogProvider] = useState<ScrobblerProvider | null>(null);
   const [busy, setBusy] = useState(false);
@@ -81,22 +79,6 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
       }
     } catch {
       toast.error("Couldn't update tracking for this series.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // One-time action: auto-match the user's WHOLE library across every connected
-  // tracker. Not a toggle — fire it and matches link as they're found.
-  const trackAllSeries = async () => {
-    setBusy(true);
-    try {
-      await Promise.all(connected.map((c) => autoMatchAll.mutateAsync(c.provider)));
-      toast.success("Tracking all your series…", {
-        description: "Matching your library across your connected trackers.",
-      });
-    } catch {
-      toast.error("Couldn't start tracking all series.");
     } finally {
       setBusy(false);
     }
@@ -156,16 +138,6 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
               </DropdownMenuItem>
             );
           })}
-
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onClick={trackAllSeries}
-            disabled={busy || autoMatchAll.isPending}
-            className="flex items-center gap-2 cursor-pointer"
-          >
-            <ListChecks className={`h-4 w-4 ${autoMatchAll.isPending ? "animate-spin" : ""}`} />
-            Track all my series
-          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
