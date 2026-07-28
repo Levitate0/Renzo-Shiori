@@ -142,6 +142,7 @@ export function CommandBar() {
               variant="ghost"
               className="lg:hidden h-9 w-9 shrink-0"
               aria-label="Open navigation menu"
+              data-tour="nav"
             >
               <Menu className="h-5 w-5" />
             </Button>
@@ -195,7 +196,7 @@ export function CommandBar() {
             the visual center regardless of logo / right-cluster widths. Capped at
             60vw so a long section list can't overlap the logo or right cluster. */}
         <div className="hidden lg:flex absolute left-1/2 -translate-x-1/2 pointer-events-none max-w-[60vw]">
-          <div className="pointer-events-auto min-w-0">
+          <div className="pointer-events-auto min-w-0" data-tour="nav">
             <SectionPills />
           </div>
         </div>
@@ -207,7 +208,7 @@ export function CommandBar() {
 
         {/* Desktop search input */}
         {!isSearchDisabled && (
-          <div className="hidden lg:flex relative items-center shrink-0">
+          <div className="hidden lg:flex relative items-center shrink-0" data-tour="search">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
             <Input
               ref={desktopInputRef}
@@ -270,6 +271,7 @@ export function CommandBar() {
                 setMobileSearchOpen((v) => !v);
               }}
               aria-label={mobileSearchOpen ? "Close search" : "Open search"}
+              data-tour="search"
             >
               {mobileSearchOpen ? (
                 <X className="h-5 w-5" />
@@ -292,7 +294,7 @@ export function CommandBar() {
         </div>
 
         {/* User avatar */}
-        <div className="flex items-center shrink-0">
+        <div className="flex items-center shrink-0" data-tour="account">
           <UserAvatarDropdown size="md" />
         </div>
       </div>

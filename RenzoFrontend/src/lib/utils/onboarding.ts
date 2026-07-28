@@ -13,7 +13,7 @@ import type { User } from "@/lib/api/types";
  * Bump {@link ONBOARDING_VERSION} to re-show the tour to everyone after a
  * material change (e.g. a big new feature worth re-introducing).
  */
-export const ONBOARDING_VERSION = 1;
+export const ONBOARDING_VERSION = 2;
 
 /** Custom event a "Replay the walkthrough" control dispatches to force it open. */
 export const REPLAY_WALKTHROUGH_EVENT = "renzo:open-walkthrough";
