@@ -265,15 +265,15 @@ namespace Mihon.ExtensionsBridge.Core.Services
         /// a SidecarProcessManager is registered), the extension loads + runs on the real JVM; else it
         /// falls back to the in-process IKVM JarExtensionInterop. Same interface either way.
         /// </summary>
-        private IInternalExtensionInterop CreateInterop(IWorkingFolderStructure wk, RepositoryEntry en, ILogger log)
+        private IInternalExtensionInterop CreateInterop(IWorkingFolderStructure wk, RepositoryEntry en, ILogger log, string? optionalTempPath = null)
         {
             if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
                 _serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager mgr)
             {
                 mgr.EnsureStartedAsync().GetAwaiter().GetResult();
-                return new Runtime.Sidecar.SidecarExtensionInterop(wk, en, log, mgr.Client);
+                return new Runtime.Sidecar.SidecarExtensionInterop(wk, en, log, mgr.Client, optionalTempPath);
             }
-            return new JarExtensionInterop(wk, en, log);
+            return new JarExtensionInterop(wk, en, log, optionalTempPath);
         }
 
         public async Task<IExtensionInterop> GetInteropAsync(RepositoryGroup entry, CancellationToken token = default)
@@ -727,7 +727,7 @@ namespace Mihon.ExtensionsBridge.Core.Services
         private async Task ObtainInformationAsync(ExtensionWorkUnit unitofWork, CancellationToken token = default) 
         {
 
-            using (IInternalExtensionInterop iop = new JarExtensionInterop(_workingStructure, unitofWork.Entry, _logger, unitofWork.WorkingFolder.Path))
+            using (IInternalExtensionInterop iop = CreateInterop(_workingStructure, unitofWork.Entry, _logger, unitofWork.WorkingFolder.Path))
             {
             //    ((Action) (() => {
                     string language = "all";
