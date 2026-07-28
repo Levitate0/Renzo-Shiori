@@ -260,6 +260,22 @@ namespace Mihon.ExtensionsBridge.Core.Services
         /// If an existing gatekept interop is present but its version differs from the group's active version,
         /// this method swaps the underlying repository entry to keep the interop aligned.
         /// </remarks>
+        /// <summary>
+        /// Builds the per-extension interop. When the JVM sidecar is enabled (RENZO_USE_SIDECAR=1 and
+        /// a SidecarProcessManager is registered), the extension loads + runs on the real JVM; else it
+        /// falls back to the in-process IKVM JarExtensionInterop. Same interface either way.
+        /// </summary>
+        private IInternalExtensionInterop CreateInterop(IWorkingFolderStructure wk, RepositoryEntry en, ILogger log)
+        {
+            if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
+                _serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager mgr)
+            {
+                mgr.EnsureStartedAsync().GetAwaiter().GetResult();
+                return new Runtime.Sidecar.SidecarExtensionInterop(wk, en, log, mgr.Client);
+            }
+            return new JarExtensionInterop(wk, en, log);
+        }
+
         public async Task<IExtensionInterop> GetInteropAsync(RepositoryGroup entry, CancellationToken token = default)
         {
             if (!_localInitialized)
@@ -272,10 +288,8 @@ namespace Mihon.ExtensionsBridge.Core.Services
             {
                 GatekeptExtensionInterop interop = InteropCache.GetOrAdd(entry, _ =>
                 {
-                    GatekeptExtensionInterop created = new GatekeptExtensionInterop(_workingStructure, initialEntry, 
-                        (wk, en, log) => {
-                            return new JarExtensionInterop(wk, en, log);
-                    }, _logger);
+                    GatekeptExtensionInterop created = new GatekeptExtensionInterop(_workingStructure, initialEntry,
+                        (wk, en, log) => CreateInterop(wk, en, log), _logger);
                     _logger.LogInformation("Initialized interop for group {GroupName} version {Version}.", entry.Name, initialEntry.Extension.Version);
                     return created;
                 });

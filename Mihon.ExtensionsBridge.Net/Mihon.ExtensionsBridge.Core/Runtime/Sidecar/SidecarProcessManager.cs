@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using Mihon.ExtensionsBridge.Models.Abstractions;
 
 namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 {
@@ -26,6 +27,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
     public sealed class SidecarProcessManager : IAsyncDisposable
     {
         private readonly SidecarOptions _opts;
+        private readonly IWorkingFolderStructure _folder;
         private readonly ILogger _logger;
         private readonly HttpClient _http;
         private readonly SemaphoreSlim _startLock = new(1, 1);
@@ -34,9 +36,10 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 
         public SidecarClient Client { get; }
 
-        public SidecarProcessManager(SidecarOptions opts, ILogger logger)
+        public SidecarProcessManager(SidecarOptions opts, IWorkingFolderStructure folder, ILogger logger)
         {
             _opts = opts;
+            _folder = folder;
             _logger = logger;
             _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{opts.Port}"), Timeout = TimeSpan.FromMinutes(3) };
             Client = new SidecarClient(_http);
@@ -49,9 +52,15 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             try
             {
                 if (_ready && _proc is { HasExited: false }) return;
+                // roots are only valid after the bridge/folder is initialized, so read them here.
+                // Use a dedicated subdir so the sidecar's JCEF/cookies/config don't collide with the
+                // in-process IKVM runtime while both coexist during migration.
+                var dataRoot = string.IsNullOrEmpty(_opts.DataRoot) ? Path.Combine(_folder.AndroidFolder, "sidecar") : _opts.DataRoot;
+                var tempRoot = string.IsNullOrEmpty(_opts.TempRoot) ? _folder.TempFolder : _opts.TempRoot;
+                Directory.CreateDirectory(dataRoot);
                 await StartProcessAsync(token).ConfigureAwait(false);
                 await WaitHealthyAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
-                await Client.SetupAsync(_opts.DataRoot, _opts.TempRoot, token).ConfigureAwait(false);
+                await Client.SetupAsync(dataRoot, tempRoot, token).ConfigureAwait(false);
                 _ready = true;
                 _logger.LogInformation("Sidecar ready on 127.0.0.1:{Port}.", _opts.Port);
             }

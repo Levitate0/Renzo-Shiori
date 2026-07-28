@@ -23,6 +23,17 @@ namespace Mihon.ExtensionsBridge.Core.Extensions
             services.AddSingleton<IExtensionManager, PublicProxyExtensionManager>();
             services.AddSingleton<IBridgeManager, BridgeManager>();
             services.AddHostedService<BridgeHost>();
+
+            // JVM sidecar (opt-in via RENZO_USE_SIDECAR=1). Registered after BridgeHost so the
+            // working folder is initialized before the sidecar starts.
+            if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1")
+            {
+                services.AddSingleton(sp => new Runtime.Sidecar.SidecarProcessManager(
+                    new Runtime.Sidecar.SidecarOptions(),
+                    sp.GetRequiredService<IWorkingFolderStructure>(),
+                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>().CreateLogger("Sidecar")));
+                services.AddHostedService<Runtime.Sidecar.SidecarHostedService>();
+            }
             return services;
         }
     }
