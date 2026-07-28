@@ -269,6 +269,11 @@ function ReaderInner() {
   const appendStoppedRef = useRef(false);
   const prependLockRef = useRef(false);
   const prependStoppedRef = useRef(false);
+  // Drives the visible "Loading next/previous chapter…" boundary indicators so an
+  // adjacent chapter is only pulled deliberately (near the boundary) and shown —
+  // not eagerly/silently, which was hammering the source.
+  const [appending, setAppending] = useState(false);
+  const [prepending, setPrepending] = useState(false);
   // scrollHeight captured just before a prepend, so the layout effect can add the
   // inserted height back to scrollTop and keep the viewport visually anchored.
   const prependAdjustRef = useRef<number | null>(null);
@@ -817,11 +822,13 @@ function ReaderInner() {
     if (!settings.infiniteScroll || !isContinuous || appendLockRef.current || appendStoppedRef.current) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
-    // Only when the bottom is within ~1.5 screens.
-    if (scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight) > scroller.clientHeight * 1.5) return;
+    // Defer to near the boundary (was ~1.5 screens) so the next chapter isn't
+    // pulled from the source while the user is nowhere near the end.
+    if (scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight) > scroller.clientHeight * 0.75) return;
     const last = segments[segments.length - 1];
     if (!last || !chapterExistsFrom(last, 1)) return;
     appendLockRef.current = true;
+    setAppending(true);
     (async () => {
       try {
         let next: Segment | null = null;
@@ -839,7 +846,7 @@ function ReaderInner() {
         // next chapter is still reachable via the nav buttons.
         else appendStoppedRef.current = true;
       } catch { appendStoppedRef.current = true; }
-      finally { appendLockRef.current = false; }
+      finally { appendLockRef.current = false; setAppending(false); }
     })();
   }, [settings.infiniteScroll, isContinuous, segments, chapterExistsFrom, isPreview, previewOrder, readableChapters, buildPreviewSeg, buildLibrarySeg]);
 
@@ -853,11 +860,12 @@ function ReaderInner() {
     if (!settings.infiniteScroll || !isContinuous || prependLockRef.current || prependStoppedRef.current) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
-    // Only when within ~1 screen of the top.
-    if (scroller.scrollTop > scroller.clientHeight) return;
+    // Defer to near the top boundary (was ~1 screen).
+    if (scroller.scrollTop > scroller.clientHeight * 0.5) return;
     const first = segments[0];
     if (!first || !chapterExistsFrom(first, -1)) return;
     prependLockRef.current = true;
+    setPrepending(true);
     (async () => {
       try {
         let prev: Segment | null = null;
@@ -875,7 +883,7 @@ function ReaderInner() {
           setPrepended((p) => [prev!, ...p]);
         } else prependStoppedRef.current = true;
       } catch { prependStoppedRef.current = true; }
-      finally { prependLockRef.current = false; }
+      finally { prependLockRef.current = false; setPrepending(false); }
     })();
   }, [settings.infiniteScroll, isContinuous, segments, chapterExistsFrom, isPreview, previewOrder, readableChapters, buildPreviewSeg, buildLibrarySeg]);
 
@@ -1257,6 +1265,23 @@ function ReaderInner() {
           onExit={() => router.back()}
         />
       ) : isContinuous ? (
+        <>
+          {settings.infiniteScroll && prepending && (
+            <div className="pointer-events-none fixed left-1/2 top-16 z-20 -translate-x-1/2">
+              <div className="flex items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading previous chapter…
+              </div>
+            </div>
+          )}
+          {settings.infiniteScroll && appending && (
+            <div className="pointer-events-none fixed bottom-16 left-1/2 z-20 -translate-x-1/2">
+              <div className="flex items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading next chapter…
+              </div>
+            </div>
+          )}
         <div ref={scrollRef} className="h-full overflow-y-auto" onClick={handleTap}>
           <div className="mx-auto flex flex-col items-center" style={{ ...containerWidthStyle, rowGap: gap }}>
             {segments.map((seg, si) => (
@@ -1335,6 +1360,7 @@ function ReaderInner() {
             />
           </div>
         </div>
+        </>
       ) : pageCount > 0 && currentPage >= pageCount ? (
         // Chapter transition — its own "page": one click carries into the next
         // chapter (or back to the last page), same as turning any page.
