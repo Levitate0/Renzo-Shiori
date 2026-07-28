@@ -156,9 +156,6 @@ export function ScrobblerSettings() {
     setComicVineApiKey('');
   }, [comicVineApiKey, saveComicVineKey]);
 
-  // DIAGNOSTIC: verify component renders
-  console.log('[ScrobblerSettings] rendering, configs:', configsLoading ? 'loading' : configs?.length + ' items');
-
   if (configsLoading) {
     return <div className="p-4 text-muted-foreground">Loading scrobbler settings...</div>;
   }
@@ -235,8 +232,8 @@ export function ScrobblerSettings() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
                   {/* Enabled toggle */}
                   <div className="flex items-center gap-2">
                     <Switch
@@ -259,7 +256,7 @@ export function ScrobblerSettings() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {config.isConnected ? (
                     <>
                       {config.lastSyncAt && (
@@ -278,20 +275,20 @@ export function ScrobblerSettings() {
                     </>
                   ) : config.supportsDirectAuth ? (
                     config.provider === ScrobblerProvider.Kitsu ? (
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Input
                           type="email"
                           placeholder="Email"
                           value={kitsuEmail}
                           onChange={(e) => setKitsuEmail(e.target.value)}
-                          className="h-8 w-40 text-xs"
+                          className="h-8 w-full min-[420px]:w-40 text-xs"
                         />
                         <Input
                           type="password"
                           placeholder="Password"
                           value={kitsuPassword}
                           onChange={(e) => setKitsuPassword(e.target.value)}
-                          className="h-8 w-40 text-xs"
+                          className="h-8 w-full min-[420px]:w-40 text-xs"
                         />
                         <Button
                           variant="default"
@@ -306,7 +303,7 @@ export function ScrobblerSettings() {
                         </Button>
                       </div>
                     ) : config.provider === ScrobblerProvider.MangaDex ? (
-                      <div className="flex flex-col gap-2 items-end">
+                      <div className="flex w-full flex-col gap-2 items-stretch sm:w-auto sm:items-end">
                         <a
                           href="https://mangadex.org/settings"
                           target="_blank"
@@ -315,34 +312,34 @@ export function ScrobblerSettings() {
                         >
                           Create personal API client on MangaDex
                         </a>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Input
                             type="text"
                             placeholder="Username"
                             value={mdUsername}
                             onChange={(e) => setMdUsername(e.target.value)}
-                            className="h-8 w-28 text-xs"
+                            className="h-8 w-full min-[420px]:w-28 text-xs"
                           />
                           <Input
                             type="password"
                             placeholder="Password"
                             value={mdPassword}
                             onChange={(e) => setMdPassword(e.target.value)}
-                            className="h-8 w-28 text-xs"
+                            className="h-8 w-full min-[420px]:w-28 text-xs"
                           />
                           <Input
                             type="text"
                             placeholder="Client ID"
                             value={mdClientId}
                             onChange={(e) => setMdClientId(e.target.value)}
-                            className="h-8 w-28 text-xs"
+                            className="h-8 w-full min-[420px]:w-28 text-xs"
                           />
                           <Input
                             type="password"
                             placeholder="Client Secret"
                             value={mdClientSecret}
                             onChange={(e) => setMdClientSecret(e.target.value)}
-                            className="h-8 w-28 text-xs"
+                            className="h-8 w-full min-[420px]:w-28 text-xs"
                           />
                           <Button
                             variant="default"
@@ -364,13 +361,13 @@ export function ScrobblerSettings() {
                       </div>
                     ) : null
                   ) : config.provider === ScrobblerProvider.ComicVine ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Input
                         type="password"
                         placeholder="Enter ComicVine API key"
                         value={comicVineApiKey}
                         onChange={(e) => setComicVineApiKey(e.target.value)}
-                        className="h-8 w-48 text-xs"
+                        className="h-8 w-full min-[420px]:w-48 text-xs"
                       />
                       <Button
                         variant="default"

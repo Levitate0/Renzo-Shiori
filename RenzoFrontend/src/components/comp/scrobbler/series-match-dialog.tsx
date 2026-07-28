@@ -83,22 +83,22 @@ export function SeriesMatchDialog({ seriesId, provider, open, onOpenChange }: Se
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader className="pr-6">
           <DialogTitle>Series Match</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="truncate">
             {ScrobblerProvider[provider]} — {currentMatch?.seriesTitle ?? seriesId}
           </DialogDescription>
         </DialogHeader>
 
         {/* Current Match Status */}
         {currentMatch && (
-          <div className="flex items-center justify-between p-3 rounded-lg border">
+          <div className="flex flex-col gap-3 p-3 rounded-lg border sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">Current status:</span>
               {statusBadge(currentMatch.mappingStatus, currentMatch.matchScore)}
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 size="sm"
