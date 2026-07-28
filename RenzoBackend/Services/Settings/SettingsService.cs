@@ -23,15 +23,16 @@ namespace RenzoBackend.Services.Settings
         private readonly IConfiguration _config;
         private readonly AppDbContext _db;
         private readonly IServiceScopeFactory _prov;
+        private readonly ILogger<SettingsService> _logger;
 
         private static SettingsDto? _settings;
 
-        public SettingsService(IConfiguration config, IServiceScopeFactory prov, AppDbContext db)
+        public SettingsService(IConfiguration config, IServiceScopeFactory prov, AppDbContext db, ILogger<SettingsService> logger)
         {
             _config = config;
             _db = db;
             _prov = prov;
-
+            _logger = logger;
         }
 
 
@@ -264,12 +265,13 @@ namespace RenzoBackend.Services.Settings
                         }
                     }
                 }
-                if (repos.Count>0)
+                foreach (string n in repos)
                 {
-                    foreach(string n in repos)
+                    // A single unreachable/invalid repo must not abort the whole
+                    // settings save (which surfaced as "the repo change didn't persist").
+                    try
                     {
-                        TachiyomiRepository repo = new TachiyomiRepository(n);
-                        repo = await bridgeManager.AddOnlineRepositoryAsync(repo).ConfigureAwait(false);
+                        TachiyomiRepository repo = await bridgeManager.AddOnlineRepositoryAsync(new TachiyomiRepository(n)).ConfigureAwait(false);
                         if (!n.Equals(repo.Url, StringComparison.OrdinalIgnoreCase))
                         {
                             List<string> existing = set.MihonRepositories.ToList();
@@ -277,6 +279,33 @@ namespace RenzoBackend.Services.Settings
                             existing.Add(repo.Url);
                             set.MihonRepositories = existing.ToArray();
                         }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to add repository {Url}", n);
+                    }
+                }
+
+                // Remove repositories the user deleted. The loop above only ADDS, so
+                // without this a removed repo stayed registered in the bridge (which is
+                // what the source/extension listing reads) and the change appeared not
+                // to persist.
+                var desired = new HashSet<string>(set.MihonRepositories, StringComparer.OrdinalIgnoreCase);
+                // Guard: never mass-remove every repo from an unexpectedly-empty list
+                // (a malformed save). Removing the last repo intentionally still works
+                // by leaving at least the replacement in the submitted list.
+                foreach (var stale in desired.Count > 0 ? onlineRepos : new List<TachiyomiRepository>())
+                {
+                    if (desired.Contains(stale.Url))
+                        continue;
+                    try
+                    {
+                        await bridgeManager.RemoveOnlineRespositoryAsync(stale).ConfigureAwait(false);
+                        _logger.LogInformation("Removed repository {Url}", stale.Url);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to remove repository {Url}", stale.Url);
                     }
                 }
                 await bridgeManager.SetPreferencesAsync(new Preferences
