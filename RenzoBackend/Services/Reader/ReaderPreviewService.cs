@@ -40,6 +40,13 @@ public class ReaderPreviewService
     // source is skipped quickly and the next permanent source is tried.
     private static readonly TimeSpan StreamSourceTimeout = TimeSpan.FromSeconds(20);
 
+    // Validation probe (page 0 image) when picking the source to stream from: a
+    // source can return a page LIST but have a dead/timing-out image host, so we
+    // fetch page 0 to confirm images actually load before committing to it. Kept
+    // shorter than StreamImageTimeout so a bad source falls through to the next
+    // one quickly instead of stalling the chapter open.
+    private static readonly TimeSpan StreamProbeTimeout = TimeSpan.FromSeconds(15);
+
     /// <summary>
     /// EnsureLoggedInAsync performs a REAL login POST every call. The locked-chapter
     /// poll retries page fetches repeatedly, and a chapter that stays locked would
@@ -275,6 +282,39 @@ public class ReaderPreviewService
     }
 
     /// <summary>
+    /// Fetches page 0's image from a candidate source to confirm its image host is
+    /// alive (a source can serve a page LIST but hang on the images). Caches the
+    /// image so the first page then loads instantly. Returns false on timeout /
+    /// failure so the caller falls through to the next source in priority order.
+    /// </summary>
+    private async Task<bool> ProbeAndCacheFirstImageAsync(
+        Guid seriesId, decimal chapterNumber, ISourceInterop src, List<Page> pages, CancellationToken token)
+    {
+        if (pages.Count == 0)
+            return false;
+        string imgKey = $"lib:img:{seriesId}:{chapterNumber}:0";
+        if (_imageCache.TryGet(imgKey, out _))
+            return true; // page 0 already cached from a good source
+        try
+        {
+            ContentTypeStream? img = await SourceTimeout
+                .RunAsync(c => src.GetPageImageAsync(pages[0], c), StreamProbeTimeout, token)
+                .ConfigureAwait(false);
+            if (img == null)
+                return false;
+            string ct = string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType;
+            _imageCache.Set(imgKey, img.ToArray(), ct);
+            return true;
+        }
+        catch (TimeoutException) { return false; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Stream: image probe errored for ch {Chapter}", chapterNumber);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Every capable, permanent source that carries this chapter, storage source
     /// first. Streaming tries them in order so a failing/locked/slow source falls
     /// through to the next instead of failing the whole read.
@@ -286,13 +326,21 @@ public class ReaderPreviewService
         if (series == null)
             return new List<SeriesProviderEntity>();
 
+        // "Capable" = technically usable for streaming (a resolvable remote source
+        // carrying this chapter). A user-disabled source is NOT excluded here — it's
+        // still tried, just ranked last, so a dead active source falls through to
+        // whatever can actually serve the chapter.
         bool Capable(SeriesProviderEntity p) =>
-            !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId);
+            !p.IsUnknown && !p.IsLocal && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId);
         bool HasChapter(SeriesProviderEntity p) => p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber);
 
+        // Priority: permanent (storage) source first, then active (enabled) before
+        // inactive (disabled). Streaming walks this order and pulls from the first
+        // source that actually serves the pages AND their images.
         return series.Sources
             .Where(p => Capable(p) && HasChapter(p))
             .OrderByDescending(p => p.IsStorage)
+            .ThenByDescending(p => !p.IsDisabled)
             .ToList();
     }
 
@@ -480,6 +528,10 @@ public class ReaderPreviewService
         List<Page>? pages = null;
         Guid? winner = null;
         bool anyResolved = false;
+        // First source that served a page list even if its images didn't probe OK —
+        // a last resort so a single-source read is never worse than before.
+        List<Page>? servedPages = null;
+        Guid? servedWinner = null;
 
         foreach (SeriesProviderEntity provider in providers)
         {
@@ -491,7 +543,16 @@ public class ReaderPreviewService
             (_, ISourceInterop src, ParsedChapter chapter) = resolved.Value;
 
             List<Page>? attempt = await TryGetPagesFromSourceAsync(src, chapter, provider, userId, token).ConfigureAwait(false);
-            if (attempt != null && attempt.Count > 0)
+            if (attempt == null || attempt.Count == 0)
+                continue; // empty (locked) or failed on this source — try the next one
+
+            if (servedPages == null) { servedPages = attempt; servedWinner = provider.Id; }
+
+            // A source can return a page LIST but have a dead/timing-out image host,
+            // which makes every page time out. Probe page 0's image and only commit
+            // to a source that can actually serve images — otherwise fall through to
+            // the next one in priority order. The probe caches page 0.
+            if (await ProbeAndCacheFirstImageAsync(seriesId, chapterNumber, src, attempt, token).ConfigureAwait(false))
             {
                 pages = attempt;
                 winner = provider.Id;
@@ -502,7 +563,16 @@ public class ReaderPreviewService
                 await ClearLockedFlagAsync(provider.Id, chapterNumber, token).ConfigureAwait(false);
                 break;
             }
-            // empty (locked) or failed on this source — try the next one
+            _logger.LogWarning("Stream: source {Provider} served a page list but its images wouldn't load for ch {Chapter}; trying the next source", provider.Provider, chapterNumber);
+        }
+
+        // No source served serviceable images → fall back to the first that at least
+        // returned a page list (the client will retry the images), so a lone-source
+        // read is never worse than it was before.
+        if (pages == null && servedPages != null)
+        {
+            pages = servedPages;
+            winner = servedWinner;
         }
 
         // No source could even resolve the chapter → genuinely not found.
