@@ -15,6 +15,9 @@ namespace Mihon.ExtensionsBridge.Models.Extensions
         public UpdateStrategy UpdateStrategy { get; set; }
         public bool Initialized { get; set; }
 
+        /// <summary>extensions-lib 1.6 memo blob (raw JSON), threaded search -> details/chapters/pages.</summary>
+        public string? Memo { get; set; }
+
     }
 
     public class ParsedManga : Manga

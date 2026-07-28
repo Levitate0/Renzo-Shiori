@@ -13,6 +13,9 @@
 
         public string? Scanlator { get; set; }
 
+        /// <summary>extensions-lib 1.6 memo blob (raw JSON), needed by getPageList for some sources.</summary>
+        public string? Memo { get; set; }
+
     }
     public class ParsedChapter : Chapter
     {
