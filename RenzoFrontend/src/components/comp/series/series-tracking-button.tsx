@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Radio, Check } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Radio, Check, ListChecks, Plug } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -17,6 +18,7 @@ import {
   useScrobblerConfigs,
   useScrobblerMatches,
   useAutoMatchSeries,
+  useAutoMatchAll,
   useDisableLink,
 } from "@/lib/api/hooks/useScrobbler";
 import { SeriesMatchDialog } from "@/components/comp/scrobbler/series-match-dialog";
@@ -32,14 +34,20 @@ import { ScrobblerProvider, SeriesMappingStatus } from "@/lib/api/types";
  * Account → Trackers first).
  */
 export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
+  const router = useRouter();
   const { data: configs } = useScrobblerConfigs();
   const { data: matches } = useScrobblerMatches();
   const autoMatch = useAutoMatchSeries();
+  const autoMatchAll = useAutoMatchAll();
   const disableLink = useDisableLink();
   const [dialogProvider, setDialogProvider] = useState<ScrobblerProvider | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const connected = (configs ?? []).filter((c) => c.isConnected);
+  const providers = configs ?? [];
+  const connected = providers.filter((c) => c.isConnected);
+  // Show the control once the user has at least one tracker connected; the list
+  // below still shows EVERY tracker (e.g. MAL) so an unconnected one is one tap
+  // from connecting rather than being invisible.
   if (connected.length === 0) return null;
 
   const linkFor = (p: ScrobblerProvider) =>
@@ -78,6 +86,22 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
     }
   };
 
+  // One-time action: auto-match the user's WHOLE library across every connected
+  // tracker. Not a toggle — fire it and matches link as they're found.
+  const trackAllSeries = async () => {
+    setBusy(true);
+    try {
+      await Promise.all(connected.map((c) => autoMatchAll.mutateAsync(c.provider)));
+      toast.success("Tracking all your series…", {
+        description: "Matching your library across your connected trackers.",
+      });
+    } catch {
+      toast.error("Couldn't start tracking all series.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
       <DropdownMenu>
@@ -105,16 +129,23 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
           <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
             Per tracker — tap to match
           </DropdownMenuLabel>
-          {connected.map((c) => {
+          {providers.map((c) => {
             const link = linkFor(c.provider);
             return (
               <DropdownMenuItem
                 key={c.provider}
-                onClick={() => setDialogProvider(c.provider)}
+                onClick={() =>
+                  c.isConnected ? setDialogProvider(c.provider) : router.push("/account")
+                }
                 className="flex items-center justify-between gap-3 cursor-pointer"
               >
                 <span className="truncate">{c.displayName}</span>
-                {link ? (
+                {!c.isConnected ? (
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground shrink-0">
+                    <Plug className="h-3.5 w-3.5" />
+                    Connect
+                  </span>
+                ) : link ? (
                   <span className="flex items-center gap-1 text-xs text-primary shrink-0">
                     <Check className="h-3.5 w-3.5" />
                     Linked
@@ -125,6 +156,16 @@ export function SeriesTrackingButton({ seriesId }: { seriesId: string }) {
               </DropdownMenuItem>
             );
           })}
+
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={trackAllSeries}
+            disabled={busy || autoMatchAll.isPending}
+            className="flex items-center gap-2 cursor-pointer"
+          >
+            <ListChecks className={`h-4 w-4 ${autoMatchAll.isPending ? "animate-spin" : ""}`} />
+            Track all my series
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
