@@ -57,36 +57,99 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
             Name = entry.Name;
             Version = entry.Extension.Version;
             string className = entry.Extension.Package + entry.ClassName;
-            java.util.List ops = null;
-            ops = extension.bridge.Extensions.INSTANCE.loadExtensionSources(jarPath, className);
             var list = new List<ISourceInterop>();
-            ops.toArray().Cast<Source>().ToList().ForEach(s => list.Add(new SourceInterop(s, logger)));
-            /*
-                        /
-                        // Create URLClassLoader for this jar
-                        var jarUrl = new URL(new java.io.File(jarPath).toURI().toURL().toString());
-                        _classLoader = new ChildFirstURLClassLoader(new URL[] { jarUrl }, MiscExtensions.ClassLoader);
-                        / new Action(() =>
-                       // {
-                            var classToLoad = Class.forName(className, false, _classLoader);
-                            object instance = classToLoad.newInstance();
-                            if (instance is SourceFactory sf)
-                            {
-                                foreach (var o in sf.createSources().toArray())
-                                {
-                                    var s = (eu.kanade.tachiyomi.source.Source)o;
-                                    list.Add(new SourceInterop(s, logger));
-                                }
-                            }
-                            else if (instance is Source s)
-                            {
-                                list.Add(new SourceInterop(s, logger));
-                            }
-                            else
-                                throw new InvalidOperationException("The specified class is neither a SourceFactory nor a Source implementation.");
-            */
-            // }).InvokeInJavaContext();
+            // Load the extension's main class through a child-first loader whose PARENT is the
+            // compat runtime's own classloader (the assembly that owns eu.kanade.tachiyomi.source.*).
+            //
+            // This is deliberately NOT the Kotlin `Extensions.loadExtensionSources`, which builds a
+            // ChildFirstURLClassLoader with a null parent and relies on getSystemClassLoader() to
+            // resolve the source-api types. Under IKVM that path resolves the source-api through a
+            // different classloader than the extension's own classes, which — for extensions-lib 1.6
+            // sources (the generated `ExtensionGenerated : <obfuscated HttpSource subclass>` shape) —
+            // makes IKVM's eager linker see the HttpSource hierarchy through two loaders and throw a
+            // messageless java.lang.IncompatibleClassChangeError at construction. Anchoring the parent
+            // to the compat classloader keeps every source-api type single-identity, so both current
+            // (1.4/1.5) and 1.6+ extensions link and instantiate. Version-agnostic by construction:
+            // it makes no assumptions about the extension's ext-lib version.
+            var jarUrl = new java.net.URL(new java.io.File(jarPath).toURI().toURL().toString());
+            var loader = new extension.bridge.ChildFirstURLClassLoader(new java.net.URL[] { jarUrl }, MiscExtensions.ClassLoader);
+            _classLoader = loader;
+            try
+            {
+                var classToLoad = java.lang.Class.forName(className, false, loader);
+                object instance = classToLoad.getDeclaredConstructor(new java.lang.Class[0]).newInstance(new object[0]);
+                if (instance is SourceFactory sf)
+                {
+                    foreach (var o in sf.createSources().toArray())
+                        list.Add(new SourceInterop((Source)o, logger));
+                }
+                else if (instance is Source s)
+                {
+                    list.Add(new SourceInterop(s, logger));
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Class {className} is neither a SourceFactory nor a Source implementation (got {instance?.GetType().FullName ?? "null"}).");
+                }
+            }
+            catch (java.lang.Throwable jt)
+            {
+                // Extension instantiation runs the source constructor reflectively; failures surface
+                // as java.lang.reflect.InvocationTargetException whose real cause is otherwise dropped
+                // by the default logging (Throwable.toString() omits the cause chain). Unwrap and log
+                // the full Java cause chain (plus CLR detail) so load failures stay diagnosable.
+                _logger.LogError("Failed to load extension sources for {ClassName} from {Jar}. Full Java cause chain:\n{Trace}",
+                    className, jarPath, DescribeJavaThrowable(jt));
+                throw;
+            }
             _sources = list;
+        }
+
+        /// <summary>
+        /// Renders a Java <see cref="java.lang.Throwable"/> and its full <c>getCause()</c> chain
+        /// (including reflective <c>InvocationTargetException</c> wrappers) to a string, so the real
+        /// root cause of an extension-load failure is visible in the logs.
+        /// </summary>
+        internal static string DescribeJavaThrowable(java.lang.Throwable jt)
+        {
+            try
+            {
+                var sw = new java.io.StringWriter();
+                var pw = new java.io.PrintWriter(sw);
+                java.lang.Throwable? cur = jt;
+                int depth = 0;
+                var seen = new HashSet<java.lang.Throwable>();
+                while (cur != null && seen.Add(cur) && depth++ < 12)
+                {
+                    pw.println((depth == 1 ? "" : "Caused by: ") + cur.getClass().getName() + ": " + cur.getMessage());
+                    var st = cur.getStackTrace();
+                    for (int i = 0; i < st.Length && i < 15; i++)
+                        pw.println("    at " + st[i].toString());
+                    // IKVM leaves getMessage() empty for linkage errors, but the CLR-level
+                    // exception detail (Message + internal IKVM.Runtime frames) identifies the
+                    // exact failing member/check. Surface it for the deepest cause.
+                    System.Exception clr = cur;
+                    pw.println("  [CLR] " + clr.GetType().FullName + ": " + clr.Message);
+                    if (!string.IsNullOrEmpty(clr.StackTrace))
+                    {
+                        var clrFrames = clr.StackTrace.Split('\n');
+                        for (int i = 0; i < clrFrames.Length && i < 12; i++)
+                            pw.println("  [CLR]   " + clrFrames[i].TrimEnd());
+                    }
+                    // InvocationTargetException hides the real cause behind getTargetException().
+                    if (cur is java.lang.reflect.InvocationTargetException ite && ite.getTargetException() != null)
+                        cur = ite.getTargetException() as java.lang.Throwable;
+                    else
+                        cur = cur.getCause() as java.lang.Throwable;
+                }
+                pw.flush();
+                return sw.toString();
+            }
+            catch (System.Exception ex)
+            {
+                return "<failed to describe Java throwable: " + ex.Message + ">";
+            }
         }
 
         // Preferences (same implementation pattern as ExtensionInterop)
