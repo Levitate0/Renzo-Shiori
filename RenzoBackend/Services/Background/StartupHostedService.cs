@@ -313,6 +313,42 @@ namespace RenzoBackend.Services.Background
                     _logger.LogWarning(ex, "Failed to seed per-series status sources");
                 }
 
+                // One-time: assign per-series provider Priority (0 = highest). Only series still on the
+                // migration default (every provider Priority 0) are touched, so this runs once and never
+                // clobbers a user's chosen order. Default rank preserves the previous storage-first
+                // behavior: storage -> cover -> title -> then stable by provider name.
+                try
+                {
+                    List<SeriesProviderEntity> allProvs = await db.SeriesProviders
+                        .Where(a => !a.IsUninstalled)
+                        .ToListAsync(cancellationToken).ConfigureAwait(false);
+                    int ranked = 0;
+                    foreach (var grp in allProvs.GroupBy(a => a.SeriesId))
+                    {
+                        var list = grp.ToList();
+                        if (list.Count < 2) continue;                 // single provider: default 0 is fine
+                        if (list.Any(a => a.Priority != 0)) continue;  // already prioritized
+                        var ordered = list
+                            .OrderByDescending(a => a.IsStorage)
+                            .ThenByDescending(a => a.IsCover)
+                            .ThenByDescending(a => a.IsTitle)
+                            .ThenBy(a => a.Provider, StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(a => a.Id)
+                            .ToList();
+                        for (int i = 0; i < ordered.Count; i++) ordered[i].Priority = i;
+                        ranked++;
+                    }
+                    if (ranked > 0)
+                    {
+                        _logger.LogInformation("Backfilled provider priority for {Count} multi-source series", ranked);
+                        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to backfill per-series provider priority");
+                }
+
                 scope.ServiceProvider.GetRequiredService<ReadStateService>().PrefetchCache(await db.Series.ToListAsync(cancellationToken).ConfigureAwait(false));
 
                 // Re-inject saved coin-site login cookies into the shared jar so

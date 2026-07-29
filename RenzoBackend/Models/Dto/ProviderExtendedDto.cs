@@ -41,6 +41,9 @@ public class ProviderExtendedDto : ProviderSummaryBase, IThumb
     public decimal? ContinueAfterChapter { get; set; }
     [JsonPropertyName("url")]
     public override string? Url { get; set; }
+    /// <summary>Per-series ordering rank among this series' providers (0 = highest priority).</summary>
+    [JsonPropertyName("priority")]
+    public int Priority { get; set; }
     [JsonPropertyName("useCover")]
     public bool UseCover { get; set; }
     [JsonPropertyName("useStatus")]

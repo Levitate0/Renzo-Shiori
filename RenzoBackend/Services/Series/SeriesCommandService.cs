@@ -1053,11 +1053,15 @@ namespace RenzoBackend.Services.Series
             }
             else
             {
+                // Highest per-series Priority (0 = top) wins, then storage, then a source that already
+                // holds the file, then any capable. This makes the re-download come from the user's
+                // preferred source for the series' chapter quality.
                 List<SeriesProviderEntity> candidates = series.Sources
-                    .Where(p => Capable(p) && HasChapter(p)).ToList();
-                target = candidates.FirstOrDefault(p => p.IsStorage)
-                    ?? candidates.FirstOrDefault(p => p.Chapters.Any(c => c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)))
-                    ?? candidates.FirstOrDefault();
+                    .Where(p => Capable(p) && HasChapter(p))
+                    .OrderBy(p => p.Priority)
+                    .ThenByDescending(p => p.IsStorage)
+                    .ToList();
+                target = candidates.FirstOrDefault();
                 if (target == null)
                     return new RedownloadResult(RedownloadOutcome.NoSourceAvailable);
             }

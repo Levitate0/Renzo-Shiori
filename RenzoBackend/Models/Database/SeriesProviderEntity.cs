@@ -40,6 +40,14 @@ public class SeriesProviderEntity : ProviderSummaryBase, IBridgeItemInfo, IThumb
     public bool IsLocal { get; set; }
     public bool IsDisabled { get; set; }
     public bool IsUninstalled { get; set; }
+
+    /// <summary>
+    /// Per-series ordering rank among this series' providers — 0 = highest priority, lower wins.
+    /// Drives read/preview source selection (with step-down fallback), the download source, and which
+    /// provider holds a merged chapter, letting the user control chapter quality per series. IsStorage
+    /// is the tiebreaker. Backfilled on migration to preserve the previous storage-first ordering.
+    /// </summary>
+    public int Priority { get; set; }
     public List<Chapter> Chapters { get; set; } = [];
 
     /// <summary>

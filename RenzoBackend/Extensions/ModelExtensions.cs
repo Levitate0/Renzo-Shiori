@@ -319,10 +319,13 @@ namespace RenzoBackend.Extensions
 
             if (s.Sources != null && s.Sources.Count > 0)
             {
-                // Sort providers: permanent (IsStorage) first, then temporary (normal Mihon-linked), then local/unknown
+                // Sort providers by the user's per-series Priority (0 = top). Local/unknown/disabled/
+                // uninstalled sink to the bottom; within each tier Priority orders, storage breaks ties.
+                // This is also the order the reorder UI shows and edits.
                 var sortedSources = s.Sources
-                    .OrderBy(p => p.IsUnknown || p.IsDisabled || p.IsUninstalled || p.IsLocal ? 2 :
-                                  p.IsStorage ? 0 : 1)
+                    .OrderBy(p => p.IsUnknown || p.IsDisabled || p.IsUninstalled || p.IsLocal ? 1 : 0)
+                    .ThenBy(p => p.Priority)
+                    .ThenBy(p => p.IsStorage ? 0 : 1)
                     .ToList();
                 foreach (var provider in sortedSources)
                 {
@@ -342,6 +345,7 @@ namespace RenzoBackend.Extensions
                         Status = provider.Status,
                         ChapterCount = provider.ChapterCount ?? 0,
                         IsStorage = provider.IsStorage,
+                        Priority = provider.Priority,
                         UseTitle = provider.IsTitle,
                         UseCover = provider.IsCover,
                         UseStatus = provider.IsStatus,
@@ -463,9 +467,10 @@ namespace RenzoBackend.Extensions
                 if (!downloaded && !wanted && !withinRange)
                     continue;
 
-                // Holder of the on-disk file: prefer the storage source.
+                // Holder of the on-disk file: prefer the highest-priority source (0 = top), then storage.
                 var holder = downloadedRows
-                    .OrderBy(r => r.Provider.IsStorage ? 0 : 1)
+                    .OrderBy(r => r.Provider.Priority)
+                    .ThenBy(r => r.Provider.IsStorage ? 0 : 1)
                     .FirstOrDefault();
 
                 string name = rows

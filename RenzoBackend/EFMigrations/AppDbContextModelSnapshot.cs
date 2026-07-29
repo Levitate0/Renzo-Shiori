@@ -687,6 +687,9 @@ namespace RenzoBackend.Migrations
                         .HasColumnType("TEXT")
                         .UseCollation("BINARY");
 
+                    b.Property<int>("Priority")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasColumnType("TEXT")

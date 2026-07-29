@@ -334,12 +334,14 @@ public class ReaderPreviewService
             !p.IsUnknown && !p.IsLocal && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId);
         bool HasChapter(SeriesProviderEntity p) => p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber);
 
-        // Priority: permanent (storage) source first, then active (enabled) before
-        // inactive (disabled). Streaming walks this order and pulls from the first
-        // source that actually serves the pages AND their images.
+        // Order by the user's per-series provider Priority (0 = highest), then storage, then active
+        // (enabled) before disabled. Streaming walks this order and pulls from the first source that
+        // actually serves the pages AND their images — so a higher-priority source that times out or
+        // whose image host is dead steps down to the next priority automatically.
         return series.Sources
             .Where(p => Capable(p) && HasChapter(p))
-            .OrderByDescending(p => p.IsStorage)
+            .OrderBy(p => p.Priority)
+            .ThenByDescending(p => p.IsStorage)
             .ThenByDescending(p => !p.IsDisabled)
             .ToList();
     }
