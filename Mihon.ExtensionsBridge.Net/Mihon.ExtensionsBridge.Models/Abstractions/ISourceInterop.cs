@@ -11,6 +11,8 @@ namespace Mihon.ExtensionsBridge.Models.Abstractions
         bool IsParsedHttpSource { get; }
         string Language { get; }
         string Name { get; }
+        string BaseUrl { get; }
+        int VersionId { get; }
         bool SupportsLatest { get; }
 
         Task<List<ParsedChapter>> GetChaptersAsync(Manga manga, CancellationToken token = default);

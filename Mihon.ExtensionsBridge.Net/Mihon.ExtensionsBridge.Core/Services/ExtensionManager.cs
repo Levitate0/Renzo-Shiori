@@ -738,7 +738,7 @@ namespace Mihon.ExtensionsBridge.Core.Services
                     }
                     unitofWork.Entry.Extension.Language = language;
                     List<TachiyomiSource> original_sources = unitofWork.Entry.Extension.Sources.ToList();
-                    foreach (SourceInterop sop in iop.Sources)
+                    foreach (var sop in iop.Sources)
                     {
                         TachiyomiSource? original = original_sources.FirstOrDefault(s => s.Id == sop.Id.ToString());
                         if (original != null)

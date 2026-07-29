@@ -26,6 +26,8 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Gatekeeper
         public bool IsParsedHttpSource => _inner.IsParsedHttpSource;
         public string Language => _inner.Language;
         public string Name => _inner.Name;
+        public string BaseUrl => _inner.BaseUrl;
+        public int VersionId => _inner.VersionId;
         public bool SupportsLatest => _inner.SupportsLatest;
 
         public async Task<List<ParsedChapter>> GetChaptersAsync(Manga manga, CancellationToken token = default)

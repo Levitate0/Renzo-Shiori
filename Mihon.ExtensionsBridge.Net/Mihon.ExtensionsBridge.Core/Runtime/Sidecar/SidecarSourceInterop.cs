@@ -24,6 +24,8 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public long Id => _meta.Id;
         public string Name => _meta.Name;
         public string Language => _meta.Lang;
+        public string BaseUrl => _meta.BaseUrl;
+        public int VersionId => _meta.VersionId;
         public bool SupportsLatest => _meta.SupportsLatest;
         public bool IsConfigurableSource => _meta.IsConfigurable;
         public bool IsHttpSource => _meta.IsHttp;

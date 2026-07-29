@@ -184,7 +184,44 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
                 }
               //  SettingsConfig.Settings config2 = ConfigKt.getSettings();
             //})).InvokeInJavaContext();
-            
+
+            // JVM sidecar path: mirror the same network settings to the out-of-process engine so
+            // CloudflareInterceptor sees flareSolverrEnabled (else it throws "Cloudflare bypass ...
+            // disabled") and SOCKS/proxy apply. The sidecar keeps unspecified keys at their current value.
+            if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
+                _serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager sidecar)
+            {
+                try
+                {
+                    var settings = new Dictionary<string, object?>();
+                    if (prefs.FlareSolverr != null)
+                    {
+                        settings["flareSolverrEnabled"] = prefs.FlareSolverr.Enabled.ToString().ToLowerInvariant();
+                        settings["flareSolverrUrl"] = prefs.FlareSolverr.Url ?? "http://127.0.0.1:8189";
+                        settings["flareSolverrTimeout"] = prefs.FlareSolverr.Timeout.ToString();
+                        settings["flareSolverrSessionName"] = prefs.FlareSolverr.SessionName;
+                        settings["flareSolverrSessionTtl"] = prefs.FlareSolverr.SessionTtl.ToString();
+                        settings["flareSolverrAsResponseFallback"] = prefs.FlareSolverr.AsResponseFallback.ToString().ToLowerInvariant();
+                    }
+                    if (prefs.SocksProxy != null)
+                    {
+                        settings["socksProxyEnabled"] = prefs.SocksProxy.Enabled.ToString().ToLowerInvariant();
+                        settings["socksProxyHost"] = prefs.SocksProxy.Host ?? "";
+                        settings["socksProxyPort"] = prefs.SocksProxy.Port == 0 ? "" : prefs.SocksProxy.Port.ToString();
+                        settings["socksProxyUsername"] = prefs.SocksProxy.Username;
+                        settings["socksProxyPassword"] = prefs.SocksProxy.Password;
+                    }
+                    if (settings.Count > 0)
+                    {
+                        await sidecar.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
+                        await sidecar.Client.ConfigAsync(settings, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to push network settings to the JVM sidecar.");
+                }
+            }
 
             await _workingFolderStructure.SavePreferencesAsync(prefs, cancellationToken);
         }

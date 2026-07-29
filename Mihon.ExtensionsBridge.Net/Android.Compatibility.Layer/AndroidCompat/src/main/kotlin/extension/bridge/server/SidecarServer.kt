@@ -15,7 +15,9 @@ import extension.bridge.applicationSetup
 import extension.bridge.loadExtensionSources
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -63,6 +65,10 @@ object SidecarServer {
 
         server.createContext("/health") { ex -> respond(ex, 200, """{"ok":true,"initialized":$initialized}""") }
         server.createContext("/setup") { ex -> guarded(ex) { setup(readObj(ex)) } }
+        server.createContext("/config") { ex -> guarded(ex) { config(readObj(ex)) } }
+        server.createContext("/cookies/inject") { ex -> guarded(ex) { cookiesInject(readObj(ex)) } }
+        server.createContext("/cookies/snapshot") { ex -> guarded(ex) { cookiesSnapshot(readObj(ex)) } }
+        server.createContext("/cookies/clear") { ex -> guarded(ex) { cookiesClear(readObj(ex)) } }
         server.createContext("/convert") { ex -> guarded(ex) { convert(readObj(ex)) } }
         server.createContext("/sources/load") { ex -> guarded(ex) { loadSources(readObj(ex)) } }
         server.createContext("/source/popular") { ex -> guarded(ex) { popular(readObj(ex)) } }
@@ -92,6 +98,101 @@ object SidecarServer {
                 if (throwable != null) System.err.println(throwable)
             }
             initialized = true
+        }
+        return """{"ok":true}"""
+    }
+
+    // Applies the app's network settings (FlareSolverr/Cloudflare, SOCKS proxy) to the engine,
+    // mirroring what BridgeManager.SetPreferencesAsync does for the IKVM path. Without this the
+    // CloudflareInterceptor sees flareSolverrEnabled=false and throws "Cloudflare bypass ... disabled".
+    private fun config(req: JsonObject): String {
+        val cur = extension.bridge.getSettings()
+        fun b(k: String, d: Boolean) = (req[k] as? JsonPrimitive)?.let { it.content.toBooleanStrictOrNull() } ?: d
+        fun i(k: String, d: Int) = (req[k] as? JsonPrimitive)?.content?.toIntOrNull() ?: d
+        fun s(k: String, d: String) = (req[k] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: d
+        val settings = extension.bridge.SettingsConfig.Settings(
+            socksProxyEnabled = b("socksProxyEnabled", cur.socksProxyEnabled),
+            socksProxyVersion = i("socksProxyVersion", cur.socksProxyVersion),
+            socksProxyHost = s("socksProxyHost", cur.socksProxyHost),
+            socksProxyPort = s("socksProxyPort", cur.socksProxyPort),
+            socksProxyUsername = s("socksProxyUsername", cur.socksProxyUsername),
+            socksProxyPassword = s("socksProxyPassword", cur.socksProxyPassword),
+            flareSolverrEnabled = b("flareSolverrEnabled", cur.flareSolverrEnabled),
+            flareSolverrUrl = s("flareSolverrUrl", cur.flareSolverrUrl),
+            flareSolverrTimeout = i("flareSolverrTimeout", cur.flareSolverrTimeout),
+            flareSolverrSessionName = s("flareSolverrSessionName", cur.flareSolverrSessionName),
+            flareSolverrSessionTtl = i("flareSolverrSessionTtl", cur.flareSolverrSessionTtl),
+            flareSolverrAsResponseFallback = b("flareSolverrAsResponseFallback", cur.flareSolverrAsResponseFallback),
+            interceptorOverrides = cur.interceptorOverrides,
+        )
+        extension.bridge.setSettings(settings)
+        return """{"ok":true}"""
+    }
+
+    // The engine registers its PersistentCookieStore as the JVM default cookie handler
+    // (CookieHandler.setDefault). Site-login cookies harvested by the app (Violet Scans and other
+    // coin sites) are injected here so the sources' OkHttp clients send them and serve owned chapters.
+    private fun cookieStore(): java.net.CookieStore? =
+        (java.net.CookieHandler.getDefault() as? java.net.CookieManager)?.cookieStore
+
+    private fun cookiesInject(req: JsonObject): String {
+        val store = cookieStore() ?: return """{"added":0}"""
+        val arr = req["cookies"] as? JsonArray ?: JsonArray(emptyList())
+        var added = 0
+        for (el in arr) {
+            val o = el as? JsonObject ?: continue
+            fun str(k: String) = (o[k] as? JsonPrimitive)?.content ?: ""
+            val name = str("name"); val value = str("value")
+            val domain = str("domain"); if (name.isEmpty() || domain.isEmpty()) continue
+            val path = str("path").ifEmpty { "/" }
+            val secure = (o["secure"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: true
+            try {
+                val cookie = java.net.HttpCookie(name, value)
+                cookie.domain = domain
+                cookie.path = path
+                cookie.secure = secure
+                cookie.version = 0
+                val host = domain.trimStart('.')
+                store.add(java.net.URI("https://$host/"), cookie)
+                added++
+            } catch (_: Throwable) { /* skip bad cookie */ }
+        }
+        return """{"added":$added}"""
+    }
+
+    private fun cookiesSnapshot(req: JsonObject): String {
+        val store = cookieStore()
+        val host = ((req["host"] as? JsonPrimitive)?.content ?: "").trimStart('.')
+        return buildJsonObject {
+            put("cookies", buildJsonArray {
+                if (store != null && host.isNotEmpty()) {
+                    val cookies = store.get(java.net.URI("https://$host/"))
+                    for (c in cookies) {
+                        add(buildJsonObject {
+                            put("name", c.name)
+                            put("value", c.value)
+                            put("domain", if (c.domain.isNullOrEmpty()) host else c.domain)
+                            put("path", if (c.path.isNullOrEmpty()) "/" else c.path)
+                            put("secure", c.secure)
+                        })
+                    }
+                }
+            })
+        }.toString()
+    }
+
+    private fun cookiesClear(req: JsonObject): String {
+        val store = cookieStore() ?: return """{"ok":true}"""
+        val host = ((req["host"] as? JsonPrimitive)?.content ?: "").trimStart('.')
+        if (host.isNotEmpty()) {
+            try {
+                for (c in store.cookies.toList()) {
+                    val d = (c.domain ?: "").trimStart('.')
+                    if (d.equals(host, true) || host.endsWith(".$d", true)) {
+                        try { store.remove(java.net.URI("https://$d/"), c) } catch (_: Throwable) {}
+                    }
+                }
+            } catch (_: Throwable) { /* best-effort */ }
         }
         return """{"ok":true}"""
     }
@@ -153,6 +254,11 @@ object SidecarServer {
         // getMangaDetails throwing; the compat default delegates to getMangaDetails for old sources.
         val out = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), true, false).manga }
                   else runBlocking { s.getMangaDetails(manga) }
+        // The 1.6 combined getMangaUpdate returns a manga carrying only CHANGED fields, expecting the
+        // caller to merge it onto the existing entry — so SManga's lateinit `url`/`title` are often left
+        // unset and throw when we serialize them or call getMangaUrl. Backfill both from the request.
+        if (!urlInitialized(out)) out.url = if (urlInitialized(manga)) manga.url else ""
+        if (!titleInitialized(out)) out.title = if (titleInitialized(manga)) manga.title else ""
         val realUrl = if (s is HttpSource) runCatching { s.getMangaUrl(out) }.getOrNull() else null
         return buildJsonObject {
             put("manga", mangaJson(out))
@@ -165,7 +271,15 @@ object SidecarServer {
         val manga = mangaFrom(req["manga"]!! as JsonObject)
         val list = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
                    else runBlocking { s.getChapterList(manga) }
-        return buildJsonArray { for (c in list) add(chapterJson(c)) }.toString()
+        return buildJsonArray {
+            for (c in list) {
+                // The absolute browser URL, exactly like the IKVM path's parsed.RealUrl =
+                // source.getChapterUrl(chapter). Without it the app's URL-reconstruction fallback
+                // rebuilds the address and can double the host (e.g. "violetscans.orghttps://...").
+                val realUrl = if (s is HttpSource) runCatching { s.getChapterUrl(c) }.getOrNull() else null
+                add(chapterJson(c, realUrl))
+            }
+        }.toString()
     }
 
     private fun pages(req: JsonObject): String {
@@ -228,6 +342,8 @@ object SidecarServer {
         put("supportsLatest", s.supportsLatest)
         put("isConfigurable", s is ConfigurableSource)
         put("isHttp", s is HttpSource)
+        put("baseUrl", if (s is HttpSource) s.baseUrl else "")
+        put("versionId", if (s is HttpSource) s.versionId else 0)
     }
 
     private fun mangasPage(mp: eu.kanade.tachiyomi.source.model.MangasPage) = buildJsonObject {
@@ -235,9 +351,13 @@ object SidecarServer {
         put("mangas", buildJsonArray { for (m in mp.mangas) add(mangaJson(m)) })
     }.toString()
 
+    // SManga.url is a lateinit var; a source may hand back a manga without it set.
+    private fun urlInitialized(m: SManga): Boolean = try { m.url; true } catch (_: Throwable) { false }
+    private fun titleInitialized(m: SManga): Boolean = try { m.title; true } catch (_: Throwable) { false }
+
     private fun mangaJson(m: SManga) = buildJsonObject {
-        put("url", m.url)
-        put("title", m.title)
+        put("url", if (urlInitialized(m)) m.url else "")
+        put("title", if (titleInitialized(m)) m.title else "")
         m.artist?.let { put("artist", it) }
         m.author?.let { put("author", it) }
         m.description?.let { put("description", it) }
@@ -249,8 +369,9 @@ object SidecarServer {
         if (m.memo.isNotEmpty()) put("memo", m.memo)
     }
 
-    private fun chapterJson(c: SChapter) = buildJsonObject {
+    private fun chapterJson(c: SChapter, realUrl: String? = null) = buildJsonObject {
         put("url", c.url)
+        if (!realUrl.isNullOrEmpty()) put("realUrl", realUrl)
         put("name", c.name)
         put("date_upload", c.date_upload)
         put("chapter_number", c.chapter_number)

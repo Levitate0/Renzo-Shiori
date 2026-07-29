@@ -1,4 +1,5 @@
 using java.net;
+using Mihon.ExtensionsBridge.Core.Runtime.Sidecar;
 
 namespace RenzoBackend.Services.SiteAuth;
 
@@ -22,11 +23,23 @@ public record HarvestedCookie(string Name, string Value, string Domain, string P
 public class CookieJarBridge
 {
     private readonly ILogger _logger;
+    private readonly IServiceProvider _services;
 
-    public CookieJarBridge(ILogger<CookieJarBridge> logger)
+    public CookieJarBridge(ILogger<CookieJarBridge> logger, IServiceProvider services)
     {
         _logger = logger;
+        _services = services;
     }
+
+    /// <summary>
+    /// The JVM sidecar's cookie jar when the cutover is active — that's the LIVE jar the sources
+    /// actually run against, so login cookies must land there (the in-process IKVM jar is unused).
+    /// Null when the sidecar is disabled.
+    /// </summary>
+    private SidecarProcessManager? Sidecar =>
+        Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1"
+            ? _services.GetService(typeof(SidecarProcessManager)) as SidecarProcessManager
+            : null;
 
     /// <summary>
     /// The extensions' shared cookie store, or null if the bridge hasn't
@@ -51,7 +64,7 @@ public class CookieJarBridge
     }
 
     /// <summary>True when the live jar is reachable.</summary>
-    public bool IsAvailable => Store != null;
+    public bool IsAvailable => Sidecar != null || Store != null;
 
     /// <summary>
     /// Injects cookies into the live jar for a site. Returns the number added.
@@ -60,12 +73,35 @@ public class CookieJarBridge
     /// </summary>
     public int Inject(IEnumerable<HarvestedCookie> cookies)
     {
+        List<HarvestedCookie> list = cookies as List<HarvestedCookie> ?? cookies.ToList();
+
+        // JVM sidecar path: push into the out-of-process jar the sources actually use. This is the
+        // live target during the cutover; the in-process store below is a no-op for sources then.
+        SidecarProcessManager? sidecar = Sidecar;
+        if (sidecar != null)
+        {
+            try
+            {
+                sidecar.EnsureStartedAsync().GetAwaiter().GetResult();
+                int n = sidecar.Client.InjectCookiesAsync(
+                    list.Select(c => new SidecarCookie(c.Name, c.Value, c.Domain, c.Path, c.Secure))).GetAwaiter().GetResult();
+                if (n > 0)
+                    _logger.LogInformation("Injected {Count} cookies into the sidecar jar", n);
+                return n;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to inject cookies into the sidecar jar");
+                // fall through to the in-process store as a best-effort backup
+            }
+        }
+
         CookieStore? store = Store;
         if (store == null)
             return 0;
 
         int added = 0;
-        foreach (HarvestedCookie c in cookies)
+        foreach (HarvestedCookie c in list)
         {
             try
             {
@@ -97,6 +133,21 @@ public class CookieJarBridge
     /// </summary>
     public List<HarvestedCookie> Snapshot(string host)
     {
+        SidecarProcessManager? sidecar = Sidecar;
+        if (sidecar != null)
+        {
+            try
+            {
+                sidecar.EnsureStartedAsync().GetAwaiter().GetResult();
+                return sidecar.Client.SnapshotCookiesAsync(host.TrimStart('.')).GetAwaiter().GetResult()
+                    .Select(c => new HarvestedCookie(c.Name, c.Value, c.Domain, c.Path, c.Secure)).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not snapshot cookies from the sidecar for {Host}", host);
+            }
+        }
+
         CookieStore? store = Store;
         var result = new List<HarvestedCookie>();
         if (store == null)
@@ -132,6 +183,20 @@ public class CookieJarBridge
     /// <summary>Removes every cookie for a host (used on "log out"/delete).</summary>
     public void ClearHost(string host)
     {
+        SidecarProcessManager? sidecar = Sidecar;
+        if (sidecar != null)
+        {
+            try
+            {
+                sidecar.EnsureStartedAsync().GetAwaiter().GetResult();
+                sidecar.Client.ClearCookiesAsync(host.TrimStart('.')).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not clear sidecar cookies for {Host}", host);
+            }
+        }
+
         CookieStore? store = Store;
         if (store == null)
             return;

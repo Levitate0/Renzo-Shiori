@@ -15,6 +15,8 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public bool SupportsLatest { get; set; }
         public bool IsConfigurable { get; set; }
         public bool IsHttp { get; set; }
+        public string BaseUrl { get; set; } = "";
+        public int VersionId { get; set; }
     }
 
     /// <summary>
@@ -47,6 +49,32 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public Task ConvertAsync(string apkPath, string jarPath, CancellationToken token = default) =>
             PostAsync("/convert", new { apkPath, jarPath }, token);
 
+        /// <summary>Push the app's network settings (FlareSolverr/Cloudflare, SOCKS proxy) to the engine.</summary>
+        public Task ConfigAsync(object settings, CancellationToken token = default) =>
+            PostAsync("/config", settings, token);
+
+        /// <summary>Inject site-login cookies into the engine's shared jar. Returns the number added.</summary>
+        public async Task<int> InjectCookiesAsync(IEnumerable<SidecarCookie> cookies, CancellationToken token = default)
+        {
+            using var doc = await PostJsonAsync("/cookies/inject", new { cookies }, token).ConfigureAwait(false);
+            return Int(doc.RootElement, "added");
+        }
+
+        /// <summary>Snapshot the cookies currently in the engine's jar for a host.</summary>
+        public async Task<List<SidecarCookie>> SnapshotCookiesAsync(string host, CancellationToken token = default)
+        {
+            using var doc = await PostJsonAsync("/cookies/snapshot", new { host }, token).ConfigureAwait(false);
+            var list = new List<SidecarCookie>();
+            if (doc.RootElement.TryGetProperty("cookies", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                foreach (var c in arr.EnumerateArray())
+                    list.Add(new SidecarCookie(Str(c, "name"), Str(c, "value"), Str(c, "domain"), Str(c, "path"), Bool(c, "secure")));
+            return list;
+        }
+
+        /// <summary>Remove every cookie for a host from the engine's jar (log out / delete).</summary>
+        public Task ClearCookiesAsync(string host, CancellationToken token = default) =>
+            PostAsync("/cookies/clear", new { host }, token);
+
         public async Task<List<SidecarSourceMeta>> LoadSourcesAsync(string jarPath, string className, CancellationToken token = default)
         {
             using var doc = await PostJsonAsync("/sources/load", new { jarPath, className }, token).ConfigureAwait(false);
@@ -61,6 +89,8 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                     SupportsLatest = Bool(e, "supportsLatest"),
                     IsConfigurable = Bool(e, "isConfigurable"),
                     IsHttp = Bool(e, "isHttp"),
+                    BaseUrl = Str(e, "baseUrl"),
+                    VersionId = Int(e, "versionId"),
                 });
             }
             return list;
@@ -165,6 +195,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             return new ParsedChapter
             {
                 Url = Str(e, "url"),
+                RealUrl = Str(e, "realUrl"),
                 Name = Str(e, "name"),
                 DateUpload = DateTimeOffset.FromUnixTimeMilliseconds(ms),
                 ChapterNumber = e.TryGetProperty("chapter_number", out var cn) && cn.ValueKind == JsonValueKind.Number ? (float)cn.GetDouble() : -1f,
@@ -244,6 +275,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         private static int Int(JsonElement e, string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
         private static bool Bool(JsonElement e, string p) => e.TryGetProperty(p, out var v) && (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False) && v.GetBoolean();
     }
+
+    /// <summary>A cookie exchanged with the sidecar jar (name/value scoped to a domain+path).</summary>
+    public sealed record SidecarCookie(string Name, string Value, string Domain, string Path = "/", bool Secure = true);
 
     public sealed class SidecarException : Exception
     {
