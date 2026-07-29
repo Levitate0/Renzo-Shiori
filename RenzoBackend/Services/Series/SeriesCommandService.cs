@@ -1311,6 +1311,7 @@ namespace RenzoBackend.Services.Series
                 n.IsCover = p.UseCover;
                 n.IsStatus = p.UseStatus;
                 n.IsLocal = p.IsLocal;
+                n.Priority = p.Priority;
                 n.ContinueAfterChapter = p.ContinueAfterChapter;
             }
 

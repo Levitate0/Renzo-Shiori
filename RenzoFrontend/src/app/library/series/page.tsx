@@ -2,7 +2,7 @@
 
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useEffect, useRef, Suspense } from "react";
-import { useSeriesById, useDeleteSeries, useUpdateSeries, useVerifyIntegrity, useCleanupSeries, useRefreshSeries } from "@/lib/api/hooks/useSeries";
+import { useSeriesById, useDeleteSeries, useUpdateSeries, useVerifyIntegrity, useCleanupSeries, useRefreshSeries, useScanSeries } from "@/lib/api/hooks/useSeries";
 import { useToast } from "@/hooks/use-toast";
 import { seriesService } from "@/lib/api/services/seriesService";
 import { useQueryClient } from '@tanstack/react-query';
@@ -60,6 +60,7 @@ function SeriesPageContent() {
   const verifyIntegrity = useVerifyIntegrity();
   const cleanupSeries = useCleanupSeries();
   const refreshSeries = useRefreshSeries();
+  const scanSeries = useScanSeries();
   const { toast } = useToast();
   
   // Provider switch state management
@@ -919,6 +920,28 @@ function SeriesPageContent() {
     }
   };
 
+  // Handler for the "Scan for new chapters" button click
+  const handleScanClick = async () => {
+    if (!seriesId) return;
+    try {
+      const result = await scanSeries.mutateAsync(seriesId);
+      toast({
+        variant: "success",
+        title: "Scan queued",
+        description: result.queued > 0
+          ? `Scanning ${result.queued} source${result.queued === 1 ? '' : 's'} for new chapters.`
+          : "No active sources to scan.",
+      });
+    } catch (error) {
+      console.error('Failed to scan series:', error);
+      toast({
+        variant: "destructive",
+        title: "Scan failed",
+        description: "Could not queue the chapter scan. Please try again.",
+      });
+    }
+  };
+
   // Handler for verify success dialog close
   const handleVerifyDialogClose = async () => {
     setShowVerifyDialog(false);
@@ -1206,10 +1229,12 @@ function SeriesPageContent() {
         canManageDownloads={canManageDownloads}
         verifyPending={verifyIntegrity.isPending}
         refreshPending={refreshSeries.isPending}
+        scanPending={scanSeries.isPending}
         onPauseToggle={handlePausedDownloadsToggle}
         onNsfwToggle={handleNsfwToggle}
         onVerify={handleVerifyIntegrityClick}
         onRefresh={handleRefreshClick}
+        onScan={handleScanClick}
         onDelete={handleDeleteSeriesClick}
         onSetCategory={handleSetCategory}
         hideDecimalChapters={series.hideDecimalChapters ?? false}

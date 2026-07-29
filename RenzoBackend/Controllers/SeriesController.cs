@@ -206,6 +206,35 @@ namespace RenzoBackend.Controllers
         }
 
         /// <summary>
+        /// Manually scans a SINGLE series for new chapters now — enqueues an immediate GetChapters
+        /// check for every active provider of the series, ignoring the recurring schedule and the
+        /// open-a-series staleness guard. The per-provider queue key dedupes against an in-flight scan.
+        /// </summary>
+        /// <param name="id">The unique identifier of the series to scan.</param>
+        /// <param name="token">Cancellation token.</param>
+        [HttpPost("scan")]
+        [RequireUserLevel(UserLevel.Manager)]
+        [ProducesResponseType(typeof(object), 200)]
+        [ProducesResponseType(400)]
+        [ProducesResponseType(500)]
+        public async Task<ActionResult> ScanSeriesAsync([FromQuery] Guid id, CancellationToken token = default)
+        {
+            try
+            {
+                if (id == Guid.Empty)
+                    return BadRequest("No series id provided");
+                if (await DenyAccessAsync(id, token).ConfigureAwait(false) is { } deny) return deny;
+                int queued = await _commandService.RefreshSeriesMetadataAsync(id, null, token).ConfigureAwait(false);
+                return Ok(new { success = true, queued });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error scanning series: {Message}", ex.Message);
+                return StatusCode(500, "Error scanning series.");
+            }
+        }
+
+        /// <summary>
         /// Live progress of the new-chapter scan: how many per-provider chapter
         /// checks are still waiting/running in the queue. Drives the scan
         /// progress bar on the Updates page.

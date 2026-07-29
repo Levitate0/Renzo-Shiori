@@ -240,6 +240,23 @@ export const useRefreshSeries = () => {
 };
 
 /**
+ * Hook to manually scan a SINGLE series for new chapters now — enqueues an
+ * immediate per-provider GetChapters, bypassing the recurring schedule.
+ */
+export const useScanSeries = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => seriesService.scanSeries(id),
+    onSuccess: (_, id) => {
+      // Jobs run asynchronously; invalidate so the detail picks up new chapters as they land.
+      void queryClient.invalidateQueries({ queryKey: ['series', 'detail', id] });
+      void queryClient.invalidateQueries({ queryKey: ['series', 'library'] });
+    },
+  });
+};
+
+/**
  * Hook to get the unified, series-level chapter list (merged across every source).
  * Lazy: pass `enabled` so it only fetches when the Chapters section is expanded.
  */

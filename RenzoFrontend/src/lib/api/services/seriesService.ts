@@ -175,6 +175,11 @@ export const seriesService = {
     return apiClient.post<{ success: boolean; queued: number }>(`/api/serie/refresh?${params.toString()}`, {});
   },
 
+  /** Manually scan a SINGLE series for new chapters now (immediate GetChapters for every provider). */
+  async scanSeries(id: string): Promise<{ success: boolean; queued: number }> {
+    return apiClient.post<{ success: boolean; queued: number }>(`/api/serie/scan?id=${encodeURIComponent(id)}`, {});
+  },
+
   /** "Update now": queue a library-wide new-chapter scan across every source. */
   async scanAllSeries(): Promise<{ success: boolean; message: string }> {
     return apiClient.post<{ success: boolean; message: string }>('/api/serie/scan-all', {});

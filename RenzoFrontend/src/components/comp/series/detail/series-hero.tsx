@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pause, Play, CheckCircle2, Check, Trash2, FolderOpen, Copy, RefreshCw, MoreHorizontal, Hash } from "lucide-react";
+import { Pause, Play, CheckCircle2, Check, Trash2, FolderOpen, Copy, RefreshCw, MoreHorizontal, Hash, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -142,10 +142,12 @@ export interface SeriesHeroProps {
   canManageDownloads: boolean;
   verifyPending: boolean;
   refreshPending: boolean;
+  scanPending: boolean;
   onPauseToggle: () => void;
   onNsfwToggle: () => void;
   onVerify: () => void;
   onRefresh: () => void;
+  onScan: () => void;
   onDelete: () => void;
   /** Move the series into a category folder (Manga/Manhwa/…); null un-categorizes. */
   onSetCategory?: (category: string | null) => void;
@@ -167,10 +169,12 @@ export function SeriesHero({
   canManageDownloads,
   verifyPending,
   refreshPending,
+  scanPending,
   onPauseToggle,
   onNsfwToggle,
   onVerify,
   onRefresh,
+  onScan,
   onDelete,
   onSetCategory,
   hideDecimalChapters,
@@ -388,6 +392,16 @@ export function SeriesHero({
                       >
                         <RefreshCw className={`h-4 w-4 ${refreshPending ? 'animate-spin' : ''}`} />
                         Refresh metadata &amp; chapters
+                      </DropdownMenuItem>
+                    )}
+                    {canEditSeries && (
+                      <DropdownMenuItem
+                        onSelect={(e) => { e.preventDefault(); onScan(); }}
+                        disabled={scanPending}
+                        className="gap-2"
+                      >
+                        <Search className={`h-4 w-4 ${scanPending ? 'animate-pulse' : ''}`} />
+                        Scan for new chapters
                       </DropdownMenuItem>
                     )}
                     {canEditSeries && (
