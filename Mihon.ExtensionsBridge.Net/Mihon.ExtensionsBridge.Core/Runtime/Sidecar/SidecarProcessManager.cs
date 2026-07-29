@@ -76,6 +76,15 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
             };
+            // STILL LOAD-BEARING — do not remove without fixing the converter first.
+            // Deprecated since JDK 13 and slated for removal, so this is on borrowed
+            // time, but the enjarify path still emits bytecode the verifier rejects:
+            // dropping the flag broke tachiyomi-en.allanime v1.6.25 with
+            //   (method: getFilterList) Call to wrong initialization method
+            // Note a full -Xverify:all sweep of the 53 already-converted jars on disk
+            // (3,248 classes) passed cleanly — the bad output only appears in NEWLY
+            // converted extensions, so verifying the existing cache proves nothing.
+            // The real fix is in SidecarConvert's enjarify/dex2jar merge.
             psi.ArgumentList.Add("-Xverify:none");
             psi.ArgumentList.Add($"-Xmx{_opts.MaxHeap}");
             psi.ArgumentList.Add("-cp");

@@ -36,6 +36,9 @@ object SidecarConvert {
      *   enjarify -> enjJar  (correct lambdas/putfields, but drops Signatures)
      *   merge    -> outJar  (enjarify bytecode + dex2jar Signatures)  [+ android fixes + assets]
      * The sidecar runs -Xverify:none, so enjarify's stricter-verifier quirks don't matter.
+     * That flag is deprecated (JDK 13) and will eventually vanish, and this merge is
+     * why it's still needed: dropping it broke allanime v1.6.25 with "Call to wrong
+     * initialization method" in getFilterList. Fix that here before removing it.
      *
      * Fallback when enjarify is unavailable: dex2jar + Java-6 downgrade (older extensions only).
      */
