@@ -260,25 +260,27 @@ namespace Mihon.ExtensionsBridge.Core.Services
         /// If an existing gatekept interop is present but its version differs from the group's active version,
         /// this method swaps the underlying repository entry to keep the interop aligned.
         /// </remarks>
-        /// <summary>
-        /// Builds the per-extension interop. When the JVM sidecar is enabled (RENZO_USE_SIDECAR=1 and
-        /// a SidecarProcessManager is registered), the extension loads + runs on the real JVM; else it
-        /// falls back to the in-process IKVM JarExtensionInterop. Same interface either way.
-        /// </summary>
         /// <summary>True when the JVM sidecar is the active engine (its process converts + runs
-        /// extensions itself, so the in-process C# DEX->JAR step is redundant).</summary>
+        /// extensions itself, so the in-process C# DEX->JAR step is redundant). Always the case
+        /// now that the cutover is complete; the check remains only so a missing registration
+        /// degrades instead of crashing.</summary>
         private bool SidecarActive =>
-            Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
             _serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager;
 
+        /// <summary>
+        /// Builds the per-extension interop. The extension loads + runs on the real JVM via the
+        /// sidecar — that is the engine, unconditionally. The in-process IKVM JarExtensionInterop
+        /// is retained purely as a defensive fallback for a service-registration failure; it is
+        /// not a supported mode and no configuration selects it. Same interface either way.
+        /// </summary>
         private IInternalExtensionInterop CreateInterop(IWorkingFolderStructure wk, RepositoryEntry en, ILogger log, string? optionalTempPath = null)
         {
-            if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
-                _serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager mgr)
+            if (_serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager mgr)
             {
                 mgr.EnsureStartedAsync().GetAwaiter().GetResult();
                 return new Runtime.Sidecar.SidecarExtensionInterop(wk, en, log, mgr.Client, optionalTempPath);
             }
+            log.LogError("Sidecar process manager is not registered — falling back to the unsupported in-process IKVM engine.");
             return new JarExtensionInterop(wk, en, log, optionalTempPath);
         }
 

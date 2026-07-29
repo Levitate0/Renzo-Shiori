@@ -188,8 +188,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
             // JVM sidecar path: mirror the same network settings to the out-of-process engine so
             // CloudflareInterceptor sees flareSolverrEnabled (else it throws "Cloudflare bypass ...
             // disabled") and SOCKS/proxy apply. The sidecar keeps unspecified keys at their current value.
-            if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
-                _serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager sidecar)
+            if (_serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager sidecar)
             {
                 try
                 {

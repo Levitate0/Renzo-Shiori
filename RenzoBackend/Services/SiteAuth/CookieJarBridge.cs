@@ -32,14 +32,12 @@ public class CookieJarBridge
     }
 
     /// <summary>
-    /// The JVM sidecar's cookie jar when the cutover is active — that's the LIVE jar the sources
-    /// actually run against, so login cookies must land there (the in-process IKVM jar is unused).
-    /// Null when the sidecar is disabled.
+    /// The JVM sidecar's cookie jar — that's the LIVE jar the sources actually run against, so
+    /// login cookies must land there (the in-process IKVM jar is unused). The cutover is complete,
+    /// so this is always the sidecar; null only if its registration is missing.
     /// </summary>
     private SidecarProcessManager? Sidecar =>
-        Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1"
-            ? _services.GetService(typeof(SidecarProcessManager)) as SidecarProcessManager
-            : null;
+        _services.GetService(typeof(SidecarProcessManager)) as SidecarProcessManager;
 
     /// <summary>
     /// The extensions' shared cookie store, or null if the bridge hasn't
