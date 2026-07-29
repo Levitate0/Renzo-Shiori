@@ -125,7 +125,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             var list = new List<ParsedChapter>();
             int idx = 0;
             foreach (var e in doc.RootElement.EnumerateArray())
-                list.Add(ReadChapter(e, idx++));
+                list.Add(ReadChapter(e, idx++, manga.Title ?? string.Empty));
             return list;
         }
 
@@ -189,20 +189,29 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             return m;
         }
 
-        private static ParsedChapter ReadChapter(JsonElement e, int index)
+        private static ParsedChapter ReadChapter(JsonElement e, int index, string mangaTitle)
         {
             long ms = e.TryGetProperty("date_upload", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetInt64() : 0;
-            return new ParsedChapter
+            string name = Str(e, "name");
+            float chapterNumber = e.TryGetProperty("chapter_number", out var cn) && cn.ValueKind == JsonValueKind.Number ? (float)cn.GetDouble() : -1f;
+            var chapter = new ParsedChapter
             {
                 Url = Str(e, "url"),
                 RealUrl = Str(e, "realUrl"),
-                Name = Str(e, "name"),
+                Name = name,
                 DateUpload = DateTimeOffset.FromUnixTimeMilliseconds(ms),
-                ChapterNumber = e.TryGetProperty("chapter_number", out var cn) && cn.ValueKind == JsonValueKind.Number ? (float)cn.GetDouble() : -1f,
+                ChapterNumber = chapterNumber,
                 Scanlator = StrOrNull(e, "scanlator"),
                 Memo = RawOrNull(e, "memo"),
                 Index = index,
             };
+            // Parity with the IKVM ToParsedChapters path: the stored Chapter takes its Number/Name from
+            // ParsedNumber/ParsedName (ModelExtensions.ToChapter). Without this every sidecar chapter
+            // stored as Number 0 / empty name, collapsing the whole list to one entry — so every refresh
+            // re-saw them all as "new" (an endless churn that also clobbered read state).
+            chapter.ParsedNumber = Utilities.ChapterUtils.ParseChapterNumber(mangaTitle, name, chapterNumber);
+            chapter.ParsedName = Utilities.ChapterUtils.Sanitize(name, mangaTitle);
+            return chapter;
         }
 
         private static Page ReadPage(JsonElement e) => new()
