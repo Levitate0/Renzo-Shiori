@@ -90,12 +90,6 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
             // Preload critical assemblies using a custom ALC to avoid dynamic emission during resolution
          */
 
-                // When the JVM sidecar runs all sources, the in-process (IKVM) JCEF/Chromium runtime is
-                // never used — no in-process source opens a WebView. To skip warming it, set
-                // RENZO_SIDECAR_NO_JCEF=1 on the APP process env (compose): applicationSetup reads it at
-                // IKVM load, and the sidecar child is forced to keep JCEF via RENZO_SIDECAR_DISABLE_JCEF
-                // (unset -> warms). Setting it here at runtime is too late (IKVM has already cached env).
-
            //(Action)(()=>{
                 StartupKt.applicationSetup(folder.AndroidFolder, folder.TempFolder, new AndroidCompatLogManager.LoggerSink(logger));
                 AndroidCompatLogManager.SetLoglevel(logger);

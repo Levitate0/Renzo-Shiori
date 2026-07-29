@@ -16,10 +16,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public string TempRoot { get; set; } = "";
         /// <summary>Directory holding the bundled enjarify python package (for /convert).</summary>
         public string? EnjarifyDir { get; set; } = Environment.GetEnvironmentVariable("RENZO_ENJARIFY_DIR");
-        // Disables the SIDECAR's OWN JCEF. Deliberately a SEPARATE var from RENZO_SIDECAR_NO_JCEF —
-        // that one is set =1 on the APP process to skip its now-unused in-process JCEF, and the sidecar
-        // (which DOES need JCEF for Comix/Cloudflare WebView) must not inherit it. Default: keep JCEF.
-        public bool DisableJcef { get; set; } = Environment.GetEnvironmentVariable("RENZO_SIDECAR_DISABLE_JCEF") == "1";
+        public bool DisableJcef { get; set; } = Environment.GetEnvironmentVariable("RENZO_SIDECAR_NO_JCEF") == "1";
     }
 
     /// <summary>
@@ -85,11 +82,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             psi.ArgumentList.Add(_opts.JarPath);
             psi.ArgumentList.Add("extension.bridge.server.SidecarServer");
             psi.Environment["RENZO_SIDECAR_PORT"] = _opts.Port.ToString();
-            // Set the sidecar's JCEF gate EXPLICITLY ("0" = warm up), never inherited. The app process
-            // sets RENZO_SIDECAR_NO_JCEF=1 for ITSELF (to skip its now-unused in-process JCEF), and the
-            // child would otherwise inherit that and wrongly disable the JCEF the sources actually need
-            // for Comix/Cloudflare WebView.
-            psi.Environment["RENZO_SIDECAR_NO_JCEF"] = _opts.DisableJcef ? "1" : "0";
+            if (_opts.DisableJcef) psi.Environment["RENZO_SIDECAR_NO_JCEF"] = "1";
             if (!string.IsNullOrEmpty(_opts.EnjarifyDir)) psi.Environment["RENZO_ENJARIFY_DIR"] = _opts.EnjarifyDir!;
             // The app runs with LD_LIBRARY_PATH pointed at IKVM's native libs (/app/ikvm/.../bin).
             // A real JVM must NOT inherit that: it would load IKVM's incompatible libjava.so and die
