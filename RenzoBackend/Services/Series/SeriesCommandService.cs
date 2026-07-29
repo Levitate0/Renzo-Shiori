@@ -685,9 +685,16 @@ namespace RenzoBackend.Services.Series
                 // no point hitting FlareSolverr for a source with no paywall/login.
                 if (await OwnerHasSiteLoginAsync(series.OwnerId, serie.Provider, token).ConfigureAwait(false))
                 {
+                    // Any chapter-looking URL will do — the supplement service
+                    // fingerprints the platform itself and safely returns nothing
+                    // for a shape it doesn't handle. Requiring the WordPress
+                    // "{slug}-chapter-N" form here meant sites that put the
+                    // chapter in its own path segment ("/series/{slug}/chapter-N",
+                    // e.g. Magus Manga) never even reached the supplement, so
+                    // their paid chapters silently never appeared.
                     string? sampleUrl = serie.Chapters
                         .Select(c => c.Url)
-                        .FirstOrDefault(u => !string.IsNullOrEmpty(u) && u!.Contains("-chapter-", StringComparison.OrdinalIgnoreCase));
+                        .FirstOrDefault(u => !string.IsNullOrEmpty(u) && u!.Contains("chapter", StringComparison.OrdinalIgnoreCase));
                     if (sampleUrl != null)
                     {
                         var existingNums = serie.Chapters.Where(c => c.Number != null).Select(c => c.Number!.Value).ToList();

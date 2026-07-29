@@ -55,6 +55,7 @@ namespace RenzoBackend.Services
             services.TryAddScoped<SeriesArchiveService>();
             services.TryAddScoped<SeriesRelocationService>();
             services.TryAddScoped<LockedChapterSupplementService>();
+            services.TryAddScoped<VComicsContentService>();
             services.TryAddScoped<SeriesCategoryResolver>();
             services.TryAddScoped<CategoryMaintenanceService>();
             services.TryAddScoped<CadenceCalculationService>();

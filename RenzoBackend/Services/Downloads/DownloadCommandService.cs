@@ -42,6 +42,7 @@ namespace RenzoBackend.Services.Downloads
         private readonly Series.SeriesStateService _stateService;
         private readonly HashCacheService _hashCache;
         private readonly ThumbCacheService _thumb;
+        private readonly Series.VComicsContentService _vcomics;
         private static readonly KeyedAsyncLock _lock = new KeyedAsyncLock();
 
         public DownloadCommandService(
@@ -55,8 +56,10 @@ namespace RenzoBackend.Services.Downloads
             ILogger<DownloadCommandService> logger,
             Series.SeriesStateService stateService,
             HashCacheService hashCache,
-            ThumbCacheService thumb)
+            ThumbCacheService thumb,
+            Series.VComicsContentService vcomics)
         {
+            _vcomics = vcomics;
             _mihon = mihon;
             _db = db;
             _settings = settings;
@@ -115,6 +118,19 @@ namespace RenzoBackend.Services.Downloads
                 List<Page>? pages = await _mihon.MihonErrorWrapperAsync(
                                 () => src.GetPagesAsync(ch.Chapter, token),
                                 "Unable to get Pages from Chapter {ParsedNumber}, Series {Title} from {provider}", ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                // A coin-gated chapter the user already bought yields nothing here:
+                // on the Astro/"vcomics" platform the paid pages are never in the
+                // HTML the extension reads, even for the purchaser. Ask the site's
+                // own authenticated content endpoint before giving up. Returns null
+                // unless the session really owns it, so nothing unpaid slips through.
+                if (pages == null || pages.Count == 0)
+                {
+                    List<Page>? owned = await _vcomics
+                        .TryGetPurchasedPagesAsync(ch.Chapter?.RealUrl ?? ch.Chapter?.Url, token).ConfigureAwait(false);
+                    if (owned is { Count: > 0 })
+                        pages = owned;
+                }
+
                 if (pages==null)
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
                 ch.Pages = pages;

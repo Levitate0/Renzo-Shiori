@@ -26,6 +26,7 @@ public class ReaderPreviewService
     private readonly MihonBridgeService _mihon;
     private readonly IMemoryCache _cache;
     private readonly SiteAuth.SiteAuthService _siteAuth;
+    private readonly Series.VComicsContentService _vcomics;
     private readonly ILogger _logger;
 
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
@@ -74,13 +75,15 @@ public class ReaderPreviewService
     public long ClearStreamCache() => _imageCache.Clear();
 
     public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache,
-        SiteAuth.SiteAuthService siteAuth, StreamImageCache imageCache, ILogger<ReaderPreviewService> logger)
+        SiteAuth.SiteAuthService siteAuth, StreamImageCache imageCache,
+        Series.VComicsContentService vcomics, ILogger<ReaderPreviewService> logger)
     {
         _db = db;
         _mihon = mihon;
         _cache = cache;
         _siteAuth = siteAuth;
         _imageCache = imageCache;
+        _vcomics = vcomics;
         _logger = logger;
     }
 
@@ -224,7 +227,7 @@ public class ReaderPreviewService
     // purchased this chapter to read", etc. Matched so genuine transient errors
     // (e.g. "Timed out waiting for page list") are NOT treated as locked.
     private static readonly Regex PurchaseError = new(
-        @"(requires?\s+purchase|must\s+purchase|purchased?\s+this\s+chapter|log\s*in\s+via\s+webview|unlock\s+to\s+read|coins?\s+to\s+read|premium\s+chapter)",
+        @"(requires?\s+purchase|must\s+purchase|purchased?\s+this\s+chapter|log\s*in\s+via\s+webview|unlock\s+to\s+read|coins?\s+to\s+read|premium\s+chapter|chapter\s+locked|coins?\s+required)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool IsPurchaseError(Exception ex)
@@ -476,7 +479,43 @@ public class ReaderPreviewService
             if (relogged)
                 pages = await Fetch().ConfigureAwait(false);
         }
+
+        // Last resort for a chapter the user has already bought: on vcomics/Astro
+        // sites the paid pages are NEVER in the HTML the extension scrapes — not
+        // even for the purchaser — so the extension can only ever say "locked".
+        // Ask the same authenticated endpoint the site's own reader uses. Returns
+        // null unless the session actually owns the chapter, so this can't hand
+        // back pages for something unpaid.
+        if (pages == null || pages.Count == 0)
+        {
+            List<Page>? owned = await _vcomics
+                .TryGetPurchasedPagesAsync(AbsoluteChapterUrl(chapter, provider), token).ConfigureAwait(false);
+            if (owned is { Count: > 0 })
+                return owned;
+        }
         return pages;
+    }
+
+    /// <summary>
+    /// Best-effort absolute URL for a chapter: the source reports RealUrl absolute,
+    /// but fall back to resolving the (relative) chapter URL against the series URL.
+    /// </summary>
+    private static string? AbsoluteChapterUrl(ParsedChapter chapter, SeriesProviderEntity provider)
+    {
+        if (!string.IsNullOrWhiteSpace(chapter.RealUrl) &&
+            Uri.TryCreate(chapter.RealUrl, UriKind.Absolute, out _))
+            return chapter.RealUrl;
+
+        if (!string.IsNullOrWhiteSpace(chapter.Url))
+        {
+            if (Uri.TryCreate(chapter.Url, UriKind.Absolute, out _))
+                return chapter.Url;
+            if (!string.IsNullOrWhiteSpace(provider.Url) &&
+                Uri.TryCreate(provider.Url, UriKind.Absolute, out Uri? seriesUri) &&
+                Uri.TryCreate(seriesUri, chapter.Url, out Uri? combined))
+                return combined.ToString();
+        }
+        return null;
     }
 
     /// <summary>
