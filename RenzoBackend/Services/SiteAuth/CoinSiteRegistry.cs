@@ -405,7 +405,14 @@ public class CoinSiteRegistry
         if (!string.IsNullOrEmpty(def.LoginUrl) && seen.Add(def.LoginUrl))
             yield return def.LoginUrl;
         foreach (string b in bases)
-            foreach (string path in new[] { "/auth/login", "/login", "/api/auth/login", "/api/login", "/user/login", "/sign-in" })
+            foreach (string path in new[]
+            {
+                "/auth/login", "/login", "/api/auth/login", "/api/login", "/user/login", "/sign-in",
+                // better-auth (the "vcomics"/Astro coin platform, e.g. Magus Manga)
+                // — its sign-in endpoint doesn't match any of the classic shapes,
+                // so without these a new site on that platform can't be discovered.
+                "/api/auth/sign-in/email", "/auth/sign-in/email", "/sign-in/email",
+            })
                 if (seen.Add(b + path))
                     yield return b + path;
     }

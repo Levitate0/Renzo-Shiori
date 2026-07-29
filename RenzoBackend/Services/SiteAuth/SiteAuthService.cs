@@ -287,11 +287,18 @@ public class SiteAuthService
                 (string.IsNullOrEmpty(def.SessionCookieName) ||
                  harvested.Any(c => c.Name.Equals(def.SessionCookieName, StringComparison.OrdinalIgnoreCase)));
 
+            // Echo the API's own error text. A bare status code hides the actual
+            // reason — better-auth answers 403 with EMAIL_NOT_VERIFIED, "account
+            // is using social login", banned, etc. — which is the difference
+            // between a dead end and something the user can act on.
+            string? apiError = await ReadApiErrorAsync(resp, token).ConfigureAwait(false);
+            string With(string s) => apiError == null ? s : $"{s} — {apiError}";
+
             string detail = resp.StatusCode switch
             {
                 HttpStatusCode.NotFound => $"{Host(loginUrl)} has no login there.",
-                HttpStatusCode.Unauthorized or HttpStatusCode.UnprocessableEntity => "Login rejected — check the username/password.",
-                _ when !resp.IsSuccessStatusCode => $"Login endpoint returned HTTP {(int)resp.StatusCode}.",
+                HttpStatusCode.Unauthorized or HttpStatusCode.UnprocessableEntity => With("Login rejected — check the username/password."),
+                _ when !resp.IsSuccessStatusCode => With($"Login endpoint returned HTTP {(int)resp.StatusCode}."),
                 _ when !gotSession => "Login didn't set a session cookie.",
                 _ => "ok",
             };
@@ -465,6 +472,40 @@ public class SiteAuthService
     // ── helpers ─────────────────────────────────────────────────────────
 
     private static string SerializeCookies(List<HarvestedCookie> cookies) => JsonSerializer.Serialize(cookies);
+
+    /// <summary>
+    /// The API's own error message from a failed login response, when it sent a
+    /// JSON one. Best-effort and bounded — never throws, and never echoes an HTML
+    /// block page back at the user.
+    /// </summary>
+    private static async Task<string?> ReadApiErrorAsync(HttpResponseMessage resp, CancellationToken token)
+    {
+        if (resp.IsSuccessStatusCode)
+            return null;
+        try
+        {
+            string body = (await resp.Content.ReadAsStringAsync(token).ConfigureAwait(false)).Trim();
+            if (body.Length == 0 || body[0] != '{')
+                return null;
+
+            using JsonDocument doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+
+            foreach (string key in new[] { "message", "error_description", "error", "code", "detail" })
+            {
+                if (doc.RootElement.TryGetProperty(key, out JsonElement el) &&
+                    el.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(el.GetString()))
+                {
+                    string v = el.GetString()!.Trim();
+                    return v.Length <= 160 ? v : v[..160] + "…";
+                }
+            }
+        }
+        catch { /* unparseable body — fall back to the bare status */ }
+        return null;
+    }
 
     private static List<HarvestedCookie> FromContainer(CookieContainer container, string domain)
     {
