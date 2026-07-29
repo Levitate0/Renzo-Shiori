@@ -16,7 +16,10 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public string TempRoot { get; set; } = "";
         /// <summary>Directory holding the bundled enjarify python package (for /convert).</summary>
         public string? EnjarifyDir { get; set; } = Environment.GetEnvironmentVariable("RENZO_ENJARIFY_DIR");
-        public bool DisableJcef { get; set; } = Environment.GetEnvironmentVariable("RENZO_SIDECAR_NO_JCEF") == "1";
+        // Disables the SIDECAR's OWN JCEF. Deliberately a SEPARATE var from RENZO_SIDECAR_NO_JCEF —
+        // that one is set =1 on the APP process to skip its now-unused in-process JCEF, and the sidecar
+        // (which DOES need JCEF for Comix/Cloudflare WebView) must not inherit it. Default: keep JCEF.
+        public bool DisableJcef { get; set; } = Environment.GetEnvironmentVariable("RENZO_SIDECAR_DISABLE_JCEF") == "1";
     }
 
     /// <summary>

@@ -91,11 +91,10 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
          */
 
                 // When the JVM sidecar runs all sources, the in-process (IKVM) JCEF/Chromium runtime is
-                // never used — no in-process source opens a WebView — so skip warming it. The sidecar
-                // child gets RENZO_SIDECAR_NO_JCEF=0 explicitly (SidecarProcessManager) and keeps its own
-                // JCEF for Comix/Cloudflare. This must be set before applicationSetup reads the env.
-                if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1")
-                    Environment.SetEnvironmentVariable("RENZO_SIDECAR_NO_JCEF", "1");
+                // never used — no in-process source opens a WebView. To skip warming it, set
+                // RENZO_SIDECAR_NO_JCEF=1 on the APP process env (compose): applicationSetup reads it at
+                // IKVM load, and the sidecar child is forced to keep JCEF via RENZO_SIDECAR_DISABLE_JCEF
+                // (unset -> warms). Setting it here at runtime is too late (IKVM has already cached env).
 
            //(Action)(()=>{
                 StartupKt.applicationSetup(folder.AndroidFolder, folder.TempFolder, new AndroidCompatLogManager.LoggerSink(logger));
