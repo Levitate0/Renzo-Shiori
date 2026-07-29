@@ -27,7 +27,8 @@ COPY ./sidecar/ /app/sidecar/
 ENV RENZO_SIDECAR_JAVA=java \
     RENZO_SIDECAR_JAR=/app/sidecar/AndroidCompat-1.0-all.jar \
     RENZO_ENJARIFY_DIR=/app/sidecar/enjarify \
-    RENZO_SIDECAR_LDPATH=/usr/lib/jvm/java-21-openjdk-amd64/lib
+    RENZO_SIDECAR_LDPATH=/usr/lib/jvm/java-21-openjdk-amd64/lib \
+    RENZO_SIDECAR_THREADS=32
 COPY ./scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 EXPOSE 9833 9834

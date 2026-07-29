@@ -4,7 +4,7 @@ namespace RenzoBackend.Services.Jobs.Settings;
 
 public class QueueSettings
 {
-    public QueueSettings(JobQueues name, int maxThreads = 10, int maxRetries = 150, TimeSpan? retryTimeSpan = null)
+    public QueueSettings(JobQueues name, int maxThreads = 10, int maxRetries = 8, TimeSpan? retryTimeSpan = null)
     {
         Name = name;
         MaxThreads = maxThreads;

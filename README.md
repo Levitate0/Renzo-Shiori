@@ -207,6 +207,16 @@ see [BUILD.md](./BUILD.md).
 
 Renzo Shiori can be memory-intensive with large libraries or heavy parallel search/download. Plan headroom accordingly.
 
+> [!WARNING]
+> **CPU: give it real cores — a low CPU limit will make the whole app feel slow.** Renzo Shiori runs a **JVM extension sidecar with an embedded Chromium (JCEF)** for the Mihon engine and Cloudflare/WebView handling, and downloads are **CF-solved page fetches** run many at a time. This is genuinely CPU-heavy, especially while a large backlog downloads. On modern multi-core hosts it's a non-issue; on **older/low-clock CPUs** (e.g. an early Xeon) it can saturate a couple of cores and make the UI/API sluggish while the queue drains.
+>
+> Recommendations:
+> - **Do not set a tight `cpus:` limit** in `docker-compose.yml` — leave CPU uncapped, or give it at least 4 modern cores. (Only `memory` is limited by default.)
+> - `RENZO_SIDECAR_THREADS` (default **32**) sizes the sidecar's HTTP pool — shared by downloads and the interactive API. Lower it on very small hosts; raise it if you have spare cores and want faster downloads.
+> - **Download concurrency** is `MaxThreads` on the `Downloads` queue (default **16**, with `MaxPerGroup=3` so no single source is hammered). More width = faster drain but more CPU.
+> - **"Download all chapters"** queues *every* chapter of *every* series. With a large library that's a big one-time backlog; turn it off if you only want new chapters going forward.
+> - Failed downloads (paid chapters without a site login, un-solvable Cloudflare, dead hosts) retry **8×** then give up — re-queue succeeds once the blocker is fixed. (This was 150×, which used to churn the CPU for hours.)
+
 ---
 
 ## 🤝 Contributing
