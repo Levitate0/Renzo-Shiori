@@ -82,7 +82,11 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             psi.ArgumentList.Add(_opts.JarPath);
             psi.ArgumentList.Add("extension.bridge.server.SidecarServer");
             psi.Environment["RENZO_SIDECAR_PORT"] = _opts.Port.ToString();
-            if (_opts.DisableJcef) psi.Environment["RENZO_SIDECAR_NO_JCEF"] = "1";
+            // Set the sidecar's JCEF gate EXPLICITLY ("0" = warm up), never inherited. The app process
+            // sets RENZO_SIDECAR_NO_JCEF=1 for ITSELF (to skip its now-unused in-process JCEF), and the
+            // child would otherwise inherit that and wrongly disable the JCEF the sources actually need
+            // for Comix/Cloudflare WebView.
+            psi.Environment["RENZO_SIDECAR_NO_JCEF"] = _opts.DisableJcef ? "1" : "0";
             if (!string.IsNullOrEmpty(_opts.EnjarifyDir)) psi.Environment["RENZO_ENJARIFY_DIR"] = _opts.EnjarifyDir!;
             // The app runs with LD_LIBRARY_PATH pointed at IKVM's native libs (/app/ikvm/.../bin).
             // A real JVM must NOT inherit that: it would load IKVM's incompatible libjava.so and die

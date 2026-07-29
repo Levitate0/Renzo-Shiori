@@ -265,6 +265,12 @@ namespace Mihon.ExtensionsBridge.Core.Services
         /// a SidecarProcessManager is registered), the extension loads + runs on the real JVM; else it
         /// falls back to the in-process IKVM JarExtensionInterop. Same interface either way.
         /// </summary>
+        /// <summary>True when the JVM sidecar is the active engine (its process converts + runs
+        /// extensions itself, so the in-process C# DEX->JAR step is redundant).</summary>
+        private bool SidecarActive =>
+            Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
+            _serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager;
+
         private IInternalExtensionInterop CreateInterop(IWorkingFolderStructure wk, RepositoryEntry en, ILogger log, string? optionalTempPath = null)
         {
             if (Environment.GetEnvironmentVariable("RENZO_USE_SIDECAR") == "1" &&
@@ -774,9 +780,15 @@ namespace Mihon.ExtensionsBridge.Core.Services
         }
         private async Task<bool> CompileAsync(ExtensionWorkUnit unitofWork, CancellationToken token = default)
         {
-            ExtensionWorkUnit? un = await Dex2JarAsync(unitofWork, token).ConfigureAwait(false);
-            if (un == null)
-                return false;
+            // With the sidecar active, its /convert does the DEX->JAR translation on the APK directly
+            // (SidecarExtensionInterop), so the in-process C# dex2jar step here is pure duplicated work.
+            ExtensionWorkUnit? un = unitofWork;
+            if (!SidecarActive)
+            {
+                un = await Dex2JarAsync(unitofWork, token).ConfigureAwait(false);
+                if (un == null)
+                    return false;
+            }
             //await IKVMCompileAsync(un, token).ConfigureAwait(false);
            await ObtainInformationAsync(un, token).ConfigureAwait(false);
             return true;

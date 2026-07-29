@@ -160,24 +160,27 @@ object CFClearance {
         val sameSite: String? = null,
     )
 
+    // Fields are optional-with-defaults so BOTH FlareSolverr v1 backends (full schema incl.
+    // timestamps/version/userAgent) and leaner v2-compatible backends (e.g. trawl, byparr — which may
+    // omit any of them) deserialize without a MissingFieldException surfacing as a bypass failure.
     @Serializable
     data class FlareSolverSolution(
-        val url: String,
-        val status: Int,
+        val url: String = "",
+        val status: Int = 0,
         val headers: Map<String, String>? = null,
         val response: String? = null,
-        val cookies: List<FlareSolverSolutionCookie>,
-        val userAgent: String,
+        val cookies: List<FlareSolverSolutionCookie> = emptyList(),
+        val userAgent: String = "",
     )
 
     @Serializable
     data class FlareSolverResponse(
-        val solution: FlareSolverSolution,
-        val status: String,
-        val message: String,
-        val startTimestamp: Long,
-        val endTimestamp: Long,
-        val version: String,
+        val solution: FlareSolverSolution = FlareSolverSolution(),
+        val status: String = "",
+        val message: String = "",
+        val startTimestamp: Long = 0,
+        val endTimestamp: Long = 0,
+        val version: String = "",
     )
 
     suspend fun resolveWithFlareSolver(
@@ -210,7 +213,9 @@ object CFClearance {
                                     ).toRequestBody(jsonMediaType),
                         ),
                     ).awaitSuccess()
-                    .parseAs<FlareSolverResponse>()
+                    // Parse with the lenient json (ignoreUnknownKeys) — NOT parseAs's strict Json.Default
+                    // — so extra fields from any FlareSolverr v1/v2 backend don't fail the whole solve.
+                    .parseAs<FlareSolverResponse>(json)
             }
         }
     }

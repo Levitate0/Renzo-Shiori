@@ -247,9 +247,23 @@ object SidecarServer {
         return runBlocking { s.getSearchManga(page, query, filters) }.let(::mangasPage)
     }
 
+    // Sources build requests as GET(baseUrl + entry.url), i.e. they expect a source-RELATIVE url.
+    // The app, however, stores urls absolute (Models.Chapter.Url = getChapterUrl, and some series'
+    // manga urls too). Feeding an absolute url straight through yields GET(baseUrl + "https://host/…")
+    // = a doubled host ("violetscans.orghttps://…: Name or service not known"). Strip the source's own
+    // baseUrl so both absolute (stored) and relative (fresh) inputs converge to the relative form the
+    // source wants. No-op when the url is already relative or from a different host.
+    private fun relBase(s: eu.kanade.tachiyomi.source.Source, url: String): String {
+        if (s is HttpSource) {
+            val b = s.baseUrl
+            if (b.isNotEmpty() && url.startsWith(b)) return url.substring(b.length)
+        }
+        return url
+    }
+
     private fun details(req: JsonObject): String {
         val s = src(req)
-        val manga = mangaFrom(req["manga"]!! as JsonObject)
+        val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relBase(s, it.url) }
         // Go through the 1.6 combined call: newer sources implement getMangaUpdate and leave
         // getMangaDetails throwing; the compat default delegates to getMangaDetails for old sources.
         val out = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), true, false).manga }
@@ -268,7 +282,7 @@ object SidecarServer {
 
     private fun chapters(req: JsonObject): String {
         val s = src(req)
-        val manga = mangaFrom(req["manga"]!! as JsonObject)
+        val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relBase(s, it.url) }
         val list = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
                    else runBlocking { s.getChapterList(manga) }
         return buildJsonArray {
@@ -284,7 +298,7 @@ object SidecarServer {
 
     private fun pages(req: JsonObject): String {
         val s = src(req)
-        val chapter = chapterFrom(req["chapter"]!! as JsonObject)
+        val chapter = chapterFrom(req["chapter"]!! as JsonObject).also { it.url = relBase(s, it.url) }
         val list = runBlocking { s.getPageList(chapter) }
         return buildJsonArray { for (p in list) add(pageJson(p)) }.toString()
     }
