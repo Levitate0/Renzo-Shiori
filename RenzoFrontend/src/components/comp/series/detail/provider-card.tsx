@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Archive, Power, PowerOff, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, ChevronDown, ChevronUp, Power, PowerOff, Search, Trash2 } from "lucide-react";
 import ReactCountryFlag from "react-country-flag";
 import { Button } from "@/components/ui/button";
 import {
@@ -105,6 +105,9 @@ export const ProviderCard = ({
   onDeleteProvider,
   onFromChapterChange,
   deletedProviderStates,
+  onMove,
+  canMoveUp = false,
+  canMoveDown = false,
   canEdit = true,
 }: {
   provider: ProviderExtendedInfo;
@@ -122,6 +125,10 @@ export const ProviderCard = ({
   onDeleteProvider: (providerId: string) => void;
   onFromChapterChange: (providerId: string, value: string) => void;
   deletedProviderStates: Record<string, boolean>;
+  /** Reorder this source's per-series priority (0 = highest). */
+  onMove?: (providerId: string, direction: 'up' | 'down') => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
   canEdit?: boolean;
 }) => {
   const [isEnabled, setIsEnabled] = useState(
@@ -237,6 +244,32 @@ export const ProviderCard = ({
       } ${isUnknown ? "border-amber-500/40 bg-amber-500/[0.04]" : ""}`}
     >
       <div className="flex flex-wrap items-start gap-3">
+        {/* Priority reorder (0 = highest). Up = more preferred for read/preview + download source. */}
+        {canEdit && onMove && (
+          <div className="flex shrink-0 flex-col items-center justify-center gap-0.5 self-stretch">
+            <button
+              type="button"
+              onClick={() => onMove(provider.id, "up")}
+              disabled={!canMoveUp}
+              title="Raise priority (more preferred source)"
+              aria-label="Raise source priority"
+              className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onMove(provider.id, "down")}
+              disabled={!canMoveDown}
+              title="Lower priority (less preferred source)"
+              aria-label="Lower source priority"
+              className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
         {/* Thumbnail */}
         <div className="shrink-0">
           <img

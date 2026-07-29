@@ -35,6 +35,8 @@ export interface SourcesSectionProps {
   onFromChapterChange: (providerId: string, value: string) => void;
   onEnableDisable: (providerId: string, disabled: boolean) => void;
   onDelete: (providerId: string) => void;
+  /** Reorder this source's per-series priority (0 = highest). */
+  onMoveProvider: (providerId: string, direction: 'up' | 'down') => void;
 
   canEdit: boolean;
 }
@@ -54,8 +56,11 @@ export function SourcesSection({
   onFromChapterChange,
   onEnableDisable,
   onDelete,
+  onMoveProvider,
   canEdit,
 }: SourcesSectionProps) {
+  // Show sources in priority order (0 = highest) so the up/down controls line up with the list.
+  const orderedProviders = [...providers].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
   const addSourceTrigger = (
     <Button size="sm" className="h-8 gap-1.5">
       <Plus className="h-3.5 w-3.5" />
@@ -89,7 +94,7 @@ export function SourcesSection({
       </header>
 
       <div className="space-y-3">
-        {providers.map((provider) => {
+        {orderedProviders.map((provider, index) => {
           const switches =
             providerSwitches[provider.id] ?? {
               useTitle: false,
@@ -128,6 +133,9 @@ export function SourcesSection({
               onDeleteProvider={onDelete}
               onFromChapterChange={onFromChapterChange}
               deletedProviderStates={providerDeletedStates}
+              onMove={onMoveProvider}
+              canMoveUp={index > 0}
+              canMoveDown={index < orderedProviders.length - 1}
               canEdit={canEdit}
             />
           );

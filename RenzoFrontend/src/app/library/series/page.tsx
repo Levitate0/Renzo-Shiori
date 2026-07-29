@@ -346,6 +346,52 @@ function SeriesPageContent() {
     }
   };
 
+  // Reorder a source's per-series priority (0 = highest). Swaps the moved source with its
+  // neighbour in priority order and persists the whole set's new priorities immediately, the
+  // same way the toggles auto-save. Priority drives read/preview source order and the download
+  // source, so this is the user's "which source do I trust most for this series" control.
+  const handleMoveProvider = async (providerId: string, direction: 'up' | 'down') => {
+    if (!series || isDeleting) return;
+    const ordered = [...series.providers].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+    const idx = ordered.findIndex(p => p.id === providerId);
+    if (idx < 0) return;
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= ordered.length) return;
+    const a = ordered[idx]!;
+    const b = ordered[swapIdx]!;
+    ordered[idx] = b;
+    ordered[swapIdx] = a;
+    const priorityById: Record<string, number> = {};
+    ordered.forEach((p, i) => { priorityById[p.id] = i; });
+
+    try {
+      const updatedSeries = {
+        ...series,
+        pausedDownloads,
+        providers: series.providers.map(provider => {
+          const switches = providerSwitches[provider.id] || { useTitle: false, useCover: false, useStorage: false, useStatus: false };
+          const fromChapterValue = providerFromChapters[provider.id];
+          return {
+            ...provider,
+            isDisabled: provider.isUninstalled ? true : (providerDisabledStates[provider.id] ?? provider.isDisabled),
+            isDeleted: providerDeletedStates[provider.id] ?? false,
+            fromChapter: fromChapterValue !== undefined ? parseFloat(fromChapterValue || "0") : provider.fromChapter,
+            useTitle: switches?.useTitle ?? provider.useTitle,
+            useCover: switches?.useCover ?? provider.useCover,
+            isStorage: switches?.useStorage ?? provider.isStorage,
+            useStatus: switches?.useStatus ?? provider.useStatus,
+            priority: priorityById[provider.id] ?? provider.priority,
+          };
+        }),
+      };
+      const result = await updateSeriesMutation.mutateAsync(updatedSeries);
+      if (result) queryClient.setQueryData(['series', 'detail', series.id], result);
+    } catch (error) {
+      console.error('Failed to reorder source:', error);
+      toast({ variant: "destructive", title: "Reorder failed", description: "Could not update source priority." });
+    }
+  };
+
   // Helper function to update with explicit disabled state
   const updateSeriesWithDisabledState = async (providerId: string, disabledState: boolean) => {
     if (!series || isDeleting) return;
@@ -1266,6 +1312,7 @@ function SeriesPageContent() {
               onFromChapterChange={handleFromChapterChange}
               onEnableDisable={handleDisabledChange}
               onDelete={handleDeleteProvider}
+              onMoveProvider={handleMoveProvider}
               canEdit={canEdit}
             />
 

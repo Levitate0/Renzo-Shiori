@@ -570,6 +570,8 @@ export interface ProviderExtendedInfo {
   useCover: boolean;
   useStatus: boolean;
   isStorage: boolean;
+  /** Per-series ordering rank among this series' providers (0 = highest priority). */
+  priority: number;
   isUnknown: boolean;
   isLocal: boolean;
   useTitle: boolean;
