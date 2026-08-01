@@ -93,12 +93,12 @@ fun AccountScreen(
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
                     modifier = Modifier.weight(1f),
                 )
-                OutlinedButton(onClick = { folderPicker.launch(null) }) { Text("Choose…") }
+                OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { folderPicker.launch(null) }) { Text("Choose…") }
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
-            Button(onClick = onLogout) { Text("Sign out") }
+            Button(shape = MaterialTheme.shapes.small, onClick = onLogout) { Text("Sign out") }
         }
     }
 }

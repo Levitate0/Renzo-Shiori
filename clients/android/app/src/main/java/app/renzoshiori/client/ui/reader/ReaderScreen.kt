@@ -87,7 +87,7 @@ fun ReaderScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(state.error!!, color = Color.White, textAlign = TextAlign.Center)
-                OutlinedButton(onClick = onExit, modifier = Modifier.padding(top = 16.dp)) { Text("Back") }
+                OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onExit, modifier = Modifier.padding(top = 16.dp)) { Text("Back") }
             }
             state.webtoon -> WebtoonStrip(
                 state = state,
@@ -214,12 +214,12 @@ private fun WebtoonStrip(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (state.hasPrev) {
-                        OutlinedButton(onClick = onPrev) { Text("Previous") }
+                        OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onPrev) { Text("Previous") }
                     }
                     if (state.hasNext) {
-                        Button(onClick = onNext) { Text("Next chapter") }
+                        Button(shape = MaterialTheme.shapes.small, onClick = onNext) { Text("Next chapter") }
                     } else {
-                        OutlinedButton(onClick = onExit) { Text("Back to series") }
+                        OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onExit) { Text("Back to series") }
                     }
                 }
             }

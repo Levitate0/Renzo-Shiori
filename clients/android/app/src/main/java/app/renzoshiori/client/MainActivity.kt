@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
                             onSelectUser = authViewModel::selectUser,
                         )
                         is AuthStep.SignedIn -> SignedInNavHost(
-                            username = step.user.username,
+                            user = step.user,
                             onLogout = authViewModel::logout,
                         )
                     }
@@ -66,16 +66,17 @@ class MainActivity : ComponentActivity() {
 }
 
 @androidx.compose.runtime.Composable
-private fun SignedInNavHost(username: String, onLogout: () -> Unit) {
+private fun SignedInNavHost(user: app.renzoshiori.client.data.model.UserDto, onLogout: () -> Unit) {
     val nav = rememberNavController()
 
     NavHost(navController = nav, startDestination = "home") {
         composable("home") {
             HomeShell(
-                username = username,
+                user = user,
                 onOpenSeries = { id -> nav.navigate("series/$id") },
                 onOpenOfflineSeries = { id -> nav.navigate("offline-series/$id") },
                 onOpenAccount = { nav.navigate("account") },
+                onLogout = onLogout,
             )
         }
         composable(
@@ -117,7 +118,7 @@ private fun SignedInNavHost(username: String, onLogout: () -> Unit) {
         }
         composable("account") {
             AccountScreen(
-                username = username,
+                username = user.username,
                 onBack = { nav.popBackStack() },
                 onLogout = onLogout,
             )

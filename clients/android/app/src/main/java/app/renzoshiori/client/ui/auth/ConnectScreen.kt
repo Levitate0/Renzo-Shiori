@@ -92,7 +92,7 @@ fun ConnectScreen(
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 20.dp),
         )
         Button(
-            onClick = { onConnect(address) },
+            shape = MaterialTheme.shapes.small, onClick = { onConnect(address) },
             enabled = !loading && address.isNotBlank(),
             colors = ButtonDefaults.buttonColors(
                 containerColor = Fg,

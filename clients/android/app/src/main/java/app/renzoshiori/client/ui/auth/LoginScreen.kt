@@ -127,7 +127,7 @@ private fun PasswordLoginCard(
                     Text("Remember me", style = MaterialTheme.typography.bodyMedium)
                 }
                 Button(
-                    onClick = { onLogin(username, password, rememberMe) },
+                    shape = MaterialTheme.shapes.small, onClick = { onLogin(username, password, rememberMe) },
                     enabled = !loading && username.isNotBlank() && password.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 ) {
