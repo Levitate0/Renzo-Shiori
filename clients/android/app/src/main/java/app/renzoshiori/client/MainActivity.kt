@@ -72,6 +72,7 @@ private fun SignedInNavHost(username: String, onLogout: () -> Unit) {
     NavHost(navController = nav, startDestination = "home") {
         composable("home") {
             HomeShell(
+                username = username,
                 onOpenSeries = { id -> nav.navigate("series/$id") },
                 onOpenOfflineSeries = { id -> nav.navigate("offline-series/$id") },
                 onOpenAccount = { nav.navigate("account") },
