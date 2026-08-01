@@ -23,6 +23,7 @@ class RenzoApp : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        app.renzoshiori.client.ui.util.AdultFilter.init(this)
         // Persist any crash so MainActivity can show the stack trace on the
         // next launch (there's no adb on the server this app talks to).
         // The process MUST die afterwards: handing off to a missing default
