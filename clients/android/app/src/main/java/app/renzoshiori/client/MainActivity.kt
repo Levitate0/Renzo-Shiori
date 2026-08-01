@@ -34,8 +34,21 @@ import app.renzoshiori.client.ui.auth.AuthStep
 import app.renzoshiori.client.ui.auth.AuthViewModel
 import app.renzoshiori.client.ui.auth.ConnectScreen
 import app.renzoshiori.client.ui.auth.LoginScreen
+import app.renzoshiori.client.ui.home.AccountAction
+import app.renzoshiori.client.ui.home.AccountDialog
+import app.renzoshiori.client.ui.home.AccountDialogHost
 import app.renzoshiori.client.ui.home.HomeShell
+import app.renzoshiori.client.ui.importwizard.ImportWizardScreen
 import app.renzoshiori.client.ui.reader.ReaderScreen
+import app.renzoshiori.client.ui.settings.AppearanceScreen
+import app.renzoshiori.client.ui.settings.DEFAULT_CUSTOM_ACCENT
+import app.renzoshiori.client.ui.settings.hslStrToColor
+import app.renzoshiori.client.ui.settings.prefString
+import app.renzoshiori.client.ui.settings.presetById
+import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.settings.ServerSettingsScreen
+import app.renzoshiori.client.ui.settings.TrackersScreen
+import app.renzoshiori.client.ui.settings.UsersScreen
 import app.renzoshiori.client.ui.series.OfflineSeriesScreen
 import app.renzoshiori.client.ui.series.SeriesDetailScreen
 import app.renzoshiori.client.ui.settings.AccountScreen
@@ -123,9 +136,31 @@ private fun CrashReportScreen(trace: String, onDismiss: () -> Unit) {
     }
 }
 
-@androidx.compose.runtime.Composable
+@Composable
 private fun SignedInNavHost(user: app.renzoshiori.client.data.model.UserDto, onLogout: () -> Unit) {
     val nav = rememberNavController()
+
+    // Paint the app in the signed-in user's saved theme (preset + accent from
+    // the shared preferences blob) before anything renders.
+    androidx.compose.runtime.LaunchedEffect(user.preferences) {
+        val preset = presetById(prefString(user.preferences, "preset"))
+        val custom = prefString(user.preferences, "accent") == "custom"
+        val accentHsl = if (custom) {
+            prefString(user.preferences, "accentCustom") ?: DEFAULT_CUSTOM_ACCENT
+        } else {
+            preset.accent
+        }
+        RenzoColors.applyTheme(
+            background = hslStrToColor(preset.bg),
+            card = hslStrToColor(preset.card),
+            primary = hslStrToColor(accentHsl),
+        )
+    }
+
+    var dialog by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<AccountDialog?>(null)
+    }
+    var tourVisible by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
 
     NavHost(navController = nav, startDestination = "home") {
         composable("home") {
@@ -133,8 +168,37 @@ private fun SignedInNavHost(user: app.renzoshiori.client.data.model.UserDto, onL
                 user = user,
                 onOpenSeries = { id -> nav.navigate("series/$id") },
                 onOpenOfflineSeries = { id -> nav.navigate("offline-series/$id") },
-                onOpenAccount = { nav.navigate("account") },
-                onLogout = onLogout,
+                onAccountAction = { action ->
+                    when (action) {
+                        AccountAction.Account -> nav.navigate("account")
+                        AccountAction.Appearance -> nav.navigate("appearance")
+                        AccountAction.Users -> nav.navigate("users")
+                        AccountAction.ServerSettings -> nav.navigate("server-settings")
+                        AccountAction.Trackers -> nav.navigate("trackers")
+                        AccountAction.Tour -> tourVisible = true
+                        is AccountAction.ImportSeries -> nav.navigate("import-wizard/${action.titleOnly}")
+                        AccountAction.EditProfile -> dialog = AccountDialog.EditProfile
+                        AccountAction.ChangePassword -> dialog = AccountDialog.ChangePassword
+                        AccountAction.ImportBackup -> dialog = AccountDialog.ImportBackup
+                        AccountAction.SignOut -> onLogout()
+                    }
+                },
+                showTour = tourVisible,
+                onTourFinish = { tourVisible = false },
+            )
+            AccountDialogHost(dialog = dialog, onDismiss = { dialog = null })
+        }
+        composable("appearance") { AppearanceScreen(onBack = { nav.popBackStack() }) }
+        composable("users") { UsersScreen(onBack = { nav.popBackStack() }) }
+        composable("server-settings") { ServerSettingsScreen(onBack = { nav.popBackStack() }) }
+        composable("trackers") { TrackersScreen(onBack = { nav.popBackStack() }) }
+        composable(
+            "import-wizard/{titleOnly}",
+            arguments = listOf(navArgument("titleOnly") { type = NavType.BoolType }),
+        ) { entry ->
+            ImportWizardScreen(
+                titleOnly = entry.arguments!!.getBoolean("titleOnly"),
+                onClose = { nav.popBackStack() },
             )
         }
         composable(

@@ -29,14 +29,24 @@ interface ApiService {
     @POST("api/auth/login")
     suspend fun login(@Body body: LoginRequestDto): LoginResponseDto
 
-    @POST("api/auth/select-user")
-    suspend fun selectUser(@Body body: SelectUserRequestDto): LoginResponseDto
+    // NOTE: POST /api/auth/select-user returns a BARE UserDto (no token
+    // wrapper) — decoding it as LoginResponseDto throws. It lives in
+    // AuthExtraApi.selectUserProfile with the correct return type.
 
     @POST("api/auth/refresh")
     suspend fun refresh(): LoginResponseDto
 
     @GET("api/auth/me")
     suspend fun me(): UserDto
+
+    @POST("api/auth/logout")
+    suspend fun logout(): retrofit2.Response<okhttp3.ResponseBody>
+
+    /** Only the two settings the app chrome itself needs (full settings screen
+     * has its own service): the OPDS base domain and whether title-only import
+     * is available. */
+    @GET("api/settings")
+    suspend fun shellSettings(): app.renzoshiori.client.data.model.ShellSettingsDto
 
     // ── Library / series ────────────────────────────────────────────────
     @GET("api/serie/library")

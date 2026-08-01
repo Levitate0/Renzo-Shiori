@@ -1,49 +1,40 @@
 package app.renzoshiori.client.ui.auth
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import app.renzoshiori.client.R
-import app.renzoshiori.client.data.model.UserDto
 
 /**
- * Login — styled after the web app's /login page: a centered card with the
- * Renzo Shiori login banner, "Sign in to your Renzo Shiori library" line,
- * username/password fields, Remember me (default on), primary Sign in button.
- * When the server reports auth disabled it becomes the profile picker
- * (mirrors /user-select).
+ * The signed-out half of the app, ported 1:1 from RenzoFrontend:
+ *
+ *  - `/login`                  → [LoginCard]           (this file)
+ *  - `/user-select`            → [UserSelectScreen]    (UserSelectScreen.kt)
+ *  - `/auth/forgot-password`   → [ForgotPasswordScreen]
+ *  - `/auth/reset-password`    → [ResetPasswordScreen]
+ *  - `/auth/set-password`      → [SetPasswordScreen]
+ *
+ * The web routes between these with next/navigation; there is no NavHost this
+ * side of sign-in (MainActivity only mounts one auth composable), so the same
+ * five destinations are switched here by [AuthRoute].
  */
+internal enum class AuthRoute { Root, ForgotPassword, ResetPassword, SetPassword }
+
 @Composable
 fun LoginScreen(
     step: AuthStep.Login,
@@ -52,126 +43,166 @@ fun LoginScreen(
     onLogin: (username: String, password: String, rememberMe: Boolean) -> Unit,
     onSelectUser: (String) -> Unit,
 ) {
-    if (step.users != null) {
-        UserSelectList(step.users, loading, onSelectUser)
-    } else {
-        PasswordLoginCard(loading, error, onLogin)
+    // Same activity-scoped instance MainActivity holds (default ViewModel key),
+    // so the password flows below share the connected server and can hand the
+    // finished session straight back to the auth gate.
+    val vm: AuthViewModel = viewModel()
+    var route by remember { mutableStateOf(AuthRoute.Root) }
+    // The web lands back on /login?reset=1 after a successful reset and shows a
+    // confirmation note above the form.
+    var resetDone by remember { mutableStateOf(false) }
+
+    val flow by vm.passwordFlow.collectAsState()
+    // Non-null exactly when the server has auth disabled and has users.
+    val profiles = step.users
+
+    LaunchedEffect(flow.resetDone) {
+        if (flow.resetDone) {
+            resetDone = true
+            route = AuthRoute.Root
+            vm.clearPasswordFlow()
+        }
+    }
+
+    when (route) {
+        AuthRoute.Root -> if (profiles != null) {
+            // Auth disabled + users exist: the server hands back the profile
+            // list, which is exactly when the web app shows /user-select.
+            UserSelectScreen(
+                users = profiles,
+                loading = loading,
+                error = error,
+                onSelectUser = onSelectUser,
+            )
+        } else {
+            LoginCard(
+                loading = loading,
+                error = error,
+                resetDone = resetDone,
+                rememberedUsername = vm.rememberedUsername,
+                onLogin = onLogin,
+                onForgotPassword = { vm.clearPasswordFlow(); route = AuthRoute.ForgotPassword },
+                onHaveInvite = { vm.clearPasswordFlow(); route = AuthRoute.SetPassword },
+            )
+        }
+
+        AuthRoute.ForgotPassword -> ForgotPasswordScreen(
+            state = flow,
+            onSubmit = vm::forgotPassword,
+            onHaveResetLink = { vm.clearPasswordFlow(); route = AuthRoute.ResetPassword },
+            onBackToLogin = { vm.clearPasswordFlow(); route = AuthRoute.Root },
+        )
+
+        AuthRoute.ResetPassword -> ResetPasswordScreen(
+            state = flow,
+            onSubmit = vm::resetPassword,
+            onBackToLogin = { vm.clearPasswordFlow(); route = AuthRoute.Root },
+        )
+
+        AuthRoute.SetPassword -> SetPasswordScreen(
+            state = flow,
+            onSubmit = vm::setPassword,
+            onBackToLogin = { vm.clearPasswordFlow(); route = AuthRoute.Root },
+        )
     }
 }
 
+/**
+ * RenzoFrontend/src/app/login/page.tsx — banner, "Enter your credentials to log
+ * in", username + password, Remember me (default on, pre-filled from the
+ * remembered username), full-width primary "Log in", "Forgot password?".
+ */
 @Composable
-private fun PasswordLoginCard(
+private fun LoginCard(
     loading: Boolean,
     error: String?,
+    resetDone: Boolean,
+    rememberedUsername: String?,
     onLogin: (String, String, Boolean) -> Unit,
+    onForgotPassword: () -> Unit,
+    onHaveInvite: () -> Unit,
 ) {
-    var username by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf(rememberedUsername.orEmpty()) }
     var password by remember { mutableStateOf("") }
+    // Default on: staying signed in until explicit logout is the expected
+    // behavior for a personal/installed app; unchecking opts into a 24h session.
     var rememberMe by remember { mutableStateOf(true) }
+    var localError by remember { mutableStateOf<String?>(null) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
+    fun submit() {
+        if (username.isBlank() || password.isBlank()) {
+            // The web form relies on the browser's `required` validation here.
+            localError = "Enter your username and password."
+            return
+        }
+        localError = null
+        onLogin(username, password, rememberMe)
+    }
+    val shownError = localError ?: error
+
+    AuthPageScaffold {
+        AuthCard {
+            AuthCardHeader(spacing = 12.dp) {
                 Image(
                     painter = painterResource(R.drawable.renzo_login_banner),
                     contentDescription = "Renzo Shiori",
-                    modifier = Modifier.width(256.dp),
+                    contentScale = ContentScale.FillWidth,
+                    modifier = Modifier.widthIn(max = 256.dp).fillMaxWidth(),
                 )
-                Text(
-                    "Sign in to your Renzo Shiori library",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 12.dp, bottom = 20.dp),
-                )
-                if (error != null) {
-                    Text(
-                        error,
-                        color = Color(0xFFEF4444),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    )
-                }
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                ) {
-                    Checkbox(checked = rememberMe, onCheckedChange = { rememberMe = it })
-                    Text("Remember me", style = MaterialTheme.typography.bodyMedium)
-                }
-                Button(
-                    shape = MaterialTheme.shapes.small, onClick = { onLogin(username, password, rememberMe) },
-                    enabled = !loading && username.isNotBlank() && password.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                ) {
-                    if (loading) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("Sign in")
-                    }
-                }
+                AuthCardDescription("Enter your credentials to log in")
             }
-        }
-    }
-}
+            AuthCardContent {
+                if (resetDone && shownError == null) {
+                    AuthNoticeBox("Password reset successful. Log in with your new password.")
+                    Spacer(Modifier.height(16.dp))
+                }
+                if (shownError != null) {
+                    AuthErrorBox(shownError)
+                    Spacer(Modifier.height(16.dp))
+                }
 
-@Composable
-private fun UserSelectList(
-    users: List<UserDto>,
-    loading: Boolean,
-    onSelectUser: (String) -> Unit,
-) {
-    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        Image(
-            painter = painterResource(R.drawable.renzo_login_banner),
-            contentDescription = "Renzo Shiori",
-            modifier = Modifier.width(220.dp).align(Alignment.CenterHorizontally).padding(bottom = 8.dp),
-        )
-        Text(
-            "Who's reading?",
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(users) { user ->
-                Card(
-                    onClick = { onSelectUser(user.username) },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(user.username, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-                }
+                AuthLabel("Username")
+                Spacer(Modifier.height(8.dp))
+                AuthInput(
+                    value = username,
+                    onValueChange = { username = it; localError = null },
+                    placeholder = "Enter your username",
+                    imeAction = ImeAction.Next,
+                )
+                Spacer(Modifier.height(16.dp))
+
+                AuthLabel("Password")
+                Spacer(Modifier.height(8.dp))
+                AuthInput(
+                    value = password,
+                    onValueChange = { password = it; localError = null },
+                    placeholder = "Enter your password",
+                    isPassword = true,
+                    imeAction = ImeAction.Go,
+                    onImeAction = { submit() },
+                )
+                Spacer(Modifier.height(16.dp))
+
+                AuthCheckboxRow(
+                    checked = rememberMe,
+                    onCheckedChange = { rememberMe = it },
+                    label = "Remember me",
+                )
+                Spacer(Modifier.height(16.dp))
+
+                AuthPrimaryButton(
+                    text = if (loading) "Logging in..." else "Log in",
+                    onClick = { submit() },
+                    enabled = !loading,
+                )
+                Spacer(Modifier.height(16.dp))
+
+                AuthLinkRow("Forgot password?", onForgotPassword)
+                // No email client can hand a token to this app the way a
+                // browser link does, so the invite (set-password) flow needs a
+                // door of its own here.
+                AuthLinkRow("Have an invite link? Set your password", onHaveInvite)
             }
-        }
-        if (loading) {
-            CircularProgressIndicator(modifier = Modifier.padding(top = 16.dp))
         }
     }
 }

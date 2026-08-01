@@ -25,13 +25,18 @@ class RenzoApp : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         // Persist any crash so MainActivity can show the stack trace on the
         // next launch (there's no adb on the server this app talks to).
+        // The process MUST die afterwards: handing off to a missing default
+        // handler leaves the UI thread dead with the window still on screen,
+        // which looks like the app "glitching to a black screen".
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             runCatching {
                 java.io.File(filesDir, "last-crash.txt")
                     .writeText(android.util.Log.getStackTraceString(throwable))
             }
-            previous?.uncaughtException(thread, throwable)
+            runCatching { previous?.uncaughtException(thread, throwable) }
+            android.os.Process.killProcess(android.os.Process.myPid())
+            kotlin.system.exitProcess(10)
         }
     }
 

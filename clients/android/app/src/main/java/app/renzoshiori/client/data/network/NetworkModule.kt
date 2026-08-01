@@ -31,12 +31,24 @@ private class RefreshCookieJar : CookieJar {
     override fun loadForRequest(url: HttpUrl): List<Cookie> = store[url.host] ?: emptyList()
 }
 
-/** Attaches `Authorization: Bearer <token>` to every request, including image loads. */
+/**
+ * Attaches `Authorization: Bearer <token>` to every request, including image
+ * loads. When the server has authentication disabled there is no token at
+ * all: the backend then resolves the caller from an `X-Renzo-User` header
+ * (AuthMiddleware), which is exactly what the web apiClient sends in profile
+ * mode — without it the app would talk to the server as an anonymous guest
+ * and no per-user data (library, progress, sources) would resolve.
+ */
 private class AuthInterceptor(private val tokenStore: TokenStore) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val token = tokenStore.accessToken
         val request = chain.request().newBuilder().apply {
-            if (token != null) addHeader("Authorization", "Bearer $token")
+            if (token != null) {
+                addHeader("Authorization", "Bearer $token")
+            } else {
+                tokenStore.lastUsername?.takeIf { it.isNotBlank() }
+                    ?.let { addHeader("X-Renzo-User", it) }
+            }
         }.build()
         return chain.proceed(request)
     }
@@ -58,16 +70,24 @@ class NetworkModule(private val tokenStore: TokenStore) {
             .build()
     }
 
+    fun retrofitFor(baseUrl: String): Retrofit = Retrofit.Builder()
+        .baseUrl(if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/")
+        .client(okHttpClient)
+        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+        .build()
+
     /** Retrofit client for the currently-connected server (throws if none set yet). */
-    fun apiFor(baseUrl: String): ApiService {
-        val retrofit = Retrofit.Builder()
-            .baseUrl(if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/")
-            .client(okHttpClient)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
-        return retrofit.create(ApiService::class.java)
-    }
+    fun apiFor(baseUrl: String): ApiService = retrofitFor(baseUrl).create(ApiService::class.java)
 
     /** Convenience for call sites that already have a connected TokenStore.serverUrl. */
     fun currentApi(): ApiService? = tokenStore.serverUrl?.let { apiFor(it) }
+
+    /**
+     * Domain-specific Retrofit interfaces (StatusApi, SourcesApi, AccountApi…)
+     * live in their own files so they can grow independently of [ApiService].
+     */
+    inline fun <reified T> currentServiceOf(): T? =
+        serverUrl?.let { retrofitFor(it).create(T::class.java) }
+
+    val serverUrl: String? get() = tokenStore.serverUrl
 }

@@ -6,9 +6,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import app.renzoshiori.client.data.auth.TokenStore
+import app.renzoshiori.client.data.model.ForgotPasswordRequestDto
+import app.renzoshiori.client.data.model.ResetPasswordRequestDto
+import app.renzoshiori.client.data.model.SetPasswordRequestDto
 import app.renzoshiori.client.data.model.UserDto
 import app.renzoshiori.client.data.network.ApiService
+import app.renzoshiori.client.data.network.AuthExtraApi
 import app.renzoshiori.client.data.network.NetworkModule
+import app.renzoshiori.client.data.network.serverErrorMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,6 +31,22 @@ data class AuthUiState(
     val error: String? = null,
 )
 
+/**
+ * State for the three public password flows (/auth/forgot-password,
+ * /auth/reset-password, /auth/set-password). Kept separate from [AuthUiState]
+ * so an in-flight reset can never fight with the login card's own
+ * loading/error, exactly like the web app where each page owns its own
+ * `pending`/`error`/`submitted` state.
+ */
+data class PasswordFlowState(
+    val pending: Boolean = false,
+    val error: String? = null,
+    /** forgot-password: the generic "if that email is on file…" confirmation. */
+    val emailSubmitted: Boolean = false,
+    /** reset-password succeeded — the web navigates to /login?reset=1. */
+    val resetDone: Boolean = false,
+)
+
 /** Known product-name aliases a server may report — mirrors the old WebView
  * shell's isRenzoServer() check, including legacy brand names. */
 private val KNOWN_PRODUCTS = setOf("renzo shiori", "renzo", "rensaio")
@@ -40,7 +61,20 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(AuthUiState())
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 
+    private val _passwordFlow = MutableStateFlow(PasswordFlowState())
+    val passwordFlow: StateFlow<PasswordFlowState> = _passwordFlow.asStateFlow()
+
     private var api: ApiService? = null
+
+    /** Retrofit client for the public password endpoints, bound to the connected server. */
+    private fun authExtra(): AuthExtraApi? = network.currentServiceOf<AuthExtraApi>()
+
+    /**
+     * The web login page pre-fills `localStorage.renzo_remembered_username`;
+     * the native equivalent is the encrypted TokenStore's last signed-in name,
+     * which [login] keeps in sync with the Remember me checkbox.
+     */
+    val rememberedUsername: String? get() = tokenStore.lastUsername
 
     init {
         // Already connected + logged in from a previous launch? Skip straight
@@ -122,34 +156,141 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }.onSuccess { resp ->
                 tokenStore.accessToken = resp.token
-                tokenStore.lastUsername = username
+                // Mirrors the web page's REMEMBERED_USER_KEY handling: the name
+                // is remembered only while the box is ticked.
+                tokenStore.lastUsername = if (rememberMe) username else null
+                _passwordFlow.value = PasswordFlowState()
                 _state.value = AuthUiState(step = AuthStep.SignedIn(resp.user))
-            }.onFailure {
-                _state.value = _state.value.copy(loading = false, error = "Login failed — check your username and password.")
+            }.onFailure { e ->
+                // Surface the server's own words — "Invalid credentials",
+                // "User has no password set…", or the rate limiter's
+                // "Too many failed attempts. Try again in about N minutes."
+                _state.value = _state.value.copy(
+                    loading = false,
+                    error = e.serverErrorMessage("Login failed — check your username and password."),
+                )
             }
         }
     }
 
-    /** No-password profile pick, only valid when the server has auth disabled. */
+    /**
+     * No-password profile pick, only valid when the server has auth disabled.
+     * POST /api/auth/select-user answers with a bare UserDto and issues no JWT
+     * (see [AuthExtraApi]) — the profile is carried by the `X-Renzo-User`
+     * header from then on, so nothing is written to the token slot here.
+     */
     fun selectUser(username: String) {
-        val currentApi = api ?: return
+        val extra = authExtra() ?: return
         _state.value = _state.value.copy(loading = true, error = null)
         viewModelScope.launch {
             runCatching {
-                currentApi.selectUser(app.renzoshiori.client.data.model.SelectUserRequestDto(username))
-            }.onSuccess { resp ->
-                tokenStore.accessToken = resp.token
+                extra.selectUserProfile(app.renzoshiori.client.data.model.SelectUserRequestDto(username))
+            }.onSuccess { user ->
                 tokenStore.lastUsername = username
-                _state.value = AuthUiState(step = AuthStep.SignedIn(resp.user))
-            }.onFailure {
-                _state.value = _state.value.copy(loading = false, error = "Couldn't sign in as $username.")
+                _state.value = AuthUiState(step = AuthStep.SignedIn(user))
+            }.onFailure { e ->
+                _state.value = _state.value.copy(
+                    loading = false,
+                    error = e.serverErrorMessage("Couldn't sign in as $username."),
+                )
             }
         }
     }
 
+    // ── Public password flows (web: /auth/forgot-password, /auth/reset-password,
+    //    /auth/set-password) ───────────────────────────────────────────────
+
+    /** Clears any leftover pending/error/submitted state when a flow is left. */
+    fun clearPasswordFlow() {
+        _passwordFlow.value = PasswordFlowState()
+    }
+
+    /** POST /api/auth/forgot-password — always the same generic confirmation. */
+    fun forgotPassword(email: String) {
+        val extra = authExtra() ?: run {
+            _passwordFlow.value = PasswordFlowState(error = "Not connected to a server.")
+            return
+        }
+        _passwordFlow.value = _passwordFlow.value.copy(pending = true, error = null)
+        viewModelScope.launch {
+            runCatching { extra.forgotPassword(ForgotPasswordRequestDto(email.trim())) }
+                .onSuccess { _passwordFlow.value = PasswordFlowState(emailSubmitted = true) }
+                .onFailure { e ->
+                    _passwordFlow.value = PasswordFlowState(
+                        error = e.serverErrorMessage("Something went wrong. Try again."),
+                    )
+                }
+        }
+    }
+
+    /** POST /api/auth/reset-password — token identifies the account, no username. */
+    fun resetPassword(token: String, newPassword: String) {
+        val extra = authExtra() ?: run {
+            _passwordFlow.value = PasswordFlowState(error = "Not connected to a server.")
+            return
+        }
+        _passwordFlow.value = _passwordFlow.value.copy(pending = true, error = null)
+        viewModelScope.launch {
+            runCatching { extra.resetPassword(ResetPasswordRequestDto(token.trim(), newPassword)) }
+                .onSuccess { _passwordFlow.value = PasswordFlowState(resetDone = true) }
+                .onFailure { e ->
+                    _passwordFlow.value = PasswordFlowState(
+                        error = e.serverErrorMessage("Invalid or expired reset link. Request a new one."),
+                    )
+                }
+        }
+    }
+
+    /**
+     * POST /api/auth/set-password — the invite flow. Returns a real session, so
+     * this signs the user straight in, exactly like the web page's
+     * setAuthFromToken(...) + router.push('/library').
+     */
+    fun setPassword(username: String, token: String, password: String) {
+        val extra = authExtra() ?: run {
+            _passwordFlow.value = PasswordFlowState(error = "Not connected to a server.")
+            return
+        }
+        _passwordFlow.value = _passwordFlow.value.copy(pending = true, error = null)
+        viewModelScope.launch {
+            runCatching {
+                extra.setPassword(SetPasswordRequestDto(username.trim(), token.trim(), password))
+            }.onSuccess { resp ->
+                tokenStore.accessToken = resp.token
+                tokenStore.lastUsername = resp.user.username
+                _passwordFlow.value = PasswordFlowState()
+                _state.value = AuthUiState(step = AuthStep.SignedIn(resp.user))
+            }.onFailure { e ->
+                _passwordFlow.value = PasswordFlowState(
+                    error = e.serverErrorMessage("Failed to set password"),
+                )
+            }
+        }
+    }
+
+    /**
+     * Sign out. POST /api/auth/logout first so the server revokes the refresh
+     * token (a client-only clear used to leave it valid in the DB), then drop
+     * the local token. The server address is kept, so this lands back on the
+     * Login/profile step — the web's logout() goes to /login or /user-select,
+     * never back to "which server?".
+     */
     fun logout() {
-        tokenStore.clearSession()
-        _state.value = AuthUiState(step = AuthStep.Connect)
+        val serverUrl = tokenStore.serverUrl
+        val currentApi = api
+        viewModelScope.launch {
+            runCatching { currentApi?.logout() }
+            tokenStore.clearSession()
+            _passwordFlow.value = PasswordFlowState()
+            if (serverUrl == null) {
+                _state.value = AuthUiState(step = AuthStep.Connect)
+            } else {
+                val status = runCatching { network.apiFor(serverUrl).authStatus() }.getOrNull()
+                _state.value = AuthUiState(
+                    step = AuthStep.Login(users = status?.users, serverUrl = serverUrl),
+                )
+            }
+        }
     }
 
     companion object {

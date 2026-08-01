@@ -6,6 +6,9 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -20,11 +23,26 @@ import app.renzoshiori.client.R
  * name — keep them in sync with globals.css, not with Material defaults.
  */
 object RenzoColors {
-    val Background = Color(0xFF0C0A09)      // --background: 20 14.3% 4.1%
+    // Background / Card / Primary are theme-preset driven (Appearance page):
+    // they're snapshot state so changing the preset or accent recomposes the
+    // whole app live, exactly like the web swapping CSS custom properties.
+    private var backgroundState by mutableStateOf(Color(0xFF0C0A09))
+    private var cardState by mutableStateOf(Color(0xFF1C1917))
+    private var primaryState by mutableStateOf(Color(0xFFE11D48))
+
+    val Background: Color get() = backgroundState   // --background: 20 14.3% 4.1%
+    val Card: Color get() = cardState               // --card: 24 9.8% 10%
+    val Primary: Color get() = primaryState         // --primary: 346.8 77.2% 49.8% (rose)
+
+    /** Applied by the Appearance screen and on sign-in from the prefs blob. */
+    fun applyTheme(background: Color, card: Color, primary: Color) {
+        backgroundState = background
+        cardState = card
+        primaryState = primary
+    }
+
     val Foreground = Color(0xFFF2F2F2)      // --foreground: 0 0% 95%
-    val Card = Color(0xFF1C1917)            // --card: 24 9.8% 10%
     val Popover = Color(0xFF171717)         // --popover: 0 0% 9%
-    val Primary = Color(0xFFE11D48)         // --primary: 346.8 77.2% 49.8% (rose)
     val PrimaryForeground = Color(0xFFFFF1F2) // --primary-foreground
     val Secondary = Color(0xFF27272A)       // --secondary: 240 3.7% 15.9%
     val Muted = Color(0xFF262626)           // --muted: 0 0% 15%
@@ -41,7 +59,7 @@ object RenzoColors {
     val Red = Color(0xFFEF4444)
 }
 
-private val RenzoColorScheme = darkColorScheme(
+private fun renzoColorScheme() = darkColorScheme(
     primary = RenzoColors.Primary,
     onPrimary = RenzoColors.PrimaryForeground,
     background = RenzoColors.Background,
@@ -105,7 +123,7 @@ private val RenzoTypography = Typography(
 fun RenzoTheme(content: @Composable () -> Unit) {
     // Dark-only regardless of system setting, matching the web app.
     MaterialTheme(
-        colorScheme = RenzoColorScheme,
+        colorScheme = renzoColorScheme(),
         shapes = RenzoShapes,
         typography = RenzoTypography,
         content = content,
