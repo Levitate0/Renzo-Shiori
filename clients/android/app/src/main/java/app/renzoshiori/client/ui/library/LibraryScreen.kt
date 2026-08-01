@@ -867,6 +867,11 @@ fun OnlineOfflinePill(offline: Boolean, onToggle: () -> Unit) {
             if (offline) "Offline" else "Online",
             style = MaterialTheme.typography.labelMedium,
             color = if (offline) Color(0xFFFBBF24) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+            // Never let a squeezed command bar break the word across lines
+            // ("Onlin / e") — the pill is one token, like the web's
+            // whitespace-nowrap.
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }

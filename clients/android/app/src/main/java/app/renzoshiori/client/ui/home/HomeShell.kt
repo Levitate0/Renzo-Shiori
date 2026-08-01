@@ -299,10 +299,15 @@ fun HomeShell(
                             tint = RenzoColors.Foreground,
                         )
                     }
-                    OnlineOfflinePill(
-                        offline = libraryState.offlineMode,
-                        onToggle = { libraryVm.setOfflineMode(!libraryState.offlineMode) },
-                    )
+                    // The expanded search field needs the width: the pill
+                    // steps aside (it's still in the drawer footer), the
+                    // avatar always stays.
+                    if (!searchOpen) {
+                        OnlineOfflinePill(
+                            offline = libraryState.offlineMode,
+                            onToggle = { libraryVm.setOfflineMode(!libraryState.offlineMode) },
+                        )
+                    }
                     UserAvatar(
                         user = user,
                         size = 32.dp,
