@@ -1,6 +1,7 @@
 package app.renzoshiori.client.ui.series
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,10 +21,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -42,12 +47,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import app.renzoshiori.client.data.model.ReaderChapterDto
 import app.renzoshiori.client.data.model.SeriesInfoDto
 import app.renzoshiori.client.data.model.SeriesStatus
 import app.renzoshiori.client.data.network.absoluteUrl
@@ -95,7 +103,11 @@ fun SeriesDetailScreen(
             state.error != null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Text(state.error!!, color = MaterialTheme.colorScheme.error)
             }
-            else -> LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            ) {
                 if (state.info != null) {
                     item(key = "hero") { SeriesHero(state.info!!, vm.baseUrl) }
                 }
@@ -107,94 +119,175 @@ fun SeriesDetailScreen(
                         onToggleRead = { vm.markRead(listOf(ch.number), !ch.isCompleted) },
                         onSaveOffline = { vm.saveOffline(listOf(ch)) },
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f))
                 }
             }
         }
     }
 }
 
+/**
+ * Transliteration of the web ChapterRow (chapter-row.tsx): a bordered
+ * card-tinted row — status icon (downloaded ✓ emerald / locked 🔒 violet /
+ * missing ⚠ amber), number + name + progress% chip + bookmark, then the
+ * "from <source> · <date>" / "Locked · purchase on source" / "Missing"
+ * subtitle line, with the save-offline and mark-read icon actions on the
+ * right. Read chapters grey the text block at 50% like the web row.
+ */
 @Composable
 private fun ChapterRow(
-    chapter: ReaderChapterDto,
+    chapter: ChapterRowUi,
     isOffline: Boolean,
     onClick: () -> Unit,
     onToggleRead: () -> Unit,
     onSaveOffline: () -> Unit,
 ) {
-    val dim = chapter.isCompleted
+    val muted = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
+            .androidBorder()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        // Status icon — same trio/colors as the web row.
+        when {
+            chapter.downloaded -> Icon(
+                Icons.Filled.CheckCircle, contentDescription = "Downloaded",
+                tint = Color_Emerald, modifier = Modifier.size(16.dp),
+            )
+            chapter.locked -> Icon(
+                Icons.Filled.Lock, contentDescription = "Locked",
+                tint = Color_Violet, modifier = Modifier.size(16.dp),
+            )
+            else -> Icon(
+                Icons.Filled.Warning, contentDescription = "Missing",
+                tint = Color_Amber, modifier = Modifier.size(16.dp),
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp)
+                .let { if (chapter.isCompleted) it.alpha(0.5f) else it },
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Ch. ${formatChapter(chapter.number)}",
+                    formatChapter(chapter.number),
                     style = MaterialTheme.typography.titleSmall,
-                    color = if (dim) MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
-                    else MaterialTheme.colorScheme.onBackground,
+                    color = MaterialTheme.colorScheme.onBackground,
                 )
-                if (chapter.locked) {
-                    Spacer(Modifier.size(6.dp))
+                if (chapter.name.isNotEmpty()) {
+                    Text(
+                        chapter.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 8.dp).weight(1f, fill = false),
+                    )
+                }
+                if (chapter.bookmarked) {
                     Icon(
-                        Icons.Filled.Lock,
-                        contentDescription = "Locked",
-                        modifier = Modifier.size(13.dp),
-                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                        Icons.Filled.Bookmark, contentDescription = "Bookmarked",
+                        tint = Color_Pink, modifier = Modifier.padding(start = 6.dp).size(12.dp),
+                    )
+                }
+                if (!chapter.isCompleted && chapter.progress > 0f) {
+                    Text(
+                        "${(chapter.progress * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .padding(start = 6.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
                     )
                 }
             }
-            if (chapter.name.isNotEmpty()) {
-                Text(
-                    chapter.name,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (dim) 0.3f else 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (!chapter.isCompleted && chapter.progress > 0f) {
-                LinearProgressIndicator(
-                    progress = { chapter.progress },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, end = 16.dp),
-                )
+            // Subtitle line: "from <source>" / "Locked · purchase on source" / "Missing", " · date".
+            Row(modifier = Modifier.padding(top = 2.dp)) {
+                val subtitleStyle = MaterialTheme.typography.labelSmall
+                when {
+                    chapter.downloaded -> Text(
+                        buildAnnotatedString {
+                            append("from ")
+                            withStyle(SpanStyle(color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f))) {
+                                append(chapter.sourceProviderName ?: "unknown source")
+                            }
+                        },
+                        style = subtitleStyle, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    chapter.locked -> Text("Locked · purchase on source", style = subtitleStyle, color = Color_Violet)
+                    else -> Text("Missing", style = subtitleStyle, color = Color_Amber)
+                }
+                formatUploadDate(chapter.uploadDate)?.let {
+                    Text(" · $it", style = subtitleStyle, color = muted.copy(alpha = 0.7f), maxLines = 1)
+                }
             }
         }
 
+        // Save-offline action (native-only concept — phone icon when saved).
         if (isOffline) {
             Icon(
-                Icons.Filled.DownloadDone,
-                contentDescription = "Saved offline",
-                tint = Color_Emerald,
-                modifier = Modifier.size(18.dp).padding(end = 2.dp),
+                Icons.Filled.Smartphone, contentDescription = "Saved on this device",
+                tint = Color_Emerald, modifier = Modifier.padding(horizontal = 8.dp).size(16.dp),
             )
-        } else if (chapter.filename != null) {
-            IconButton(onClick = onSaveOffline) {
+        } else if (chapter.downloaded) {
+            IconButton(onClick = onSaveOffline, modifier = Modifier.size(32.dp)) {
                 Icon(
-                    Icons.Filled.Download,
-                    contentDescription = "Save offline",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                    Icons.Filled.CloudDownload, contentDescription = "Save offline",
+                    tint = muted, modifier = Modifier.size(16.dp),
                 )
             }
         }
 
-        IconButton(onClick = onToggleRead) {
-            Icon(
-                Icons.Filled.Check,
-                contentDescription = if (chapter.isCompleted) "Mark unread" else "Mark read",
-                tint = if (chapter.isCompleted) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f),
-            )
+        // Mark read/unread toggle — circle / filled check circle, like the web.
+        IconButton(onClick = onToggleRead, modifier = Modifier.size(32.dp)) {
+            if (chapter.isCompleted) {
+                Icon(
+                    Icons.Filled.CheckCircle, contentDescription = "Mark unread",
+                    tint = Color_Emerald, modifier = Modifier.size(16.dp),
+                )
+            } else {
+                Icon(
+                    Icons.Outlined.Circle, contentDescription = "Mark read",
+                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
+                    modifier = Modifier.size(16.dp),
+                )
+            }
         }
     }
 }
 
+/** Web row border: border-border/40. */
+@Composable
+private fun Modifier.androidBorder(): Modifier =
+    this.then(
+        Modifier.border(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+            RoundedCornerShape(8.dp),
+        ),
+    )
+
+/** "Jun 8, 2026" — the web row's short upload-date label. */
+private fun formatUploadDate(iso: String?): String? {
+    if (iso.isNullOrEmpty()) return null
+    return runCatching {
+        val date = java.time.LocalDate.parse(iso.take(10))
+        date.format(java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy"))
+    }.getOrNull()
+}
+
 private val Color_Emerald = androidx.compose.ui.graphics.Color(0xFF10B981)
+private val Color_Violet = androidx.compose.ui.graphics.Color(0xFFA78BFA) // web violet-400
+private val Color_Amber = androidx.compose.ui.graphics.Color(0xFFF59E0B) // web amber-500
+private val Color_Pink = androidx.compose.ui.graphics.Color(0xFFEC4899) // web pink-500
 
 /**
  * Hero block above the chapter list — cover, status pill, author, genre

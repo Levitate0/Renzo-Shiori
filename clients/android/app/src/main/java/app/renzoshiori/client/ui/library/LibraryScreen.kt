@@ -167,7 +167,7 @@ private fun OnlineGrid(
                 coverUrl = absoluteUrl(baseUrl, series.thumbnailUrl),
                 subtitle = null,
                 statusColor = statusStripColor(series),
-                providerBadge = null,
+                providerBadge = series.lastChangeProvider?.provider,
                 lastChapter = series.lastChapter,
                 paused = series.pausedDownloads,
                 onClick = { onOpenSeries(series.id) },

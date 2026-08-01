@@ -22,11 +22,31 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * One chapter row, as the web series page renders it: the merged
+ * api/serie/chapters entry (downloaded / source / upload date / locked)
+ * joined with the reader read-state (progress / completed / bookmarked) by
+ * chapter number — the exact same join chapters-section.tsx does.
+ */
+data class ChapterRowUi(
+    val number: Double,
+    val name: String,
+    val downloaded: Boolean,
+    val sourceProviderName: String?,
+    val uploadDate: String?,
+    val locked: Boolean,
+    val progress: Float,
+    val isCompleted: Boolean,
+    val bookmarked: Boolean,
+    val filename: String?,
+    val pageCount: Int?,
+)
+
 data class SeriesDetailUiState(
     val loading: Boolean = true,
     val error: String? = null,
     val title: String = "",
-    val chapters: List<ReaderChapterDto> = emptyList(),
+    val chapters: List<ChapterRowUi> = emptyList(),
     /** chapterKeys (seriesId:number) already saved on this device. */
     val offlineKeys: Set<String> = emptySet(),
     /** Hero metadata (cover/status/author/description), loaded alongside chapters. */
@@ -60,17 +80,35 @@ class SeriesDetailViewModel(
                 return@launch
             }
             val info = runCatching { api.series(seriesId) }.getOrNull()
+            val detail = runCatching { api.seriesChapters(seriesId) }.getOrNull() ?: emptyList()
             runCatching { api.readerChapters(seriesId) }
                 .onSuccess { dto: ReaderChaptersDto ->
+                    val byNumber = detail.associateBy { it.number }
+                    val rows = dto.chapters.map { rc ->
+                        val d = byNumber[rc.number]
+                        ChapterRowUi(
+                            number = rc.number,
+                            name = rc.name.ifEmpty { d?.name ?: "" },
+                            downloaded = d?.downloaded ?: (rc.filename != null),
+                            sourceProviderName = d?.sourceProviderName,
+                            uploadDate = d?.uploadDate,
+                            locked = rc.locked || (d?.locked ?: false),
+                            progress = rc.progress,
+                            isCompleted = rc.isCompleted,
+                            bookmarked = rc.bookmarked,
+                            filename = rc.filename,
+                            pageCount = rc.pageCount,
+                        )
+                    }
                     val offline = withContext(Dispatchers.IO) {
-                        dto.chapters.map { chapterKey(seriesId, it.number) }
+                        rows.map { chapterKey(seriesId, it.number) }
                             .filter { store.hasChapter(it) }
                             .toSet()
                     }
                     _state.value = SeriesDetailUiState(
                         loading = false,
                         title = dto.title,
-                        chapters = dto.chapters.sortedByDescending { it.number },
+                        chapters = rows.sortedByDescending { it.number },
                         offlineKeys = offline,
                         info = info,
                     )
@@ -87,7 +125,7 @@ class SeriesDetailViewModel(
      * natively. Only server-downloaded chapters (filename != null) qualify:
      * page URLs come from /api/reader/page, and page counts must be known.
      */
-    fun saveOffline(chapters: List<ReaderChapterDto>) {
+    fun saveOffline(chapters: List<ChapterRowUi>) {
         val token = app.tokenStore.accessToken ?: return
         val base = app.tokenStore.serverUrl ?: return
         viewModelScope.launch(Dispatchers.IO) {

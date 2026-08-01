@@ -49,6 +49,7 @@ data class SeriesInfoDto(
     val hasUnknown: Boolean = false,
     val category: String? = null,
     val isNsfw: Boolean = false,
+    val lastChangeProvider: SmallProviderDto? = null,
 )
 
 @Serializable
