@@ -3,10 +3,15 @@ package app.renzoshiori.client.ui.theme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.renzoshiori.client.R
 
 /**
  * Faithful port of the web app's design tokens (RenzoFrontend
@@ -66,12 +71,43 @@ private val RenzoShapes = Shapes(
     extraLarge = RoundedCornerShape(16.dp),
 )
 
+// Geist Sans (v1.7.2, OFL) — the web app's actual font (GeistSans in
+// layout.tsx). Bundling it is what makes native text read as "the same app"
+// instead of generic Android; weights map to the web's usage (400 body,
+// 500 medium, 600 semibold titles, 700 bold).
+val GeistFamily = FontFamily(
+    Font(R.font.geist_regular, FontWeight.Normal),
+    Font(R.font.geist_medium, FontWeight.Medium),
+    Font(R.font.geist_semibold, FontWeight.SemiBold),
+    Font(R.font.geist_bold, FontWeight.Bold),
+)
+
+private val base = Typography()
+private val RenzoTypography = Typography(
+    displayLarge = base.displayLarge.copy(fontFamily = GeistFamily),
+    displayMedium = base.displayMedium.copy(fontFamily = GeistFamily),
+    displaySmall = base.displaySmall.copy(fontFamily = GeistFamily),
+    headlineLarge = base.headlineLarge.copy(fontFamily = GeistFamily, fontWeight = FontWeight.Bold),
+    headlineMedium = base.headlineMedium.copy(fontFamily = GeistFamily, fontWeight = FontWeight.Bold),
+    headlineSmall = base.headlineSmall.copy(fontFamily = GeistFamily, fontWeight = FontWeight.SemiBold),
+    titleLarge = base.titleLarge.copy(fontFamily = GeistFamily, fontWeight = FontWeight.SemiBold),
+    titleMedium = base.titleMedium.copy(fontFamily = GeistFamily, fontWeight = FontWeight.SemiBold),
+    titleSmall = base.titleSmall.copy(fontFamily = GeistFamily, fontWeight = FontWeight.Medium),
+    bodyLarge = base.bodyLarge.copy(fontFamily = GeistFamily),
+    bodyMedium = base.bodyMedium.copy(fontFamily = GeistFamily),
+    bodySmall = base.bodySmall.copy(fontFamily = GeistFamily),
+    labelLarge = base.labelLarge.copy(fontFamily = GeistFamily, fontWeight = FontWeight.Medium),
+    labelMedium = base.labelMedium.copy(fontFamily = GeistFamily, fontWeight = FontWeight.Medium),
+    labelSmall = base.labelSmall.copy(fontFamily = GeistFamily, fontWeight = FontWeight.Medium),
+)
+
 @Composable
 fun RenzoTheme(content: @Composable () -> Unit) {
     // Dark-only regardless of system setting, matching the web app.
     MaterialTheme(
         colorScheme = RenzoColorScheme,
         shapes = RenzoShapes,
+        typography = RenzoTypography,
         content = content,
     )
 }

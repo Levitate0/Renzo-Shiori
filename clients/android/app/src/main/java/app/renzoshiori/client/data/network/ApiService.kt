@@ -64,6 +64,10 @@ interface ApiService {
         @Query("keyword") keyword: String? = null,
     ): List<app.renzoshiori.client.data.model.LatestSeriesDto>
 
+    /** "Update now" — queue a library-wide new-chapter scan. */
+    @POST("api/serie/scan-all")
+    suspend fun scanAll(): retrofit2.Response<okhttp3.ResponseBody>
+
     // ── Download queue ──────────────────────────────────────────────────
     @GET("api/downloads")
     suspend fun downloads(

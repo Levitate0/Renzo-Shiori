@@ -46,8 +46,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.remember
 import app.renzoshiori.client.data.model.SeriesStatus
 import app.renzoshiori.client.data.network.absoluteUrl
+import app.renzoshiori.client.ui.components.RibbonSelect
+import app.renzoshiori.client.ui.components.SelectOption
 import app.renzoshiori.client.ui.theme.RenzoColors
 import coil3.compose.AsyncImage
 
@@ -71,50 +74,45 @@ fun LibraryContent(
     // Search lives in the shell's command bar (like the web app) — this view
     // only renders the ribbon + grid.
     Column(modifier = Modifier.fillMaxSize()) {
-        // Filter ribbon — status pills + sort toggle, the web ribbon's core.
+        // Filter ribbon — the web ribbon's Select dropdowns (status with
+        // colored dots + live counts, and the sort select), not pills.
         if (!state.offlineMode) {
+            val counts = remember(state.series) {
+                val active = state.series.count {
+                    it.status != SeriesStatus.COMPLETED && it.status != SeriesStatus.PUBLISHING_FINISHED &&
+                        it.isActive && !it.pausedDownloads
+                }
+                val paused = state.series.count { it.pausedDownloads }
+                val completed = state.series.count {
+                    it.status == SeriesStatus.COMPLETED || it.status == SeriesStatus.PUBLISHING_FINISHED
+                }
+                mapOf("all" to state.series.size, "active" to active, "paused" to paused, "completed" to completed)
+            }
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
             ) {
-                listOf("all" to "All", "active" to "Active", "paused" to "Paused", "completed" to "Completed")
-                    .forEach { (id, label) ->
-                        val active = statusFilter == id
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(
-                                    if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                    else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f),
-                                )
-                                .clickable { statusFilter = id }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                        ) {
-                            Text(
-                                label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (active) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                            )
-                        }
-                    }
-                Spacer(Modifier.width(4.dp))
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f))
-                        .clickable { orderBy = if (orderBy == "title") "lastChange" else "title" }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                ) {
-                    Text(
-                        if (orderBy == "title") "A–Z" else "Last change",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                    )
-                }
+                RibbonSelect(
+                    options = listOf(
+                        SelectOption("all", "All", dotColor = Color.White.copy(alpha = 0.6f), count = counts["all"]),
+                        SelectOption("active", "Active", dotColor = RenzoColors.Green, count = counts["active"]),
+                        SelectOption("paused", "Paused", dotColor = RenzoColors.Yellow, count = counts["paused"]),
+                        SelectOption("completed", "Completed", dotColor = RenzoColors.Blue, count = counts["completed"]),
+                    ),
+                    value = statusFilter,
+                    onChange = { statusFilter = it },
+                )
+                RibbonSelect(
+                    options = listOf(
+                        SelectOption("title", "Alphabetical"),
+                        SelectOption("lastChange", "Last Change"),
+                    ),
+                    value = orderBy,
+                    onChange = { orderBy = it },
+                )
             }
         }
 

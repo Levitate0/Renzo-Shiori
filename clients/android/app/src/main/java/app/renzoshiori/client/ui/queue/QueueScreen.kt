@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import app.renzoshiori.client.RenzoApp
 import app.renzoshiori.client.data.model.DownloadInfoDto
 import app.renzoshiori.client.data.model.QueueStatus
+import app.renzoshiori.client.data.network.absoluteUrl
 import app.renzoshiori.client.ui.library.formatChapter
 
 /**
@@ -111,32 +113,98 @@ private fun FilterPill(label: String, active: Boolean, onClick: () -> Unit) {
     }
 }
 
+/**
+ * Queue row, transliterated from the mobile web page: colored status dot,
+ * rounded thumb, bold truncated title + 🔒 + "Chapter N" + ×retries, then a
+ * "Provider · Scanlator" muted line, with the lowercase status word on the
+ * right ("queued"/"running"/…).
+ */
 @Composable
 private fun QueueRow(d: DownloadInfoDto) {
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as app.renzoshiori.client.RenzoApp
+    val dotColor = when (d.status) {
+        QueueStatus.RUNNING -> Color(0xFF10B981)
+        QueueStatus.WAITING -> Color(0xFFF59E0B)
+        QueueStatus.COMPLETED -> Color(0xFF3B82F6)
+        QueueStatus.FAILED -> Color(0xFFEF4444)
+        else -> Color.Gray
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
     ) {
-        Column(modifier = Modifier.padding(end = 8.dp).weight(1f, fill = true)) {
-            Text(
-                d.title,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Box(
+            modifier = Modifier
+                .padding(end = 12.dp)
+                .size(8.dp)
+                .clip(RoundedCornerShape(50))
+                .background(dotColor),
+        )
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            if (d.thumbnailUrl != null) {
+                coil3.compose.AsyncImage(
+                    model = absoluteUrl(app.tokenStore.serverUrl ?: "", d.thumbnailUrl),
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Column(modifier = Modifier.padding(start = 12.dp, end = 8.dp).weight(1f, fill = true)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    d.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                d.chapter?.let {
+                    Text(
+                        "Chapter ${formatChapter(it)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+                if (d.retries > 0) {
+                    Text(
+                        "×${d.retries}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+            }
             Text(
                 buildString {
-                    d.chapter?.let { append("Ch. ${formatChapter(it)}") }
-                    if (d.provider.isNotEmpty()) append("  ·  ${d.provider}")
-                    if (d.retries > 0) append("  ·  ${d.retries} retries")
+                    append(d.provider)
+                    if (!d.scanlator.isNullOrEmpty()) append(" · ${d.scanlator}")
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 1.dp),
             )
         }
-        StatusBadge(d.status)
+        Text(
+            when (d.status) {
+                QueueStatus.RUNNING -> "running"
+                QueueStatus.WAITING -> "queued"
+                QueueStatus.COMPLETED -> "done"
+                QueueStatus.FAILED -> "failed"
+                else -> ""
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+        )
     }
 }
 
