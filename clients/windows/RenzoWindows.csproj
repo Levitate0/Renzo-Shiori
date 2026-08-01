@@ -11,7 +11,7 @@
     <!-- Allows cross-compiling the Windows-targeted app from Linux/macOS -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationIcon>renzo.ico</ApplicationIcon>
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <Product>Renzo Shiori</Product>
     <Description>Renzo Shiori desktop client</Description>
   </PropertyGroup>
