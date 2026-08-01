@@ -97,11 +97,14 @@ fun HomeShell(
 ) {
     var section by rememberSaveable { mutableStateOf(Section.Library.name) }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
-    // What the drawer shows: the section nav (hamburger) or the account menu
-    // (avatar) — same popout panel either way, per the web app's pattern.
-    var drawerMode by remember { mutableStateOf("nav") }
     val current = Section.valueOf(section)
+    // Two drawers: section nav slides from the LEFT (hamburger), the account
+    // menu slides from the RIGHT (avatar) — matching which edge each control
+    // sits on, like the web app. Compose drawers are start-anchored only, so
+    // the account one is hosted under an RTL layout direction (content
+    // flipped back to LTR inside).
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val accountDrawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
 
@@ -127,63 +130,48 @@ fun HomeShell(
                     )
                 }
                 HorizontalDivider(color = RenzoColors.Border)
-                if (drawerMode == "account") {
-                    AccountMenuContent(
-                        user = user,
-                        onCopyOpds = { clipboard.setText(AnnotatedString(user.opdsPath)) },
-                        onAccount = {
-                            scope.launch { drawerState.close() }
-                            onOpenAccount()
-                        },
-                        onLogout = {
-                            scope.launch { drawerState.close() }
-                            onLogout()
-                        },
-                    )
-                } else {
-                    // Section rows — web SectionList: icon + label, active gets
-                    // bg-primary/10 + primary text + a 2dp left accent bar.
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Section.entries.forEach { s ->
-                            val active = s == current
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (active) RenzoColors.Primary.copy(alpha = 0.10f) else RenzoColors.Background)
-                                    .clickable {
-                                        section = s.name
-                                        scope.launch { drawerState.close() }
-                                    },
+                // Section rows — web SectionList: icon + label, active gets
+                // bg-primary/10 + primary text + a 2dp left accent bar.
+                Column(modifier = Modifier.padding(8.dp)) {
+                    Section.entries.forEach { s ->
+                        val active = s == current
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (active) RenzoColors.Primary.copy(alpha = 0.10f) else RenzoColors.Background)
+                                .clickable {
+                                    section = s.name
+                                    scope.launch { drawerState.close() }
+                                },
+                        ) {
+                            if (active) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.CenterStart)
+                                        .padding(vertical = 8.dp)
+                                        .width(2.dp)
+                                        .height(24.dp)
+                                        .clip(RoundedCornerShape(1.dp))
+                                        .background(RenzoColors.Primary),
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
                             ) {
-                                if (active) {
-                                    Box(
-                                        modifier = Modifier
-                                            .align(Alignment.CenterStart)
-                                            .padding(vertical = 8.dp)
-                                            .width(2.dp)
-                                            .height(24.dp)
-                                            .clip(RoundedCornerShape(1.dp))
-                                            .background(RenzoColors.Primary),
-                                    )
-                                }
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-                                ) {
-                                    Icon(
-                                        s.icon,
-                                        contentDescription = null,
-                                        tint = if (active) RenzoColors.Primary else RenzoColors.MutedForeground,
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                    Text(
-                                        s.label,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = if (active) RenzoColors.Primary else RenzoColors.MutedForeground,
-                                        modifier = Modifier.padding(start = 12.dp),
-                                    )
-                                }
+                                Icon(
+                                    s.icon,
+                                    contentDescription = null,
+                                    tint = if (active) RenzoColors.Primary else RenzoColors.MutedForeground,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Text(
+                                    s.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (active) RenzoColors.Primary else RenzoColors.MutedForeground,
+                                    modifier = Modifier.padding(start = 12.dp),
+                                )
                             }
                         }
                     }
@@ -191,16 +179,48 @@ fun HomeShell(
             }
         },
     ) {
+      // Right-side account drawer: RTL flips the drawer to the end edge; the
+      // inner CompositionLocalProviders restore LTR for the actual content.
+      androidx.compose.runtime.CompositionLocalProvider(
+          androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Rtl,
+      ) {
+        ModalNavigationDrawer(
+            drawerState = accountDrawerState,
+            drawerContent = {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Ltr,
+                ) {
+                    ModalDrawerSheet(
+                        drawerContainerColor = RenzoColors.Background,
+                        modifier = Modifier.width(288.dp),
+                    ) {
+                        AccountMenuContent(
+                            user = user,
+                            onClose = { scope.launch { accountDrawerState.close() } },
+                            onCopyOpds = { clipboard.setText(AnnotatedString(user.opdsPath)) },
+                            onAccount = {
+                                scope.launch { accountDrawerState.close() }
+                                onOpenAccount()
+                            },
+                            onLogout = {
+                                scope.launch { accountDrawerState.close() }
+                                onLogout()
+                            },
+                        )
+                    }
+                }
+            },
+        ) {
+          androidx.compose.runtime.CompositionLocalProvider(
+              androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Ltr,
+          ) {
         Column(modifier = Modifier.fillMaxSize().background(RenzoColors.Background).statusBarsPadding()) {
             // ── 56dp command bar ─────────────────────────────────────────
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp),
             ) {
-                IconButton(onClick = {
-                    drawerMode = "nav"
-                    scope.launch { drawerState.open() }
-                }) {
+                IconButton(onClick = { scope.launch { drawerState.open() } }) {
                     Icon(Icons.Filled.Menu, contentDescription = "Menu", tint = RenzoColors.Foreground)
                 }
                 if (!searchOpen) {
@@ -280,10 +300,7 @@ fun HomeShell(
                         .clip(CircleShape)
                         .background(RenzoColors.Primary.copy(alpha = 0.20f))
                         .border(1.dp, RenzoColors.Primary.copy(alpha = 0.30f), CircleShape)
-                        .clickable {
-                            drawerMode = "account"
-                            scope.launch { drawerState.open() }
-                        },
+                        .clickable { scope.launch { accountDrawerState.open() } },
                 ) {
                     Text(
                         user.username.take(2).uppercase(),
@@ -308,6 +325,9 @@ fun HomeShell(
                 }
             }
         }
+          }
+        }
+      }
     }
 }
 
@@ -321,6 +341,7 @@ fun HomeShell(
 @Composable
 private fun AccountMenuContent(
     user: UserDto,
+    onClose: () -> Unit,
     onCopyOpds: () -> Unit,
     onAccount: () -> Unit,
     onLogout: () -> Unit,
@@ -339,7 +360,27 @@ private fun AccountMenuContent(
     }
 
     Column(modifier = Modifier.padding(vertical = 4.dp)) {
-        // Header — username left, role badge right.
+        // Panel header — "Account" title + X close, the Renzo-cloned
+        // settings-drawer chrome (settings-section-nav pattern).
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp),
+        ) {
+            Text(
+                "Account",
+                style = MaterialTheme.typography.titleMedium,
+                color = RenzoColors.Foreground,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onClose) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close",
+                    tint = RenzoColors.MutedForeground,
+                )
+            }
+        }
+        // User row — username left, role badge right.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
