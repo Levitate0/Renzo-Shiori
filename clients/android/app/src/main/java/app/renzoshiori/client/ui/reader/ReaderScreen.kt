@@ -81,6 +81,7 @@ import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -492,9 +493,26 @@ private fun ContinuousReader(
         }
     }
     // Infinite scroll: pull the next chapter as the bottom approaches.
+    //
+    // This has to be a PIXEL test, like the web's ("append when less than
+    // 0.75 viewports of scrolling remain"). An item-index test — "the last
+    // visible item is within N of the end" — is satisfied again the instant a
+    // short chapter is appended, because the new pages are unmeasured
+    // placeholders that haven't been laid out yet. That fires another append,
+    // and another, walking the whole series in seconds.
     LaunchedEffect(strip) {
-        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
-            .collect { last -> if (last >= strip.size - 3) onNearEnd() }
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            if (last == null || last.index < strip.size - 1) {
+                false
+            } else {
+                val remaining = (last.offset + last.size) - info.viewportEndOffset
+                remaining < info.viewportEndOffset * 0.75f
+            }
+        }
+            .distinctUntilChanged()
+            .collect { near -> if (near) onNearEnd() }
     }
 
     val widthFraction = (settings.maxWidthPct / 100f).coerceIn(0.2f, 1f)

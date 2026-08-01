@@ -374,6 +374,12 @@ class ReaderViewModel(
     fun maybeAppendNext() {
         val s = _state.value
         if (!s.settings.infiniteScroll || appending || appendStopped || s.loading) return
+        // Never queue a chapter while the reader is still inside an earlier
+        // one. Without this, one append makes room for the next trigger and
+        // the reader chain-loads (and marks read) chapter after chapter that
+        // nobody has looked at. The probe line moves activeSegIndex onto the
+        // newest segment only once it is genuinely on screen.
+        if (s.activeSegIndex < s.segments.lastIndex) return
         val last = s.segments.lastOrNull() ?: return
         val list = s.readable
         val idx = list.indexOfFirst { it.number == last.chapterNumber }
