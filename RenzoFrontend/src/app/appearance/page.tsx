@@ -2,7 +2,6 @@
 
 import React, { useCallback, useRef } from "react";
 import { Check, Play, Plus } from "lucide-react";
-import { useTheme as useNextTheme } from "next-themes";
 import { toast } from "sonner";
 import {
   Card,
@@ -16,7 +15,6 @@ import { useAuth } from "@/contexts/auth-context";
 import { userService } from "@/lib/api/services/userService";
 import {
   THEME_PRESETS,
-  presetById,
   useTheme,
   setPreset,
   setCustomAccent,
@@ -27,26 +25,23 @@ import {
 import { parseThemePrefs, serializeThemePrefs, type ThemePrefs } from "@/lib/utils/theme-prefs";
 
 /**
- * Per-user Appearance page. Named theme presets (palette + accent + mode) with
- * live preview cards, plus a custom-accent override. Changes apply instantly
- * (theme-preset store + next-themes) AND persist to the account
- * (PUT /api/auth/me preferences) so they follow the user across devices — see
- * ThemeSync, which re-applies them on login elsewhere.
+ * Per-user Appearance page. Named theme presets (palette + accent) with live
+ * preview cards, plus a custom-accent override. The app is dark-only (no
+ * light mode). Changes apply instantly (theme-preset store) AND persist to
+ * the account (PUT /api/auth/me preferences) so they follow the user across
+ * devices — see ThemeSync, which re-applies them on login elsewhere.
  */
 export default function AppearancePage() {
   const { user } = useAuth();
-  const { setTheme } = useNextTheme();
   const { preset, customOn, customHsl } = useTheme();
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const persist = useCallback(
     (overrides: Partial<ThemePrefs>, debounce = false) => {
-      const cur = presetById(overrides.preset ?? preset);
       const prefs: ThemePrefs = {
         // Preserve non-appearance keys in the shared preferences blob (e.g. the
         // onboarding flag) so saving a theme never clobbers them.
         ...parseThemePrefs(user?.preferences),
-        theme: cur.mode,
         preset: overrides.preset ?? preset,
         accent: overrides.accent ?? (customOn ? "custom" : "preset"),
         accentCustom: overrides.accentCustom ?? customHsl,
@@ -64,7 +59,6 @@ export default function AppearancePage() {
 
   const choosePreset = (id: string) => {
     setPreset(id);
-    setTheme(presetById(id).mode);
     persist({ preset: id });
   };
 

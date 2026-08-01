@@ -19,6 +19,7 @@ import { usePermission } from "@/hooks/use-permission";
 import { useDownloadProgress } from "@/lib/api/hooks/useQueue";
 import { ProgressStatus } from "@/lib/api/types";
 import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
+import { useBottomBarOffset } from "@/contexts/bottom-bar-context";
 
 const DOCK_DISMISSED_KEY = "ren_dock_dismissed";
 
@@ -46,6 +47,10 @@ export function ActivityDock() {
   const { downloads } = useDownloadProgress();
   const [expanded, setExpanded] = useState(false);
   const [dismissedFor, setDismissedFor] = useState<Set<string>>(new Set());
+  // Extra clearance when a page-level sticky bar (e.g. the Sources/Default-
+  // Priority "Apply" bar) is on screen, so the two float clear of each other
+  // instead of one hiding behind the other.
+  const barOffset = useBottomBarOffset();
 
   // Restore dismissed IDs from sessionStorage so the dock stays hidden if the
   // user closes it — but only for currently-active downloads. New downloads
@@ -126,8 +131,9 @@ export function ActivityDock() {
       className="fixed z-30 right-3 lg:right-5 pointer-events-none"
       style={{
         // Sit above the safe-area bottom inset on mobile so it doesn't crash
-        // into the OS home indicator.
-        bottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)",
+        // into the OS home indicator, plus clearance for any sticky bottom
+        // bar the current page has registered (see barOffset above).
+        bottom: `calc(env(safe-area-inset-bottom, 0px) + 12px + ${barOffset}px)`,
       }}
     >
       <AnimatePresence>

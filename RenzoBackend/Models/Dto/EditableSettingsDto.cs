@@ -177,6 +177,12 @@ public class EditableSettingsDto
     /// </summary>
     [JsonPropertyName("libraryScanIntervalHours")]
     public int LibraryScanIntervalHours { get; set; } = 6;
+
+    // Source-priority upgrades (re-download from a newly-higher-priority source)
+    // and the default source-priority order are PER-USER, not instance-wide —
+    // see RenzoBackend/Extensions/UserPriorityPrefsExtensions.cs (stored in each
+    // user's own Preferences JSON blob, same place their theme lives). They used
+    // to live here as instance-wide settings; moved 2026-07-30.
 }
 public enum NsfwVisibility
 {

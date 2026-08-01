@@ -175,9 +175,13 @@ export const seriesService = {
     return apiClient.post<{ success: boolean; queued: number }>(`/api/serie/refresh?${params.toString()}`, {});
   },
 
-  /** Manually scan a SINGLE series for new chapters now (immediate GetChapters for every provider). */
-  async scanSeries(id: string): Promise<{ success: boolean; queued: number }> {
-    return apiClient.post<{ success: boolean; queued: number }>(`/api/serie/scan?id=${encodeURIComponent(id)}`, {});
+  /**
+   * Manually scan a SINGLE series for new chapters now (immediate GetChapters for
+   * every provider). Also prunes any stale "missing" chapter entries left behind
+   * by a source that's since been disabled/uninstalled for this series (`pruned`).
+   */
+  async scanSeries(id: string): Promise<{ success: boolean; queued: number; pruned: number }> {
+    return apiClient.post<{ success: boolean; queued: number; pruned: number }>(`/api/serie/scan?id=${encodeURIComponent(id)}`, {});
   },
 
   /** "Update now": queue a library-wide new-chapter scan across every source. */
@@ -217,6 +221,24 @@ export const seriesService = {
       `/api/serie/chapter/redownload?${params.toString()}`,
       {}
     );
+  },
+
+  /**
+   * "Apply to All" on the Sources page's Default Priority Order tab: re-ranks
+   * every series the caller owns (adopting any ownerless legacy series too) to
+   * match their configured default order, and turns on their per-user
+   * redownload-on-upgrade setting. `success: false` means no default order is
+   * configured yet — nothing was touched.
+   */
+  async applyDefaultPriorityToAll(): Promise<{
+    success: boolean;
+    error?: string;
+    seriesConsidered: number;
+    seriesReordered: number;
+    seriesAdopted: number;
+    chaptersQueued: number;
+  }> {
+    return apiClient.post('/api/serie/apply-default-priority', {});
   },
 
   /**

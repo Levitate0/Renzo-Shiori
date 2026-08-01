@@ -316,11 +316,17 @@ export function SeriesHero({
               </div>
             )}
 
-            {/* Description with Read more */}
+            {/* Description with Read more — expanded state scrolls in its own
+                box instead of growing freely. Some sources' descriptions are
+                a wall of scraped SEO copy hundreds of lines long; letting
+                that expand inline pushed the cover/chapters/everything below
+                it down the page instead of just growing a bit. */}
             {series.description && (
               <div className="max-w-[70ch]">
                 <p
-                  className={`text-sm text-muted-foreground whitespace-pre-line ${expanded ? '' : 'line-clamp-3'}`}
+                  className={`text-sm text-muted-foreground whitespace-pre-line ${
+                    expanded ? 'max-h-64 overflow-y-auto pr-2' : 'line-clamp-3'
+                  }`}
                 >
                   {series.description}
                 </p>

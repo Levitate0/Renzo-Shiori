@@ -19,7 +19,10 @@ import { userService } from "@/lib/api/services/userService";
 import { UserIcon, Upload } from "lucide-react";
 import { fetchGravatarBase64 } from "@/lib/gravatar";
 import { Badge } from "@/components/ui/badge";
-import { Plus, X, Save, Loader2, GripVertical } from "lucide-react";
+import {
+  Plus, X, Save, Loader2, GripVertical,
+  ShieldCheck, Sparkles, Plug, DownloadCloud, Clock, FolderCog, ShieldAlert, Network,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
   useSettings,
@@ -49,6 +52,7 @@ import {
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { RadioGroup, RadioGroupItem } from "../ui/radio-group";
+import { SettingsSectionNav } from "@/components/comp/layout/settings-section-nav";
 
 // Helper functions
 const isValidUrl = (url: string): boolean => {
@@ -195,6 +199,7 @@ interface SettingsSection {
   id: string;
   title: string;
   description: string;
+  icon: React.ComponentType<{ className?: string }>;
   component: React.ComponentType<{
     localSettings: Settings;
     setLocalSettings: (updater: (prev: Settings) => Settings) => void;
@@ -420,6 +425,7 @@ function ContentPreferencesSection({
           large number of downloads.
         </p>
       </div>
+
     </CardContent>
   );
 }
@@ -1555,48 +1561,56 @@ const AVAILABLE_SECTIONS: SettingsSection[] = [
     id: "security",
     title: "Security",
     description: "Configure authentication and security settings.",
+    icon: ShieldCheck,
     component: SecuritySection,
   },
   {
     id: "content-preferences",
     title: "Content Preferences",
     description: "Configure your languages and content filters.",
+    icon: Sparkles,
     component: ContentPreferencesSection,
   },
   {
     id: "mihon-repositories",
     title: "Mihon Repositories",
     description: "Configure external repositories for additional sources.",
+    icon: Plug,
     component: MihonRepositoriesSection,
   },
   {
     id: "download-settings",
     title: "Download Settings",
     description: "Configure download behavior and limits.",
+    icon: DownloadCloud,
     component: DownloadSettingsSection,
   },
   {
     id: "schedule-tasks",
     title: "Schedule Tasks",
     description: "Configure automatic update schedules and timings.",
+    icon: Clock,
     component: ScheduleTasksSection,
   },
   {
     id: "storage",
     title: "Storage",
     description: "Configure how archives are stored and organized.",
+    icon: FolderCog,
     component: StorageSection,
   },
   {
     id: "flaresolverr",
     title: "FlareSolverr Settings",
     description: "Configure FlareSolverr for bypassing Cloudflare protection.",
+    icon: ShieldAlert,
     component: FlareSolverrSection,
   },
   {
     id: "socks-settings",
     title: "Socks Settings",
     description: "Configure SOCKS proxy settings for sources requests.",
+    icon: Network,
     component: SocksSettingsSection,
   },
 ];
@@ -1639,6 +1653,7 @@ export function SettingsManager({
   const [localSettings, setLocalSettings] = useState<Settings | null>(
     initialSettings ?? null,
   );
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
   const { toast } = useToast();
   const router = useRouter();
   const isInitialMount = React.useRef(true);
@@ -1767,8 +1782,12 @@ export function SettingsManager({
     ? AVAILABLE_SECTIONS.filter((section) => sections.includes(section.id))
     : AVAILABLE_SECTIONS;
 
+  const activeSection =
+    sectionsToShow.find((s) => s.id === activeSectionId) ?? sectionsToShow[0] ?? null;
+  const ActiveComponent = activeSection?.component;
+
   return (
-    <div className={`space-y-6 ${className}`}>
+    <div className={`mx-auto max-w-4xl space-y-6 ${className}`}>
       {showHeader && (
         <div className="flex items-center justify-between">
           <div>
@@ -1795,22 +1814,31 @@ export function SettingsManager({
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6">
-        {sectionsToShow.map((section) => {
-          const SectionComponent = section.component;
-          return (
-            <Card key={section.id}>
-              <CardHeader>
-                <CardTitle>{section.title}</CardTitle>
-                <CardDescription>{section.description}</CardDescription>
-              </CardHeader>
-              <SectionComponent
-                localSettings={localSettings}
-                setLocalSettings={handleSettingsUpdate}
-              />
-            </Card>
-          );
-        })}
+      {/* Section nav — a sidebar list on wider screens, a full drawer (same
+          pattern as the app's main nav) on narrow ones — so only ONE
+          section's fields are on screen at a time instead of stacking every
+          card in one long scroll. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr] lg:items-start">
+        <SettingsSectionNav
+          sections={sectionsToShow}
+          activeId={activeSection?.id ?? ""}
+          onChange={setActiveSectionId}
+          drawerTitle="Settings"
+        />
+
+        {/* Active section content */}
+        {activeSection && ActiveComponent && (
+          <Card>
+            <CardHeader>
+              <CardTitle>{activeSection.title}</CardTitle>
+              <CardDescription>{activeSection.description}</CardDescription>
+            </CardHeader>
+            <ActiveComponent
+              localSettings={localSettings}
+              setLocalSettings={handleSettingsUpdate}
+            />
+          </Card>
+        )}
       </div>
     </div>
   );

@@ -145,15 +145,28 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             {
                 Content = JsonContent.Create(body),
             };
-            var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            // _http.Timeout does NOT bound this call: HttpClient's Timeout is a
+            // CancelAfter on a CTS that SendAsync disposes as soon as it returns,
+            // and ResponseHeadersRead makes SendAsync return as soon as headers
+            // arrive — before the body below is ever read. Without its own
+            // deadline, a sidecar that stalls mid-response (GC thrash, a wedged
+            // JVM worker thread) leaves this await blocked forever with no
+            // exception, silently leaking the caller's concurrency slot. Give
+            // the whole header+body exchange the same budget _http.Timeout would
+            // have provided if it actually covered the body read.
+            using var bodyTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            bodyTimeout.CancelAfter(_http.Timeout);
+            CancellationToken bodyToken = bodyTimeout.Token;
+
+            var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, bodyToken).ConfigureAwait(false);
             var ct = resp.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
             if (!resp.IsSuccessStatusCode || ct.Contains("application/json"))
             {
-                var err = await resp.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+                var err = await resp.Content.ReadAsStringAsync(bodyToken).ConfigureAwait(false);
                 resp.Dispose();
                 throw new SidecarException($"image failed: {err}");
             }
-            var bytes = await resp.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
+            var bytes = await resp.Content.ReadAsByteArrayAsync(bodyToken).ConfigureAwait(false);
             resp.Dispose();
             return new SidecarContentTypeStream(bytes, ct);
         }

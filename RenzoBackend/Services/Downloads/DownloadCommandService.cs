@@ -12,6 +12,7 @@ using RenzoBackend.Services.Jobs;
 using RenzoBackend.Services.Jobs.Models;
 using RenzoBackend.Services.Jobs.Report;
 using RenzoBackend.Services.Opds;
+using RenzoBackend.Services.Search;
 using RenzoBackend.Services.Series;
 using RenzoBackend.Services.Settings;
 using RenzoBackend.Utils;
@@ -115,8 +116,11 @@ namespace RenzoBackend.Services.Downloads
             string provider = src.Name + "(" + src.Language + ")";
             try
             {
+                // Bounded: an extension call into the sidecar can otherwise block
+                // forever (no exception, nothing logged) and permanently leak this
+                // download's concurrency slot — see SourceTimeout's doc comment.
                 List<Page>? pages = await _mihon.MihonErrorWrapperAsync(
-                                () => src.GetPagesAsync(ch.Chapter, token),
+                                () => SourceTimeout.RunAsync(ct => src.GetPagesAsync(ch.Chapter, ct), token),
                                 "Unable to get Pages from Chapter {ParsedNumber}, Series {Title} from {provider}", ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
                 // A coin-gated chapter the user already bought yields nothing here:
                 // on the Astro/"vcomics" platform the paid pages are never in the
@@ -221,8 +225,10 @@ namespace RenzoBackend.Services.Downloads
                         // so a settings change mid-chapter can't unbalance our releases.
                         SemaphoreSlim memorySlots = PageMemoryBudget.Current;
 
+                        // Bounded for the same reason as GetPagesAsync above — this is
+                        // the call the 2026-07-30 pipeline-wide stall traced back to.
                         Task<ContentTypeStream?> Fetch(Page target) => _mihon.MihonErrorWrapperAsync(
-                            () => src.GetPageImageAsync(target, token),
+                            () => SourceTimeout.RunAsync(ct => src.GetPageImageAsync(target, ct), token),
                             "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
                             target.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider);
 
@@ -451,11 +457,30 @@ namespace RenzoBackend.Services.Downloads
                             .ToList();
                         if (dupes.Count > 1)
                         {
-                            // Winner: a storage source's copy if one exists, otherwise the
-                            // row we just completed on this provider.
-                            var keep = dupes.FirstOrDefault(x => x.prov.IsStorage);
-                            if (keep.prov == null)
-                                keep = dupes.First(x => x.prov.Id == providerr.Id);
+                            // Winner: with priority upgrades enabled for this series' owner
+                            // (per-user, see UserPriorityPrefsExtensions), the per-series
+                            // source Priority decides (0 = top; ties → storage copy, then
+                            // the copy that just finished). Otherwise the long-standing
+                            // rule: a storage source's copy if one exists, else the row we
+                            // just completed on this provider.
+                            bool redownloadEnabled = s.OwnerId != Guid.Empty
+                                && (await _db.Users.FirstOrDefaultAsync(u => u.Id == s.OwnerId, token).ConfigureAwait(false))
+                                    ?.GetRedownloadFromHigherPrioritySources() == true;
+                            (SeriesProviderEntity prov, Models.Chapter chap) keep;
+                            if (redownloadEnabled)
+                            {
+                                keep = dupes
+                                    .OrderBy(x => x.prov.Priority)
+                                    .ThenByDescending(x => x.prov.IsStorage)
+                                    .ThenByDescending(x => x.prov.Id == providerr.Id)
+                                    .First();
+                            }
+                            else
+                            {
+                                keep = dupes.FirstOrDefault(x => x.prov.IsStorage);
+                                if (keep.prov == null)
+                                    keep = dupes.First(x => x.prov.Id == providerr.Id);
+                            }
 
                             foreach (var (prov, c) in dupes)
                             {
@@ -572,7 +597,15 @@ namespace RenzoBackend.Services.Downloads
 
                 foreach (ChapterDownload ch in chaps.OrderBy(a => a.Index))
                 {
-                    string key = $"{ch.MihonId}|{ch.Index}";
+                    // Keyed by series+chapter NUMBER, not provider — the app's
+                    // invariant is one downloaded file per chapter regardless of
+                    // source (see the post-download dedup below), so a second
+                    // source racing to queue the same not-yet-downloaded chapter
+                    // must collapse onto the same job instead of downloading it
+                    // twice. EnqueueJobAsIsAsync no-ops when a job with this key
+                    // is already Waiting/Running, so whichever source enqueues
+                    // first wins; the loser's queue attempt is silently skipped.
+                    string key = $"{ch.SeriesId}|{ch.Chapter.ParsedNumber.FormatDecimal()}";
                     string groupKey = $"{ch.ProviderName}";
                     await _jobManagementService.EnqueueJobAsync(JobType.Download, ch, Priority.Normal, key, groupKey, ch.SeriesId.ToString(), "Downloads", token).ConfigureAwait(false);
                 }
@@ -590,15 +623,16 @@ namespace RenzoBackend.Services.Downloads
         {
             SettingsDto appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
             download.Retries++;
-            string key = $"{download.MihonId}|{download.Index}";
+            // Same series+chapter-number key as QueueChapterDownloadsAsync — see there.
+            string key = $"{download.SeriesId}|{download.Chapter.ParsedNumber.FormatDecimal()}";
 
             if (download.Retries > appSettings.ChapterDownloadFailRetries)
             {
                 _logger.LogWarning("Max retries reached for chapter {ChapterNumber} of series {SeriesTitle} from {ProviderName}. Giving up.", download.Chapter.ChapterNumber, download.Title, download.ProviderName);
                 return JobResult.Failed;
             }
-            
-            string groupKey = $"{download.MihonId}";
+
+            string groupKey = $"{download.ProviderName}";
             DateTime nextTime = DateTime.UtcNow.Add(appSettings.ChapterDownloadFailRetryTime);
             await _jobManagementService.ScheduleJobAsync(JobType.Download, download, nextTime, "Downloads", key, groupKey, download.SeriesId.ToString(), Priority.Normal, download.Retries, token).ConfigureAwait(false);
             return JobResult.Handled;

@@ -1,8 +1,10 @@
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useMemo, useRef, Suspense } from "react";
 import { useSeriesById, useDeleteSeries, useUpdateSeries, useVerifyIntegrity, useCleanupSeries, useRefreshSeries, useScanSeries } from "@/lib/api/hooks/useSeries";
+import { useAuth } from "@/contexts/auth-context";
+import { parsePriorityPrefs } from "@/lib/utils/priority-prefs";
 import { useToast } from "@/hooks/use-toast";
 import { seriesService } from "@/lib/api/services/seriesService";
 import { useQueryClient } from '@tanstack/react-query';
@@ -55,6 +57,7 @@ function SeriesPageContent() {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const { data: series, isLoading, error, refetch } = useSeriesById(seriesId || '', !isDeleting);
+  const { user } = useAuth();
   const deleteSeries = useDeleteSeries();
   const updateSeriesMutation = useUpdateSeries();
   const verifyIntegrity = useVerifyIntegrity();
@@ -65,6 +68,13 @@ function SeriesPageContent() {
   
   // Provider switch state management
   const [providerSwitches, setProviderSwitches] = useState<Record<string, { useTitle: boolean; useCover: boolean; useStorage: boolean; useStatus: boolean }>>({});
+
+  // Provider priority order — a local buffer of provider IDs, highest priority
+  // first. Reordering (click, drag, or Revert to Default) only ever edits this
+  // array; nothing is sent to the server until the Apply button is pressed
+  // (see handleApplyProviderOrder), so a full drag-through-the-list reorder is
+  // one save, not one save per step.
+  const [providerOrder, setProviderOrder] = useState<string[] | null>(null);
 
   // Provider disabled state management  
   const [providerDisabledStates, setProviderDisabledStates] = useState<Record<string, boolean>>({});  // Provider deleted state management  
@@ -346,23 +356,80 @@ function SeriesPageContent() {
     }
   };
 
-  // Reorder a source's per-series priority (0 = highest). Swaps the moved source with its
-  // neighbour in priority order and persists the whole set's new priorities immediately, the
-  // same way the toggles auto-save. Priority drives read/preview source order and the download
-  // source, so this is the user's "which source do I trust most for this series" control.
-  const handleMoveProvider = async (providerId: string, direction: 'up' | 'down') => {
-    if (!series || isDeleting) return;
-    const ordered = [...series.providers].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
-    const idx = ordered.findIndex(p => p.id === providerId);
+  // Effective priority order: the local buffer, reconciled against the
+  // series' actual current sources (a source added/removed since the buffer
+  // was seeded is appended/dropped) so it's always safe to render and apply.
+  const effectiveProviderOrder = useMemo(() => {
+    if (!series) return [] as string[];
+    const known = new Set(series.providers.map(p => p.id));
+    const base = (providerOrder ?? []).filter(id => known.has(id));
+    const missing = series.providers
+      .filter(p => !base.includes(p.id))
+      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+      .map(p => p.id);
+    return [...base, ...missing];
+  }, [series, providerOrder]);
+
+  const providerOrderDirty = useMemo(() => {
+    if (!series) return false;
+    const serverOrder = [...series.providers]
+      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+      .map(p => p.id);
+    return serverOrder.length !== effectiveProviderOrder.length
+      || serverOrder.some((id, i) => id !== effectiveProviderOrder[i]);
+  }, [series, effectiveProviderOrder]);
+
+  // Reorder a source's per-series priority (0 = highest) — LOCAL ONLY, no save.
+  // Swaps the moved source with its neighbour in the local buffer; nothing
+  // reaches the server until Apply is pressed (handleApplyProviderOrder), so
+  // a full reorder is one save instead of one save per step.
+  const handleMoveProvider = (providerId: string, direction: 'up' | 'down') => {
+    const idx = effectiveProviderOrder.indexOf(providerId);
     if (idx < 0) return;
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-    if (swapIdx < 0 || swapIdx >= ordered.length) return;
-    const a = ordered[idx]!;
-    const b = ordered[swapIdx]!;
-    ordered[idx] = b;
-    ordered[swapIdx] = a;
+    if (swapIdx < 0 || swapIdx >= effectiveProviderOrder.length) return;
+    const next = [...effectiveProviderOrder];
+    [next[idx], next[swapIdx]] = [next[swapIdx]!, next[idx]!];
+    setProviderOrder(next);
+  };
+
+  // Drag-and-drop reorder — same local-only buffer, given the full new order.
+  const handleReorderProviders = (newOrder: string[]) => {
+    setProviderOrder(newOrder);
+  };
+
+  // Reset the local buffer to match the current user's configured default
+  // (Sources → "Default priority order", per-user), matching by provider
+  // display name. Still local only — Apply must be pressed to save it.
+  // No-ops (with a toast) if the user hasn't set one up.
+  const handleRevertToDefault = () => {
+    if (!series) return;
+    const defaultOrder = parsePriorityPrefs(user?.preferences).defaultSourcePriorityOrder ?? [];
+    if (defaultOrder.length === 0) {
+      toast({
+        title: "No default priority order set up",
+        description: "Set one up on the Sources page's \"Default priority order\" tab first.",
+      });
+      return;
+    }
+    const rank = new Map(defaultOrder.map((name, i) => [name.toLowerCase(), i]));
+    const next = [...series.providers]
+      .map((p, originalIndex) => ({ p, originalIndex }))
+      .sort((a, b) => {
+        const ra = rank.get(a.p.provider.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+        const rb = rank.get(b.p.provider.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+        return ra !== rb ? ra - rb : a.originalIndex - b.originalIndex;
+      })
+      .map(({ p }) => p.id);
+    setProviderOrder(next);
+  };
+
+  // Persist the local priority buffer — the ONLY point this reorder feature
+  // talks to the API, regardless of how many local moves/drags led here.
+  const handleApplyProviderOrder = async () => {
+    if (!series || isDeleting) return;
     const priorityById: Record<string, number> = {};
-    ordered.forEach((p, i) => { priorityById[p.id] = i; });
+    effectiveProviderOrder.forEach((id, i) => { priorityById[id] = i; });
 
     try {
       const updatedSeries = {
@@ -385,10 +452,18 @@ function SeriesPageContent() {
         }),
       };
       const result = await updateSeriesMutation.mutateAsync(updatedSeries);
-      if (result) queryClient.setQueryData(['series', 'detail', series.id], result);
+      if (result) {
+        queryClient.setQueryData(['series', 'detail', series.id], result);
+        setProviderOrder(
+          [...result.providers]
+            .sort((a: { priority?: number }, b: { priority?: number }) => (a.priority ?? 0) - (b.priority ?? 0))
+            .map((p: { id: string }) => p.id),
+        );
+      }
+      toast({ title: "Source priority order saved" });
     } catch (error) {
-      console.error('Failed to reorder source:', error);
-      toast({ variant: "destructive", title: "Reorder failed", description: "Could not update source priority." });
+      console.error('Failed to apply source priority order:', error);
+      toast({ variant: "destructive", title: "Apply failed", description: "Could not update source priority." });
     }
   };
 
@@ -644,6 +719,11 @@ function SeriesPageContent() {
         setProviderDisabledStates(initialDisabledStates);
         setProviderFromChapters(initialFromChapters);
         setPausedDownloads(series.pausedDownloads ?? false);
+        setProviderOrder(
+          [...series.providers]
+            .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+            .map((p) => p.id),
+        );
       }
     }
   }, [series, providerSwitches, searchParams, isDeleting]);
@@ -971,12 +1051,19 @@ function SeriesPageContent() {
     if (!seriesId) return;
     try {
       const result = await scanSeries.mutateAsync(seriesId);
+      if (result.pruned > 0) {
+        void queryClient.invalidateQueries({ queryKey: ['series', 'chapters', seriesId] });
+      }
+      const scanPart = result.queued > 0
+        ? `Scanning ${result.queued} source${result.queued === 1 ? '' : 's'} for new chapters.`
+        : "No active sources to scan.";
+      const prunedPart = result.pruned > 0
+        ? ` Removed ${result.pruned} stale chapter${result.pruned === 1 ? '' : 's'} from disabled sources.`
+        : "";
       toast({
         variant: "success",
         title: "Scan queued",
-        description: result.queued > 0
-          ? `Scanning ${result.queued} source${result.queued === 1 ? '' : 's'} for new chapters.`
-          : "No active sources to scan.",
+        description: scanPart + prunedPart,
       });
     } catch (error) {
       console.error('Failed to scan series:', error);
@@ -1300,6 +1387,9 @@ function SeriesPageContent() {
             <SourcesSection
               series={series}
               providers={visibleProviders}
+              orderIds={effectiveProviderOrder}
+              orderDirty={providerOrderDirty}
+              applyingOrder={updateSeriesMutation.isPending}
               existingSources={existingSources}
               providerSwitches={providerSwitches}
               providerDisabledStates={providerDisabledStates}
@@ -1313,6 +1403,9 @@ function SeriesPageContent() {
               onEnableDisable={handleDisabledChange}
               onDelete={handleDeleteProvider}
               onMoveProvider={handleMoveProvider}
+              onReorderProviders={handleReorderProviders}
+              onApplyOrder={handleApplyProviderOrder}
+              onRevertToDefault={handleRevertToDefault}
               canEdit={canEdit}
             />
 

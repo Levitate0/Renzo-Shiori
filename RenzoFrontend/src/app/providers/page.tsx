@@ -6,6 +6,8 @@ import React from 'react';
 import { RibbonSlot } from "@/components/comp/layout/ribbon";
 import { ExtensionVersions } from "@/components/comp/sources/extension-versions";
 import { SourcesList } from "@/components/comp/sources/sources-list";
+import { DefaultPriorityOrderTab } from "@/components/comp/sources/default-priority-order-tab";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSearch } from "@/contexts/search-context";
 
 export default function ProvidersPage() {
@@ -25,8 +27,21 @@ export default function ProvidersPage() {
         </div>
       </RibbonSlot>
 
-      <ExtensionVersions />
-      <SourcesList searchTerm={searchTerm} clearSearch={clearSearch} />
+      <Tabs defaultValue="sources">
+        <TabsList>
+          <TabsTrigger value="sources">Sources</TabsTrigger>
+          <TabsTrigger value="default-priority">Default priority order</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="sources" className="space-y-6">
+          <ExtensionVersions />
+          <SourcesList searchTerm={searchTerm} clearSearch={clearSearch} />
+        </TabsContent>
+
+        <TabsContent value="default-priority">
+          <DefaultPriorityOrderTab />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

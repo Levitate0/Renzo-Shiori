@@ -258,6 +258,20 @@ function ReaderInner() {
   const loadedDimsRef = useRef<Map<number, { w: number; h: number }>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  // Inter-chapter buffer dividers (keyed by segment index `si`): rendered as
+  // a compact "square" page by default so they can't be mistaken for real
+  // content or throw off the near-the-bottom append heuristic below. Once a
+  // divider is safely behind the reader (scrolled fully out of view, or the
+  // reader is 4 real pages past it) it's promoted to a full-screen block —
+  // see the matching comment on the divider's render for why a tall block
+  // is needed at all, just not while it's still the active/nearby content.
+  const dividerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const [grownDividers, setGrownDividers] = useState<Set<number>>(new Set());
+  // Mirrors `grownDividers` for the scroll-driven update() closure below (same
+  // reason maybeAppendRef exists: a useEffect-subscribed scroll listener would
+  // otherwise read a stale value captured whenever it last resubscribed).
+  const grownDividersRef = useRef(grownDividers);
+  useEffect(() => { grownDividersRef.current = grownDividers; }, [grownDividers]);
   const progressSentRef = useRef<{ key: string; page: number; at: number }>({ key: "", page: -1, at: 0 });
   // Progress reporting is "armed" a moment after a chapter loads, so the position
   // churn during initial layout/resume doesn't get written as real reading.
@@ -606,6 +620,15 @@ function ReaderInner() {
     // Always record real dimensions so the page box can match the image exactly
     // (prevents gaps between pages in continuous mode).
     if (w > 0 && h > 0) loadedDimsRef.current.set(gi, { w, h });
+    // A page's placeholder box (aspect-ratio: auto / minHeight: 70vh) gets
+    // replaced with its real (possibly much shorter) aspect ratio the moment
+    // this image loads — a direct DOM mutation, not a React re-render, so it
+    // never fires a 'scroll' event. The continuous-mode page tracker below
+    // only recomputes on scroll, so if a late-loading page shrinks after the
+    // reader has already stopped scrolling (most likely right at the very
+    // last page), the tracked position can go stale and never reach "read".
+    // Nudge the tracker to recompute against the now-correct layout.
+    if (isContinuous) scrollRef.current?.dispatchEvent(new Event("scroll"));
     // Once webtoon/longstrip is detected, that's a confident, final verdict —
     // stop re-checking. But an early "paged" read is NOT final: some webtoons
     // open with a few normal-shaped establishing panels before the strip-cut
@@ -634,7 +657,7 @@ function ReaderInner() {
       else if (tall + slivers > 4) setDetectedMode("longstrip");
       else setDetectedMode("paged");
     }
-  }, [isPreview, streaming, detectedMode, pageCount]);
+  }, [isPreview, streaming, detectedMode, pageCount, isContinuous]);
 
   // ── Page URLs / aspect ────────────────────────────────────────────────
   const segPageUrl = useCallback((seg: Segment, i: number): string => {
@@ -1018,6 +1041,27 @@ function ReaderInner() {
       maybeAppendRef.current();
       if (scrollingUp) maybePrependRef.current();
       pruneWindowRef.current(si, current);
+
+      // Promote a divider to its full-screen size once it's safely behind
+      // the reader — either scrolled fully out of view, or the reader is 4
+      // real pages past where it sits — never while it's still nearby, so
+      // it can't dominate the screen or read as "near the bottom" to the
+      // append check above while the reader is actually still arriving.
+      let grew: number[] | null = null;
+      for (const [si2, node] of dividerRefs.current.entries()) {
+        if (grownDividersRef.current.has(si2)) continue;
+        const off = segOffsets[si2] ?? 0;
+        const farEnough = current >= off + 4;
+        const outOfView = !farEnough && node.getBoundingClientRect().bottom < 0;
+        if (farEnough || outOfView) (grew ??= []).push(si2);
+      }
+      if (grew) {
+        setGrownDividers((prev) => {
+          const next = new Set(prev);
+          for (const si2 of grew!) next.add(si2);
+          return next;
+        });
+      }
     };
     const onScroll = () => {
       if (frame) return;                  // coalesce to one measure per frame
@@ -1287,8 +1331,27 @@ function ReaderInner() {
             {segments.map((seg, si) => (
               <React.Fragment key={seg.key}>
                 {si > 0 && (
+                  // Renders as a compact "square" page by default — tall enough
+                  // for the scroll tracker's probe line to clear the previous
+                  // page normally, but not so tall it dominates the screen or
+                  // reads as "near the bottom" to the infinite-scroll append
+                  // check while it's still the active/nearby content (a full
+                  // -screen block here was pulling the next chapter in and
+                  // marking the current one read the moment this divider was
+                  // the only thing on screen, well before it was actually
+                  // read). Only once it's safely behind the reader — scrolled
+                  // fully out of view, or 4 real pages further in — does it
+                  // grow to a full screen, which is what actually guarantees
+                  // the probe line got real clearance past a short/wide last
+                  // page (e.g. a scanlator credits banner) whose placeholder
+                  // height can collapse once it finishes loading. By the time
+                  // it grows, the reader is already well past it, so the
+                  // larger size no longer affects anything it could distort.
                   <div
-                    className="w-full px-4 py-8 text-center text-white"
+                    ref={(el) => { if (el) dividerRefs.current.set(si, el); else dividerRefs.current.delete(si); }}
+                    className={`flex w-full flex-col items-center justify-center px-4 text-center text-white ${
+                      grownDividers.has(si) ? "min-h-dvh" : "aspect-square"
+                    }`}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div className="text-[11px] uppercase tracking-[0.15em] text-white/35">Finished</div>
@@ -1348,16 +1411,33 @@ function ReaderInner() {
                 })}
               </React.Fragment>
             ))}
-            <EndOfChapter
-              chapterLabel={lastSeg.name}
-              nextLabel={chapterNameAfter(lastSeg)}
-              hasNext={chapterExistsFrom(lastSeg, 1)}
-              hasPrev={hasChapter(-1)}
-              infinite={settings.infiniteScroll}
-              onNext={() => goToChapter(1)}
-              onPrev={() => goToChapter(-1)}
-              onExit={() => router.back()}
-            />
+            {/* Sentinel page, one index past the last real page (gi === totalPages).
+                Registered in pageRefs exactly like a real page so the probe-line
+                tracker (below) can lock onto it once reached — without this, the
+                tracker can only ever reach the true LAST real page's own rect,
+                which requires the probe line to clear that page's bottom edge
+                specifically. If that page is short (e.g. a scanlator credits
+                banner) and the reader stops scrolling anywhere before the probe
+                passes it, the tracker latches one page short forever (page1 =
+                totalPages - 1, ~97% for a 35-page chapter) even though the
+                Finished screen is fully on-screen. Reaching this sentinel — i.e.
+                the Finished screen itself — is unambiguous proof the chapter is
+                done, so it always resolves progress to exactly 100%. */}
+            <div
+              data-page={totalPages}
+              ref={(el) => { if (el) pageRefs.current.set(totalPages, el); else pageRefs.current.delete(totalPages); }}
+            >
+              <EndOfChapter
+                chapterLabel={lastSeg.name}
+                nextLabel={chapterNameAfter(lastSeg)}
+                hasNext={chapterExistsFrom(lastSeg, 1)}
+                hasPrev={hasChapter(-1)}
+                infinite={settings.infiniteScroll}
+                onNext={() => goToChapter(1)}
+                onPrev={() => goToChapter(-1)}
+                onExit={() => router.back()}
+              />
+            </div>
           </div>
         </div>
         </>
@@ -1738,8 +1818,15 @@ function EndOfChapter({
   onExit: () => void;
 }) {
   return (
+    // min-h-dvh (not just py-14 padding, and not a vh fraction) so this
+    // fills the screen like a real page — see the matching comment on the
+    // inter-segment divider above for why the height needs to be
+    // guaranteed: a late-shrinking last-page image (e.g. a scanlator's
+    // wide/short credits banner) needs guaranteed scroll distance below it
+    // for the "am I at the bottom" page tracker to ever register it as the
+    // current page and mark it read.
     <div
-      className="flex w-full flex-col items-center gap-4 py-14 text-center"
+      className="flex w-full min-h-dvh flex-col items-center justify-center gap-4 text-center"
       onClick={(e) => e.stopPropagation()}
     >
       <div>

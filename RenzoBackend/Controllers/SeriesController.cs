@@ -224,8 +224,12 @@ namespace RenzoBackend.Controllers
                 if (id == Guid.Empty)
                     return BadRequest("No series id provided");
                 if (await DenyAccessAsync(id, token).ConfigureAwait(false) is { } deny) return deny;
+                // Explicit user action, so also prune stale "missing" chapters left
+                // behind by a source that's since been disabled — see the method
+                // doc for why this isn't in the passive auto-refresh path too.
+                int pruned = await _commandService.CleanupDisabledSourceChaptersAsync(id, token).ConfigureAwait(false);
                 int queued = await _commandService.RefreshSeriesMetadataAsync(id, null, token).ConfigureAwait(false);
-                return Ok(new { success = true, queued });
+                return Ok(new { success = true, queued, pruned });
             }
             catch (Exception ex)
             {
@@ -409,6 +413,44 @@ namespace RenzoBackend.Controllers
             {
                 _logger.LogError(ex, "Error re-downloading chapter: {Message}", ex.Message);
                 return StatusCode(500, "Error re-downloading chapter.");
+            }
+        }
+
+        /// <summary>
+        /// POST /api/serie/apply-default-priority — the Sources page's "Default
+        /// priority order" tab's "Apply to All" action. Re-ranks every series the
+        /// CALLER owns (plus adopts any ownerless legacy series) to match their
+        /// configured default order, and turns on the per-user redownload-on-
+        /// upgrade setting. No-ops (returns applied=false) if the caller hasn't
+        /// configured a default order yet.
+        /// </summary>
+        [HttpPost("apply-default-priority")]
+        [ProducesResponseType(typeof(object), 200)]
+        [ProducesResponseType(401)]
+        [ProducesResponseType(500)]
+        public async Task<ActionResult> ApplyDefaultPriorityToAllAsync(CancellationToken token)
+        {
+            try
+            {
+                if (CurrentUserId == Guid.Empty)
+                    return StatusCode(401, new { success = false, error = "Not signed in" });
+
+                ApplyPriorityToAllResult result = await _commandService
+                    .ApplyDefaultPriorityToAllSeriesAsync(CurrentUserId, token).ConfigureAwait(false);
+                return Ok(new
+                {
+                    success = result.Applied,
+                    error = result.Applied ? null : "No default priority order configured yet.",
+                    seriesConsidered = result.SeriesConsidered,
+                    seriesReordered = result.SeriesReordered,
+                    seriesAdopted = result.SeriesAdopted,
+                    chaptersQueued = result.ChaptersQueued,
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error applying default priority order to all series: {Message}", ex.Message);
+                return StatusCode(500, "Error applying default priority order.");
             }
         }
 

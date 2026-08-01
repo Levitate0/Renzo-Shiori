@@ -6,6 +6,7 @@ import { ActivityDock } from "@/components/comp/layout/activity-dock";
 import { CommandBar } from "@/components/comp/layout/command-bar";
 import { RibbonProvider } from "@/components/comp/layout/ribbon";
 import { RequireAuth } from "@/components/auth/require-auth";
+import { BottomBarOffsetProvider } from "@/contexts/bottom-bar-context";
 
 interface PageLayoutProps {
   children: React.ReactNode;
@@ -36,15 +37,17 @@ export function PageLayout({
   return (
     <RequireAuth>
       <RibbonProvider>
-        <div className="flex h-dvh w-full flex-col bg-muted/40 overflow-hidden">
-          <CommandBar />
-          <main
-            className={`flex-1 min-h-0 overflow-x-hidden overscroll-contain ${mainClassName}`}
-          >
-            {children}
-          </main>
-          <ActivityDock />
-        </div>
+        <BottomBarOffsetProvider>
+          <div className="flex h-dvh w-full flex-col bg-muted/40 overflow-hidden">
+            <CommandBar />
+            <main
+              className={`flex-1 min-h-0 overflow-x-hidden overscroll-contain ${mainClassName}`}
+            >
+              {children}
+            </main>
+            <ActivityDock />
+          </div>
+        </BottomBarOffsetProvider>
       </RibbonProvider>
     </RequireAuth>
   );

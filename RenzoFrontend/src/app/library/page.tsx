@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/select";
 import { PageLayout } from "@/components/comp/layout/page-layout";
 import { RibbonSlot } from "@/components/comp/layout/ribbon";
+import { OfflineLibraryGrid } from "@/components/comp/series/offline-library-grid";
+import { useOfflineMode } from "@/contexts/offline-mode-context";
 import { SeriesStatus, type SeriesInfo } from "@/lib/api/types";
 import { useLibrary } from "@/lib/api/hooks/useSeries";
 import { useFavorites } from "@/lib/api/hooks/useFavorites";
@@ -74,6 +76,7 @@ export default function RootPage() {
   // else always sees only their own — enforced server-side regardless of
   // this flag, so it's purely a display preference for Owners.
   const { canOwner } = useAuth();
+  const { isOffline } = useOfflineMode();
   const [viewAllLibraries, setViewAllLibraries] = useState(false);
   const { data: library } = useLibrary(canOwner && viewAllLibraries);
   const { data: favoriteLists } = useFavorites();
@@ -227,6 +230,17 @@ export default function RootPage() {
       ).length,
     };
   }, [deduplicatedLibrary, selectedGenre, selectedProvider, selectedCategory, favoriteFilterIds]);
+
+  // Offline mode: same page shell, but the source-specific filters above
+  // (status/genre/provider/category/favorites) don't apply to a small local
+  // cache, so this swaps straight to the offline grid instead of the ribbon.
+  if (isOffline) {
+    return (
+      <PageLayout mainClassName="p-2 pb-16 sm:px-6 sm:py-4 sm:pb-4 overflow-y-auto">
+        <OfflineLibraryGrid />
+      </PageLayout>
+    );
+  }
 
   return (
     <PageLayout mainClassName="p-2 pb-16 sm:px-6 sm:py-4 sm:pb-4 overflow-y-auto">

@@ -2,18 +2,10 @@ import { getApiConfig } from "@/lib/api/config";
 import { getCachedImageToken } from "@/lib/api/imageToken";
 
 /**
- * Cover placeholder for series with no thumbnail — the Renzo Shiori mark, matched
- * to the active light/dark theme. Reads the `.dark` class next-themes puts
- * on <html> directly rather than useTheme(), since this is a plain function
- * called from JSX `src={...}` all over the app, not a component that could
- * subscribe to theme context. Defaults to the dark variant during SSR/before
- * hydration, matching the app's dark default (see layout.tsx's no-flash
- * script and defaultTheme="system" — most users land on dark).
+ * Cover placeholder for series with no thumbnail — the Renzo Shiori mark.
+ * The app is dark-only, so this always uses the dark variant.
  */
 function missingCoverPlaceholder(): string {
-  if (typeof document !== "undefined" && !document.documentElement.classList.contains("dark")) {
-    return "/renzo-icon-light.png";
-  }
   return "/renzo-icon-dark.png";
 }
 

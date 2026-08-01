@@ -3,16 +3,15 @@ import * as React from "react";
 
 /**
  * Named theme presets — each bundles a full background palette (via
- * `[data-theme]` on <html>, see globals.css) plus a default accent, and an
- * explicit light/dark mode (applied through next-themes). A custom accent can
+ * `[data-theme]` on <html>, see globals.css) plus a default accent. The app
+ * is dark-only (no light mode, see layout.tsx) — a custom accent can
  * override any preset's highlight color (inline --primary-h/s/l), independent
- * of the palette. "renzo" (base dark) and "daylight" (base light) need no
- * [data-theme] block — the defaults already are them.
+ * of the palette. "renzo" (the base palette) needs no [data-theme] block —
+ * the defaults already are it.
  */
 export interface ThemePreset {
   id: string;
   label: string;
-  mode: "light" | "dark";
   /** Preview swatches. */
   bg: string;
   card: string;
@@ -20,14 +19,13 @@ export interface ThemePreset {
 }
 
 export const THEME_PRESETS: ThemePreset[] = [
-  { id: "renzo", label: "Renzo", mode: "dark", bg: "hsl(20 14.3% 4.1%)", card: "hsl(24 9.8% 10%)", accent: "hsl(346.8 77.2% 49.8%)" },
-  { id: "amoled", label: "AMOLED", mode: "dark", bg: "hsl(0 0% 0%)", card: "hsl(0 0% 7%)", accent: "hsl(346.8 77.2% 49.8%)" },
-  { id: "midnight", label: "Midnight", mode: "dark", bg: "hsl(222 47% 8%)", card: "hsl(222 40% 13%)", accent: "hsl(217.2 91.2% 59.8%)" },
-  { id: "sakura", label: "Sakura", mode: "dark", bg: "hsl(330 22% 7%)", card: "hsl(330 18% 12%)", accent: "hsl(340 82% 66%)" },
-  { id: "matcha", label: "Matcha", mode: "dark", bg: "hsl(140 15% 6%)", card: "hsl(140 12% 11%)", accent: "hsl(142.1 70.6% 45.3%)" },
-  { id: "ember", label: "Ember", mode: "dark", bg: "hsl(20 22% 6%)", card: "hsl(20 18% 11%)", accent: "hsl(24.6 95% 53.1%)" },
-  { id: "ocean", label: "Ocean", mode: "dark", bg: "hsl(195 40% 7%)", card: "hsl(195 34% 12%)", accent: "hsl(172 66% 45%)" },
-  { id: "daylight", label: "Daylight", mode: "light", bg: "hsl(0 0% 100%)", card: "hsl(180 8% 90%)", accent: "hsl(346.8 77.2% 49.8%)" },
+  { id: "renzo", label: "Renzo", bg: "hsl(20 14.3% 4.1%)", card: "hsl(24 9.8% 10%)", accent: "hsl(346.8 77.2% 49.8%)" },
+  { id: "amoled", label: "AMOLED", bg: "hsl(0 0% 0%)", card: "hsl(0 0% 7%)", accent: "hsl(346.8 77.2% 49.8%)" },
+  { id: "midnight", label: "Midnight", bg: "hsl(222 47% 8%)", card: "hsl(222 40% 13%)", accent: "hsl(217.2 91.2% 59.8%)" },
+  { id: "sakura", label: "Sakura", bg: "hsl(330 22% 7%)", card: "hsl(330 18% 12%)", accent: "hsl(340 82% 66%)" },
+  { id: "matcha", label: "Matcha", bg: "hsl(140 15% 6%)", card: "hsl(140 12% 11%)", accent: "hsl(142.1 70.6% 45.3%)" },
+  { id: "ember", label: "Ember", bg: "hsl(20 22% 6%)", card: "hsl(20 18% 11%)", accent: "hsl(24.6 95% 53.1%)" },
+  { id: "ocean", label: "Ocean", bg: "hsl(195 40% 7%)", card: "hsl(195 34% 12%)", accent: "hsl(172 66% 45%)" },
 ];
 
 const PRESET_KEY = "renzo-preset";
@@ -36,7 +34,7 @@ const CUSTOM_KEY = "renzo-accent-custom"; // "H S% L%"
 const CHANGE_EVENT = "renzo-theme-changed";
 const DEFAULT_PRESET = "renzo";
 const DEFAULT_CUSTOM = "265 83% 58%";
-const BASE_PRESETS = new Set(["renzo", "daylight"]);
+const BASE_PRESETS = new Set(["renzo"]);
 
 export function presetById(id: string): ThemePreset {
   return THEME_PRESETS.find((t) => t.id === id) ?? THEME_PRESETS[0];
@@ -82,11 +80,15 @@ function emit() {
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
-/** Select a theme. Mode (light/dark) is applied separately via next-themes. */
+/** Select a theme preset (palette). The app is always dark. */
 export function setPreset(id: string): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(PRESET_KEY, id);
-  applyThemeDom(id, isCustomAccent(), getCustomHsl());
+  // Falls back to the default for an unrecognized id — covers a stale/legacy
+  // value (e.g. the removed light "daylight" preset) instead of applying a
+  // dead [data-theme] attribute that matches no CSS block.
+  const resolved = THEME_PRESETS.some((t) => t.id === id) ? id : DEFAULT_PRESET;
+  localStorage.setItem(PRESET_KEY, resolved);
+  applyThemeDom(resolved, isCustomAccent(), getCustomHsl());
   emit();
 }
 export function setCustomAccent(hsl: string): void {

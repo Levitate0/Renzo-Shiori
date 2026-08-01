@@ -4,7 +4,11 @@
  * their account across devices. Kept tiny and forward-compatible.
  */
 export interface ThemePrefs {
-  /** next-themes mode. */
+  /**
+   * Legacy light/dark/system mode from before the app went dark-only.
+   * Kept only so old accounts' saved preferences JSON still parses; no
+   * longer read or written anywhere.
+   */
   theme?: "light" | "dark" | "system";
   /** Named theme preset id (renzo/amoled/midnight/…); drives the palette. */
   preset?: string;

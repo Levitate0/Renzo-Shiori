@@ -433,35 +433,49 @@ export function ScrobblerSettings() {
         {unmatched && unmatched.length > 0 && (
           <div className="rounded-md border">
             <div className="overflow-x-auto p-4">
-              <table className="w-full min-w-[32rem] text-sm">
+              {/* table-fixed + colgroup so the Series title (which can run long)
+                  clamps to 2 lines instead of wrapping to 5+ and squeezing the
+                  Provider/Status/Actions columns down to nothing. */}
+              <table className="w-full min-w-[36rem] table-fixed text-sm">
+                <colgroup>
+                  <col />
+                  <col className="w-28" />
+                  <col className="w-40" />
+                  <col className="w-24" />
+                </colgroup>
                 <thead>
                   <tr className="border-b text-left">
-                    <th className="pb-2 font-medium">Series</th>
-                    <th className="pb-2 font-medium">Provider</th>
-                    <th className="pb-2 font-medium">Status</th>
+                    <th className="pb-2 pr-3 font-medium">Series</th>
+                    <th className="pb-2 pr-3 font-medium">Provider</th>
+                    <th className="pb-2 pr-3 font-medium">Status</th>
                     <th className="pb-2 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {unmatched.filter(s => s.mappingStatus !== 2).slice(0, 20).map((status) => (
                     <tr key={`${status.seriesId}-${status.provider}`} className="border-b last:border-0">
-                      <td className="py-2">{status.seriesTitle}</td>
-                      <td className="py-2">{ScrobblerProvider[status.provider]}</td>
-                      <td className="py-2">
+                      <td className="py-3 pr-3 align-top">
+                        <span className="line-clamp-2" title={status.seriesTitle}>{status.seriesTitle}</span>
+                      </td>
+                      <td className="py-3 pr-3 align-top text-muted-foreground">{ScrobblerProvider[status.provider]}</td>
+                      <td className="py-3 pr-3 align-top">
                         {status.mappingStatus === 0 && (
-                          <Badge variant="secondary">Not matched</Badge>
+                          <Badge variant="secondary" className="whitespace-nowrap">Not matched</Badge>
                         )}
                         {status.mappingStatus === 1 && (
-                          <Badge variant="default">Auto-matched ({Math.round((status.matchScore ?? 0) * 100)}%)</Badge>
+                          <Badge variant="default" className="whitespace-nowrap">
+                            Auto-matched ({Math.round((status.matchScore ?? 0) * 100)}%)
+                          </Badge>
                         )}
                         {status.mappingStatus === 3 && (
-                          <Badge variant="secondary">Disabled</Badge>
+                          <Badge variant="secondary" className="whitespace-nowrap">Disabled</Badge>
                         )}
                       </td>
-                      <td className="py-2">
+                      <td className="py-3 align-top">
                         <Button
                           variant="ghost"
                           size="sm"
+                          className="whitespace-nowrap"
                           onClick={() => setSelectedSeries({ seriesId: status.seriesId, provider: status.provider })}
                         >
                           <ExternalLink className="h-4 w-4 mr-1" />

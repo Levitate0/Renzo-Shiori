@@ -13,17 +13,13 @@ import {
   LogOut,
   Compass,
   Medal,
-  Monitor,
-  Moon,
   Palette,
   Radio,
   Route,
   Settings,
-  Sun,
   Users,
 } from "lucide-react";
 import Link from "next/link";
-import { useTheme } from "next-themes";
 
 import {
   DropdownMenu,
@@ -61,44 +57,19 @@ const LEVEL_BADGE: Record<UserLevel, string> = {
   [UserLevel.Owner]: "bg-primary/15 text-primary",
 };
 
-const THEME_CYCLE = ["light", "dark", "system"] as const;
-
-function themeIcon(theme: string | undefined) {
-  switch (theme) {
-    case "light":
-      return <Sun className="h-4 w-4" />;
-    case "system":
-      return <Monitor className="h-4 w-4" />;
-    default:
-      return <Moon className="h-4 w-4" />;
-  }
-}
-
-function themeLabel(theme: string | undefined) {
-  switch (theme) {
-    case "light":
-      return "Light";
-    case "system":
-      return "System";
-    default:
-      return "Dark";
-  }
-}
-
 /**
  * User avatar dropdown — extracted from the old header.tsx so both desktop
  * command bar and mobile chrome can share a single source of truth.
  *
- * Carries the full 2.0 menu (OPDS path, avatar edit, trackers, theme cycle)
- * alongside the fork's extras (Users, Settings, Import Series). Theme cycling
- * lives here too because the standalone toggle in the command bar is
- * desktop-only (`hidden lg:flex`), so this is the sole theme control on mobile.
+ * Carries the full 2.0 menu (OPDS path, avatar edit, trackers) alongside the
+ * fork's extras (Users, Settings, Import Series). The app is dark-only (no
+ * light mode), so there's no theme control here — just a link to /appearance
+ * for palette/accent customization.
  */
 export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
   const { user, logout, canManage, canAdmin, canOwner, refreshAuth } = useAuth();
   const { startWizard } = useImportWizard();
   const { data: settings } = useSettings();
-  const { theme, setTheme } = useTheme();
   const [hideAdult, toggleHideAdult] = useHideAdult();
 
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -111,12 +82,6 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
   const handleLogout = async () => {
     // logout() routes to /login (auth enabled) or /user-select (profile mode).
     await logout();
-  };
-
-  const cycleTheme = () => {
-    const current = theme ?? "dark";
-    const idx = THEME_CYCLE.findIndex((t) => t === current);
-    setTheme(THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]!);
   };
 
   const sz = size === "sm" ? "h-7 w-7" : "h-8 w-8";
@@ -310,18 +275,8 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
 
           {(canOwner || canManage) && <DropdownMenuSeparator />}
 
-          {/* Theme cycle — keep the menu open so the user can cycle in place */}
-          <DropdownMenuItem
-            onSelect={(e) => e.preventDefault()}
-            onClick={cycleTheme}
-            className="flex items-center gap-2 cursor-pointer"
-          >
-            {themeIcon(theme)}
-            Theme: {themeLabel(theme)}
-          </DropdownMenuItem>
-
-          {/* Full theme customization (accent presets + custom color) lives on
-              the dedicated Appearance page; the quick light/dark cycle stays here. */}
+          {/* Theme customization (palette presets + custom accent) lives on
+              the dedicated Appearance page — no light/dark toggle, the app is dark-only. */}
           <DropdownMenuItem asChild>
             <Link
               href="/appearance"

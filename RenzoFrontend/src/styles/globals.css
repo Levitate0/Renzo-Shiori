@@ -419,22 +419,19 @@
 }
 
 /* ─── Add Series spotlight ─── */
-/* These were previously identical in :root and .dark (i.e. hardcoded to
-   near-black regardless of the light/dark toggle) — the modal ignored
-   light mode entirely. :root now carries a real light palette; .dark keeps
-   the original values. */
+/* The app is dark-only — :root carries these values directly now. */
 
 :root {
-  --as-bg: 0 0% 100%;
-  --as-bg-1: 240 20% 98%;
-  --as-bg-2: 240 14% 95%;
-  --as-bg-3: 240 10% 91%;
-  --as-fg: 240 10% 3.9%;
-  --as-fg-muted: 240 3.8% 46.1%;
-  --as-fg-dim: 240 4% 60%;
-  --as-border: 0 0% 0% / 0.08;
-  --as-border-strong: 0 0% 0% / 0.14;
-  --as-primary-soft: var(--primary-h) var(--primary-s) var(--primary-l) / 0.1;
+  --as-bg: 240 10% 4%;
+  --as-bg-1: 240 9% 6%;
+  --as-bg-2: 240 8% 8%;
+  --as-bg-3: 240 7% 11%;
+  --as-fg: 0 0% 98%;
+  --as-fg-muted: 0 0% 64%;
+  --as-fg-dim: 0 0% 46%;
+  --as-border: 0 0% 100% / 0.06;
+  --as-border-strong: 0 0% 100% / 0.12;
+  --as-primary-soft: var(--primary-h) var(--primary-s) var(--primary-l) / 0.15;
 }
 
 .dark {
@@ -1703,19 +1700,19 @@
 /* ─── Sources page (store-list) ─────────────────────────────────────────────── */
 
 /*
- * Design tokens derived from mockup sources-B2-A-store-list.html.
- * Originally hardcoded to dark-mode values in both :root and .dark (the
- * page ignored the light/dark toggle) — :root now carries a light variant.
+ * Design tokens derived from mockup sources-B2-A-store-list.html. The app
+ * is dark-only, so :root carries these values directly now (the values
+ * below were the light variant from when a toggle existed).
  */
 :root {
-  --sources-line: hsla(0 0% 0% / 0.08);
-  --sources-line-strong: hsla(0 0% 0% / 0.14);
-  --sources-bg-card: hsl(0 0% 100%);
-  --sources-primary-soft: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.1);
-  --sources-primary-glow: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.25);
-  --sources-failing: #dc2626;
-  --sources-failing-soft: hsla(0 84% 60% / 0.08);
-  --sources-healthy: #16a34a;
+  --sources-line: hsla(0 0% 100% / 0.06);
+  --sources-line-strong: hsla(0 0% 100% / 0.12);
+  --sources-bg-card: hsl(240 9% 6%);
+  --sources-primary-soft: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.18);
+  --sources-primary-glow: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.35);
+  --sources-failing: #ef4444;
+  --sources-failing-soft: hsla(0 84% 60% / 0.10);
+  --sources-healthy: #22c55e;
 }
 
 .dark {
@@ -3047,7 +3044,22 @@
     font-family: var(--font-geist-sans), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   }
   
+  /* Renzo Shiori is dark-only (no light mode) — :root carries the dark
+     palette directly so there's nothing to bootstrap/flash-guard for mode.
+     .dark below duplicates the same values: the `dark` class is always
+     present on <html> (see layout.tsx) and many `dark:` Tailwind utilities
+     and `.dark …` overrides throughout this file key off it. */
   :root {
+    /* Tells the browser/OS to render NATIVE chrome — scrollbars, form
+       controls (checkboxes, date pickers), the WebView2/Electron frame — in
+       dark mode. This used to be set imperatively via
+       document.documentElement.style.colorScheme in the old light/dark
+       bootstrap script; that script is gone (dark-only now, see layout.tsx)
+       but nothing replaced this specific side effect, so it silently
+       regressed to light native scrollbars on Windows/WebView2 while every
+       app-drawn element still looked correctly dark. */
+    color-scheme: dark;
+
     /* Accent color theme — the raw HSL components behind --primary/--ring
        everywhere in this file (via var(--primary-h) var(--primary-s)
        var(--primary-l)). Overridden per-theme below by [data-accent] on
@@ -3058,48 +3070,26 @@
     --primary-s: 77.2%;
     --primary-l: 49.8%;
 
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 180 8.2% 90.2%;
-    --card-foreground: 240 10% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
+    --background: 20 14.3% 4.1%;
+    --foreground: 0 0% 95%;
+    --card: 24 9.8% 10%;
+    --card-foreground: 0 0% 95%;
+    --popover: 0 0% 9%;
+    --popover-foreground: 0 0% 95%;
     --primary: var(--primary-h) var(--primary-s) var(--primary-l);
     --primary-foreground: 355.7 100% 97.3%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 12 6.5% 15.1%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 85.7% 97.3%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
     --ring: var(--primary-h) var(--primary-s) var(--primary-l);
     --radius: 0.5rem;
-  }
-
-  /* Prevent flash by setting initial background for system theme detection */
-  @media (prefers-color-scheme: dark) {
-    :root:not(.light) {
-      --background: 20 14.3% 4.1%;
-      --foreground: 0 0% 95%;
-      --card: 24 9.8% 10%;
-      --card-foreground: 0 0% 95%;
-      --popover: 0 0% 9%;
-      --popover-foreground: 0 0% 95%;
-      --secondary: 240 3.7% 15.9%;
-      --secondary-foreground: 0 0% 98%;
-      --muted: 0 0% 15%;
-      --muted-foreground: 240 5% 64.9%;
-      --accent: 12 6.5% 15.1%;
-      --accent-foreground: 0 0% 98%;
-      --destructive: 0 62.8% 30.6%;
-      --destructive-foreground: 0 85.7% 97.3%;
-      --border: 240 3.7% 15.9%;
-      --input: 240 3.7% 15.9%;
-    }
   }
 
   .dark {
@@ -3156,9 +3146,9 @@
 
   /* ── Named theme presets ──────────────────────────────────────────────
      Selected via [data-theme] on <html>; each bundles a full background
-     palette + a default accent. "renzo" (base dark) and "daylight" (base
-     light) need no block — the :root / .dark defaults already are them.
-     Higher specificity than .dark so these win in dark mode. */
+     palette + a default accent. "renzo" (the base palette) needs no block —
+     the :root / .dark defaults already are it. Higher specificity than
+     .dark so these win. */
   html[data-theme="amoled"] {
     --background: 0 0% 0%;
     --card: 0 0% 6%;
@@ -3244,27 +3234,12 @@
     caret-color: transparent;
   }
 
-  /* Prevent theme flash */
+  /* The app is dark-only (no light mode, no toggle) — html/body just take
+     the (always-dark) --background/--foreground tokens directly. */
   html {
     background-color: hsl(var(--background));
     transition: none !important;
   }
-
-  /* More aggressive flash prevention */
-  html:not(.dark) {
-    background-color: white;
-  }
-  
-  html.dark {
-    background-color: hsl(20, 14.3%, 4.1%);
-  }
-  
-  @media (prefers-color-scheme: dark) {
-    html:not(.light) {
-      background-color: hsl(20, 14.3%, 4.1%);
-    }
-  }
-
 
   input,
   textarea {
@@ -3273,27 +3248,11 @@
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
-    /* Prevent flash of wrong theme */
     transition: none !important;
     /* Ensure font loads properly with fallback */
     font-family: var(--font-geist-sans), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   }
-  
-  /* Override body background more specifically */
-  html:not(.dark) body {
-    background-color: white;
-  }
-  
-  html.dark body {
-    background-color: hsl(20, 14.3%, 4.1%);
-  }
-  
-  @media (prefers-color-scheme: dark) {
-    html:not(.light) body {
-      background-color: hsl(20, 14.3%, 4.1%);
-    }
-  }
-  
+
   /* Font loading states */
   .font-loading {
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;

@@ -139,6 +139,20 @@ namespace RenzoBackend.Services.Series
                 // so a newly added series always has a definite status authority.
                 NormalizeStatusSource(existingProviders);
 
+                // Seed source priority from the ADDING USER's configured default
+                // (Sources page → "Default priority order" — per-user, see
+                // UserPriorityPrefsExtensions) on a brand-new series only — an
+                // empty default means the feature isn't set up for this user, so
+                // this is a no-op and priorities fall back to whatever
+                // ProcessSeriesProvidersAsync / the storage-first backfill assigned.
+                if (isNewSeries && ownerId != Guid.Empty)
+                {
+                    UserEntity? owner = await _db.Users.FirstOrDefaultAsync(u => u.Id == ownerId, token).ConfigureAwait(false);
+                    string[] defaultOrder = owner?.GetDefaultSourcePriorityOrder() ?? [];
+                    if (defaultOrder.Length > 0)
+                        ApplyDefaultPriorityOrder(existingProviders, defaultOrder);
+                }
+
                 dbSeries = await ConsolidateDBSeriesFromProvidersAsync(dbSeries, existingProviders,
                     ProviderSeriesDetails.StorageFolderPath, ProviderSeriesDetails.DisableJobs, ProviderSeriesDetails.StartChapter, token).ConfigureAwait(false);
 
@@ -189,6 +203,17 @@ namespace RenzoBackend.Services.Series
                         catch (Exception ex) { _logger.LogDebug(ex, "Auto-categorize of new series {Id} failed", newId); }
                     });
                 }
+                else
+                {
+                    // A source was (re)added to an EXISTING series. If its chapter
+                    // list came in with the add and it outranks the source holding
+                    // the downloaded files, queue replacements now (no-ops unless
+                    // the priority-upgrade setting is on). A source whose chapters
+                    // aren't known yet is covered instead by the newly-gained path
+                    // in its first scan, which RescheduleIfNeededAsync above
+                    // already queued with runNow.
+                    await QueuePriorityUpgradesAsync(dbSeries.Id, token).ConfigureAwait(false);
+                }
 
                 return dbSeries.Id;
             }
@@ -223,7 +248,7 @@ namespace RenzoBackend.Services.Series
             string existingThumb = dbSeries.ThumbnailUrl;
 
             // Update provider settings
-            UpdateProviderSettings(series, dbSeries);
+            bool priorityChanged = UpdateProviderSettings(series, dbSeries);
 
             List<string> deletedSources = await _providerService.DeleteSourcesIfNeededAsync(series, dbSeries, token)
                 .ConfigureAwait(false);
@@ -255,11 +280,17 @@ namespace RenzoBackend.Services.Series
                 .ConfigureAwait(false);
             
             await _stateService.SyncToRenzoJsonAsync(dbSeries.Id, token).ConfigureAwait(false);
-            
+
             if (existingThumb != dbSeries.ThumbnailUrl)
             {
                 await _archiveHelper.WriteComicThumbnailAsync(dbSeries, token).ConfigureAwait(false);
             }
+
+            // A reorder means some downloaded chapters may now be held by a source
+            // the user ranked below another that also has them — queue replacements
+            // from the better source (no-ops unless the priority-upgrade setting is on).
+            if (priorityChanged)
+                await QueuePriorityUpgradesAsync(dbSeries.Id, token).ConfigureAwait(false);
 
             return dbSeries.ToSeriesExtendedInfo(settings);
         }
@@ -642,6 +673,12 @@ namespace RenzoBackend.Services.Series
                 }
             }
 
+            // Chapters whose DB row is created by THIS scan (see the merge below).
+            // Only these can trigger a priority-upgrade re-download, which is what
+            // makes the upgrade fire exactly once per (source, chapter): on every
+            // later refresh the row already exists, so it can't retrigger.
+            List<ParsedChapter> newlyGained = [];
+
             // Merge discovered chapters into the DB AT SCAN TIME. Previously a
             // chapter only entered the DB when its download completed, so anything
             // that didn't download (locked/paid early-access, paused series, failed
@@ -672,6 +709,7 @@ namespace RenzoBackend.Services.Series
                             : (RenzoBackend.Extensions.ModelExtensions.HasRealUploadDate(nc.ProviderUploadDate) ? nc.ProviderUploadDate : null);
                         nc.ShouldDownload = serie.ContinueAfterChapter < nc.Number || serie.ContinueAfterChapter == null;
                         serie.Chapters.Add(nc);
+                        newlyGained.Add(pc);
                         chaptersChanged = true;
                     }
                     else if (string.IsNullOrEmpty(existing.Url) && !string.IsNullOrEmpty(pc.RealUrl))
@@ -735,10 +773,53 @@ namespace RenzoBackend.Services.Series
                 return JobResult.Success;
             }
 
-            bool downloadAll = (await _settings.GetSettingsAsync(token).ConfigureAwait(false)).DownloadAllChapters
+            SettingsDto appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            bool downloadAll = appSettings.DownloadAllChapters
                 || _memoryCache.TryGetValue(DownloadAllFlagKey(series.Id), out _);
             bool allowLocked = await OwnerHasSiteLoginAsync(series.OwnerId, serie.Provider, token).ConfigureAwait(false);
             List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(serie, chapterData, downloadAll, allowLocked);
+
+            // Priority upgrades (per-user, off until the owner sets it up): this
+            // source just gained chapters that are already downloaded from a
+            // lower-priority source — queue a replacement download from this
+            // better source, bypassing the "already downloaded" filter above. The
+            // old file is deliberately left in place: when the new download
+            // completes, the post-download dedup (gated on the same per-user
+            // setting) keeps the highest-priority copy and deletes the rest, so
+            // the chapter never has a readable gap while the replacement waits.
+            bool redownloadEnabled = series.OwnerId != Guid.Empty
+                && (await _db.Users.FirstOrDefaultAsync(u => u.Id == series.OwnerId, token).ConfigureAwait(false))
+                    ?.GetRedownloadFromHigherPrioritySources() == true;
+            if (redownloadEnabled && newlyGained.Count > 0)
+            {
+                HashSet<decimal> alreadyQueued = chaps.Select(c => c.Chapter.ParsedNumber).ToHashSet();
+                List<ParsedChapter> upgrades = [];
+                foreach (ParsedChapter pc in newlyGained)
+                {
+                    if (alreadyQueued.Contains(pc.ParsedNumber))
+                        continue;
+                    // Same locked-chapter rule as the bulk path — without a site
+                    // login the download would only fail and burn a queue slot.
+                    if (!allowLocked && (RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(pc.ParsedName)
+                        || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(pc.Name)))
+                        continue;
+                    // Best (lowest-value) Priority among sources holding this chapter's file.
+                    int? holderPriority = series.Sources
+                        .Where(sp => sp.Id != serie.Id && !sp.IsUninstalled)
+                        .Where(sp => sp.Chapters.Any(c => c.Number == pc.ParsedNumber && !c.IsDeleted && !string.IsNullOrEmpty(c.Filename)))
+                        .Select(sp => (int?)sp.Priority)
+                        .Min();
+                    if (holderPriority == null || holderPriority.Value <= serie.Priority)
+                        continue; // not downloaded anywhere, or an equal/better copy already exists
+                    upgrades.Add(pc);
+                }
+                if (upgrades.Count > 0)
+                {
+                    chaps.AddRange(series.ToDownloads(serie, upgrades, series.StoragePath));
+                    _logger.LogInformation("Priority upgrade: queuing {Count} chapter(s) of '{Series}' for re-download from higher-priority source {Provider}.",
+                        upgrades.Count, series.Title, serie.Provider);
+                }
+            }
 
             // Respect the series pause flag — don't queue downloads when paused
             if (!series.PauseDownloads)
@@ -791,6 +872,58 @@ namespace RenzoBackend.Services.Series
                 _logger.LogInformation("Queued metadata refresh for {count} provider(s) of series {seriesId}",
                     queued, seriesId);
             return queued;
+        }
+
+        /// <summary>
+        /// Prunes stale "missing" chapter entries left behind by a source the user
+        /// has since disabled or uninstalled for this series — chapters that source
+        /// still lists but never downloaded (no Filename), which otherwise linger
+        /// in the merged chapter list forever since a disabled source is never
+        /// touched again by <see cref="RefreshSeriesMetadataAsync"/>. Only called
+        /// from the explicit "Scan for new chapters" action — not the passive
+        /// open-a-series auto-refresh — so this cleanup only happens when the user
+        /// deliberately asks for it.
+        ///
+        /// A chapter that's actually downloaded is left alone even on a disabled
+        /// source: disabling a source going forward doesn't mean discarding what
+        /// you already have from it. An already-removed source doesn't need this —
+        /// <see cref="Providers.SeriesProviderService.DeleteSourcesIfNeededAsync"/>
+        /// either drops the whole provider row (nothing downloaded) or migrates its
+        /// downloaded chapters to "Unknown" (something downloaded), so there's
+        /// nothing stale left behind by a real removal.
+        /// </summary>
+        /// <param name="seriesId">The series to prune.</param>
+        /// <param name="token">Cancellation token.</param>
+        /// <returns>Number of chapter entries pruned.</returns>
+        public async Task<int> CleanupDisabledSourceChaptersAsync(Guid seriesId, CancellationToken token = default)
+        {
+            Models.Database.SeriesEntity? series = await _db.Series.Include(s => s.Sources)
+                .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
+            if (series == null)
+                return 0;
+
+            int pruned = 0;
+            foreach (SeriesProviderEntity p in series.Sources.Where(p => p.IsDisabled || p.IsUninstalled))
+            {
+                bool touched = false;
+                foreach (Models.Chapter c in p.Chapters.Where(c => !c.IsDeleted && string.IsNullOrEmpty(c.Filename)))
+                {
+                    c.IsDeleted = true;
+                    pruned++;
+                    touched = true;
+                }
+                if (touched)
+                    _db.Touch(p, a => a.Chapters);
+            }
+
+            if (pruned > 0)
+            {
+                await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                await _stateService.SyncToRenzoJsonAsync(series.Id, token).ConfigureAwait(false);
+                _logger.LogInformation("Pruned {Count} stale chapter entry(ies) from disabled/uninstalled source(s) for series {Series}.",
+                    pruned, series.Title);
+            }
+            return pruned;
         }
 
         /// <summary>
@@ -882,6 +1015,150 @@ namespace RenzoBackend.Services.Series
         }
 
         /// <summary>
+        /// Priority upgrades from CURRENT DB state (no source fetch): for every
+        /// chapter held on disk by some source, if a strictly higher-priority
+        /// source also knows that chapter, queue a re-download from the better
+        /// source. The old file stays in place — the post-download dedup (gated on
+        /// the same setting) replaces it when the new copy lands. Called when a
+        /// source is added to an existing series and when the per-series priority
+        /// order changes; the scan-time newly-gained path covers everything else.
+        /// No-ops unless the series owner has the redownload setting on (per-user,
+        /// see UserPriorityPrefsExtensions).
+        /// </summary>
+        /// <param name="seriesId">The series to reconcile.</param>
+        /// <param name="token">Cancellation token.</param>
+        /// <returns>Number of chapter re-downloads queued.</returns>
+        public async Task<int> QueuePriorityUpgradesAsync(Guid seriesId, CancellationToken token = default)
+        {
+            Models.Database.SeriesEntity? series = await _db.Series.Include(s => s.Sources)
+                .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
+            if (series == null || series.PauseDownloads)
+                return 0;
+
+            if (series.OwnerId == Guid.Empty)
+                return 0;
+            UserEntity? owner = await _db.Users.FirstOrDefaultAsync(u => u.Id == series.OwnerId, token).ConfigureAwait(false);
+            if (owner == null || !owner.GetRedownloadFromHigherPrioritySources())
+                return 0;
+
+            bool Capable(SeriesProviderEntity p) =>
+                !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled
+                && !string.IsNullOrEmpty(p.MihonProviderId);
+
+            // Chapter numbers currently held on disk → best (lowest) Priority
+            // among the sources holding a file for them.
+            Dictionary<decimal, int> holders = series.Sources
+                .Where(sp => !sp.IsUninstalled)
+                .SelectMany(sp => sp.Chapters
+                    .Where(c => c.Number != null && !c.IsDeleted && !string.IsNullOrEmpty(c.Filename))
+                    .Select(c => (number: c.Number!.Value, priority: sp.Priority)))
+                .GroupBy(x => x.number)
+                .ToDictionary(g => g.Key, g => g.Min(x => x.priority));
+            if (holders.Count == 0)
+                return 0;
+
+            int queued = 0;
+            foreach (SeriesProviderEntity sp in series.Sources.Where(Capable).OrderBy(p => p.Priority))
+            {
+                bool allowLocked = await OwnerHasSiteLoginAsync(series.OwnerId, sp.Provider, token).ConfigureAwait(false);
+                List<ParsedChapter> upgrades = [];
+                foreach (Models.Chapter c in sp.Chapters)
+                {
+                    if (c.Number == null || c.IsDeleted || !string.IsNullOrEmpty(c.Filename))
+                        continue;
+                    if (!holders.TryGetValue(c.Number.Value, out int holderPriority) || holderPriority <= sp.Priority)
+                        continue;
+                    // Same locked-chapter rule as the bulk path — without a site
+                    // login the download would only fail and burn a queue slot.
+                    if (!allowLocked && (c.IsLocked
+                        || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(c.Name)))
+                        continue;
+                    upgrades.Add(ChapterToParsedChapter(c, sp));
+                    // This source now supplies the best copy — an even-worse
+                    // source further down must not queue the same chapter again.
+                    holders[c.Number.Value] = sp.Priority;
+                }
+                if (upgrades.Count > 0)
+                {
+                    List<ChapterDownload> chaps = series.ToDownloads(sp, upgrades, series.StoragePath);
+                    await _downloadCommand.QueueChapterDownloadsAsync(sp, chaps, token).ConfigureAwait(false);
+                    queued += chaps.Count;
+                }
+            }
+
+            if (queued > 0)
+                _logger.LogInformation("Priority upgrade: queued {Count} chapter re-download(s) for series '{Series}' after a source/priority change.",
+                    queued, series.Title);
+            return queued;
+        }
+
+        /// <summary>
+        /// Bulk "Apply to All" for the Sources page's Default Priority Order tab:
+        /// re-ranks every one of this user's series to match their configured
+        /// default order, migrates any ownerless (legacy/setup-wizard) series to
+        /// this user so they're covered too, and turns the redownload-on-upgrade
+        /// setting on for them — the one action that takes a user from "I've
+        /// arranged my default order" to "it's live everywhere." No-ops (does
+        /// nothing, enables nothing) if the user hasn't configured a default order.
+        /// </summary>
+        /// <param name="userId">The user applying their default order.</param>
+        /// <param name="token">Cancellation token.</param>
+        public async Task<ApplyPriorityToAllResult> ApplyDefaultPriorityToAllSeriesAsync(Guid userId, CancellationToken token = default)
+        {
+            UserEntity? user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, token).ConfigureAwait(false);
+            if (user == null)
+                return new ApplyPriorityToAllResult(false, 0, 0, 0, 0);
+
+            string[] defaultOrder = user.GetDefaultSourcePriorityOrder();
+            if (defaultOrder.Length == 0)
+                return new ApplyPriorityToAllResult(false, 0, 0, 0, 0);
+
+            // Adopt ownerless series (pre-dates per-user ownership, e.g. a setup-
+            // wizard import) so this user's default order covers them too.
+            List<Models.Database.SeriesEntity> unowned = await _db.Series.Include(s => s.Sources)
+                .Where(s => s.OwnerId == Guid.Empty).ToListAsync(token).ConfigureAwait(false);
+            foreach (Models.Database.SeriesEntity s in unowned)
+                s.OwnerId = userId;
+
+            List<Models.Database.SeriesEntity> alreadyOwned = await _db.Series.Include(s => s.Sources)
+                .Where(s => s.OwnerId == userId).ToListAsync(token).ConfigureAwait(false);
+            List<Models.Database.SeriesEntity> targets = alreadyOwned
+                .UnionBy(unowned, s => s.Id)
+                .ToList();
+
+            int seriesChanged = 0;
+            List<Guid> changedIds = [];
+            foreach (Models.Database.SeriesEntity s in targets)
+            {
+                List<SeriesProviderEntity> providers = s.Sources.Where(p => !p.IsUninstalled).ToList();
+                if (providers.Count < 2)
+                    continue;
+                Dictionary<Guid, int> before = providers.ToDictionary(p => p.Id, p => p.Priority);
+                ApplyDefaultPriorityOrder(providers, defaultOrder);
+                if (providers.Any(p => before[p.Id] != p.Priority))
+                {
+                    seriesChanged++;
+                    changedIds.Add(s.Id);
+                }
+            }
+
+            user.Preferences = user.SetPriorityPrefs(enabled: true);
+            await _db.SaveChangesAsync(token).ConfigureAwait(false);
+
+            // Now that the setting is on, actually queue the re-downloads for
+            // every series whose ranking just changed.
+            int chaptersQueued = 0;
+            foreach (Guid id in changedIds)
+                chaptersQueued += await QueuePriorityUpgradesAsync(id, token).ConfigureAwait(false);
+
+            _logger.LogInformation(
+                "Applied default source priority order for user {UserId}: {Migrated} series adopted, {Changed}/{Total} reordered, {Queued} chapter re-download(s) queued, redownload-on-upgrade enabled.",
+                userId, unowned.Count, seriesChanged, targets.Count, chaptersQueued);
+
+            return new ApplyPriorityToAllResult(true, targets.Count, seriesChanged, unowned.Count, chaptersQueued);
+        }
+
+        /// <summary>
         /// Rebuilds a source-shaped ParsedChapter from a stored DB chapter so the
         /// existing download-generation path can be reused without re-fetching the
         /// source. The download job later pulls the actual pages from the chapter URL.
@@ -903,6 +1180,30 @@ namespace RenzoBackend.Services.Series
                 ?? sources.FirstOrDefault();
             foreach (SeriesProviderEntity a in sources)
                 a.IsStatus = ReferenceEquals(a, chosen);
+        }
+
+        /// <summary>
+        /// Re-ranks <paramref name="providers"/>' Priority (0 = highest) to match
+        /// <paramref name="defaultOrder"/>, a list of provider display names.
+        /// Providers matching an earlier name come first, in that order; providers
+        /// with no match keep their existing relative order and are placed after
+        /// every matched one. Matching is case-insensitive on <see cref="SeriesProviderEntity.Provider"/>.
+        /// </summary>
+        private static void ApplyDefaultPriorityOrder(List<SeriesProviderEntity> providers, string[] defaultOrder)
+        {
+            Dictionary<string, int> rank = new(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < defaultOrder.Length; i++)
+                rank.TryAdd(defaultOrder[i], i);
+
+            List<SeriesProviderEntity> ordered = providers
+                .Select((p, originalIndex) => (provider: p, originalIndex))
+                .OrderBy(x => rank.TryGetValue(x.provider.Provider, out int r) ? r : int.MaxValue)
+                .ThenBy(x => x.originalIndex)
+                .Select(x => x.provider)
+                .ToList();
+
+            for (int i = 0; i < ordered.Count; i++)
+                ordered[i].Priority = i;
         }
 
         /// <summary>
@@ -1304,14 +1605,17 @@ namespace RenzoBackend.Services.Series
             return null;
         }
 
-        private static void UpdateProviderSettings(SeriesExtendedDto series, Models.Database.SeriesEntity dbSeries)
+        /// <returns>True when any provider's per-series Priority changed.</returns>
+        private static bool UpdateProviderSettings(SeriesExtendedDto series, Models.Database.SeriesEntity dbSeries)
         {
+            bool priorityChanged = false;
             foreach (ProviderExtendedDto p in series.Providers)
             {
                 SeriesProviderEntity? n = dbSeries.Sources.FirstOrDefault(a => a.Id == p.Id);
                 if (n == null)
                     continue;
-                
+
+                priorityChanged |= n.Priority != p.Priority;
                 n.IsDisabled = p.IsDisabled;
                 n.IsStorage = p.IsStorage;
                 n.IsTitle = p.UseTitle;
@@ -1332,6 +1636,7 @@ namespace RenzoBackend.Services.Series
                 chosenStatus = sources.FirstOrDefault(a => a.IsStorage) ?? sources.FirstOrDefault(a => a.IsCover) ?? sources.FirstOrDefault();
             foreach (SeriesProviderEntity a in sources)
                 a.IsStatus = ReferenceEquals(a, chosenStatus);
+            return priorityChanged;
         }
 
         private void InternalAssignArchives(SeriesProviderEntity provider, List<ProviderArchiveSnapshot>? archives)
@@ -1497,5 +1802,9 @@ namespace RenzoBackend.Services.Series
         public string? SourceProviderName { get; }
         public int Queued { get; }
     }
+
+    /// <summary>Result of <see cref="SeriesCommandService.ApplyDefaultPriorityToAllSeriesAsync"/>.
+    /// <paramref name="Applied"/> is false only when the user has no default order configured.</summary>
+    public record ApplyPriorityToAllResult(bool Applied, int SeriesConsidered, int SeriesReordered, int SeriesAdopted, int ChaptersQueued);
 }
 

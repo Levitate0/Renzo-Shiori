@@ -3,8 +3,9 @@
 import { useSyncExternalStore, useCallback } from "react";
 
 /**
- * Accent color theme — independent of the light/dark toggle (next-themes).
- * Every hardcoded "pink" value in globals.css derives from the CSS vars
+ * Accent color theme — independent of the theme preset (the app is
+ * dark-only, no light/dark toggle). Every hardcoded "pink" value in
+ * globals.css derives from the CSS vars
  * --primary-h/--primary-s/--primary-l, which are overridden per-theme via
  * `[data-accent]` selectors on <html>. Switching the accent recolors the
  * whole app (primary buttons, focus rings, the Add Series spotlight, the

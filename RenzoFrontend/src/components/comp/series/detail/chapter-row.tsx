@@ -176,15 +176,17 @@ export function ChapterRow({
         <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
       )}
 
-      {/* Chapter number + title */}
-      <div className="min-w-0 flex-1">
+      {/* Chapter number + title — read chapters are visibly greyed out (whole
+          block, not just the title's already-muted color) so the read/unread
+          state reads clearly at a glance instead of grey-on-grey. */}
+      <div className={cn("min-w-0 flex-1", readCompleted && "opacity-50")}>
         <div className="flex items-baseline gap-2">
-          <span className={cn("whitespace-nowrap text-sm font-medium tabular-nums", readCompleted && "text-muted-foreground/60")}>
+          <span className="whitespace-nowrap text-sm font-medium tabular-nums">
             {formatChapter(num)}
           </span>
           {chapter.name && (
             <span
-              className={cn("truncate text-sm text-muted-foreground", readCompleted && "text-muted-foreground/50")}
+              className="truncate text-sm text-muted-foreground"
               title={chapter.name}
             >
               {chapter.name}

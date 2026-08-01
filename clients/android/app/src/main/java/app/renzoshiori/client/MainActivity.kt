@@ -1,406 +1,125 @@
 package app.renzoshiori.client
 
-import android.annotation.SuppressLint
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.graphics.Bitmap
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
-import android.view.View
-import android.view.inputmethod.EditorInfo
-import android.webkit.CookieManager
-import android.webkit.URLUtil
-import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.Button
-import android.widget.EditText
-import android.widget.ProgressBar
-import android.widget.TextView
-import androidx.activity.OnBackPressedCallback
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.Executors
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import app.renzoshiori.client.ui.auth.AuthStep
+import app.renzoshiori.client.ui.auth.AuthViewModel
+import app.renzoshiori.client.ui.auth.ConnectScreen
+import app.renzoshiori.client.ui.auth.LoginScreen
+import app.renzoshiori.client.ui.home.HomeShell
+import app.renzoshiori.client.ui.reader.ReaderScreen
+import app.renzoshiori.client.ui.series.OfflineSeriesScreen
+import app.renzoshiori.client.ui.series.SeriesDetailScreen
+import app.renzoshiori.client.ui.settings.AccountScreen
+import app.renzoshiori.client.ui.theme.RenzoTheme
 
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var webView: WebView
-    private lateinit var serverPanel: View
-    private lateinit var addressInput: EditText
-    private lateinit var connectButton: Button
-    private lateinit var errorText: TextView
-    private lateinit var progress: ProgressBar
-
-    private val executor = Executors.newSingleThreadExecutor()
-    private var serverUrl: String? = null
-
-    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
-    private val fileChooserLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            fileChooserCallback?.onReceiveValue(
-                WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
-            )
-            fileChooserCallback = null
-        }
-
-    private val prefs by lazy { getSharedPreferences("renzo", Context.MODE_PRIVATE) }
-
-    private lateinit var nativeBridge: RenzoNativeBridge
-
-    // User's offline download folder (Storage Access Framework). Result is
-    // reported back to the web UI via a `renzo:folderpicked` event.
-    private val folderPicker =
-        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-            var label: String? = null
-            if (uri != null) {
-                try {
-                    contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                } catch (_: Exception) {
-                }
-                nativeBridge.setFolder(uri)
-                label = nativeBridge.getFolder()
-            }
-            val labelJs = if (label != null) JSONObject.quote(label) else "null"
-            webView.evaluateJavascript(
-                "window.dispatchEvent(new CustomEvent('renzo:folderpicked',{detail:{label:$labelJs}}))",
-                null
-            )
-        }
-
-    private val connectivityManager by lazy {
-        getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    }
-    private val netCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = emitNet(true)
-        override fun onLost(network: Network) = emitNet(false)
-    }
-
-    private fun emitNet(online: Boolean) {
-        runOnUiThread {
-            if (::webView.isInitialized && webView.visibility == View.VISIBLE) {
-                webView.evaluateJavascript(
-                    "window.dispatchEvent(new CustomEvent('renzo:netchange',{detail:{online:$online}}))",
-                    null
-                )
-            }
-        }
-    }
-
-    // Relays native-download progress from RenzoDownloadService to the web UI.
-    private val downloadReceiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context?, intent: Intent?) {
-            if (intent == null) return
-            val detail = JSONObject()
-                .put("state", intent.getStringExtra("state"))
-                .put("seriesId", intent.getStringExtra("seriesId"))
-                .put("chapterKey", intent.getStringExtra("chapterKey"))
-                .put("chapterNumber", intent.getDoubleExtra("chapterNumber", 0.0))
-                .put("done", intent.getIntExtra("done", 0))
-                .put("total", intent.getIntExtra("total", 0))
-            runOnUiThread {
-                if (::webView.isInitialized) {
-                    webView.evaluateJavascript(
-                        "window.dispatchEvent(new CustomEvent('renzo:download',{detail:$detail}))",
-                        null
-                    )
-                }
-            }
-        }
-    }
+/**
+ * Native Compose rewrite — replaces the old WebView shell entirely (no more
+ * window.__RenzoAndroid JS bridge; this app talks to RenzoBackend's REST API
+ * directly). Auth gate (Connect → Login) wraps a NavHost with the signed-in
+ * graph: Library → Series/OfflineSeries → Reader, plus Account.
+ */
+class MainActivity : ComponentActivity() {
+    private val authViewModel: AuthViewModel by viewModels { AuthViewModel.factory(application) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        webView = findViewById(R.id.webView)
-        serverPanel = findViewById(R.id.serverPanel)
-        addressInput = findViewById(R.id.addressInput)
-        connectButton = findViewById(R.id.connectButton)
-        errorText = findViewById(R.id.errorText)
-        progress = findViewById(R.id.progress)
-
-        setupWebView()
-
-        try {
-            connectivityManager.registerDefaultNetworkCallback(netCallback)
-        } catch (_: Exception) {
-        }
-        ContextCompat.registerReceiver(
-            this, downloadReceiver, IntentFilter(RenzoDownloadService.BROADCAST),
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
-
-        // Notification permission (API 33+) so the background-download progress shows.
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            try {
-                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
-            } catch (_: Exception) {
-            }
-        }
-
-        connectButton.setOnClickListener { connect(addressInput.text.toString()) }
-        addressInput.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_GO) {
-                connect(addressInput.text.toString()); true
-            } else false
-        }
-
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (webView.visibility == View.VISIBLE && webView.canGoBack()) {
-                    webView.goBack()
-                } else if (webView.visibility == View.VISIBLE) {
-                    showExitDialog()
-                } else {
-                    finish()
-                }
-            }
-        })
-
-        if (savedInstanceState != null && savedInstanceState.getBoolean("hadWeb", false)) {
-            // Recreated after being backgrounded (config change / process death):
-            // restore the WebView where it was instead of reloading from the top.
-            serverUrl = prefs.getString("serverUrl", null)
-            serverPanel.visibility = View.GONE
-            errorText.visibility = View.GONE
-            webView.visibility = View.VISIBLE
-            webView.restoreState(savedInstanceState)
-        } else {
-            val saved = prefs.getString("serverUrl", null)
-            if (saved != null) {
-                addressInput.setText(saved)
-                connect(saved)
-            }
-        }
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        if (::webView.isInitialized && webView.visibility == View.VISIBLE) {
-            outState.putBoolean("hadWeb", true)
-            webView.saveState(outState)
-        }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun setupWebView() {
-        webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            databaseEnabled = true
-            loadWithOverviewMode = true
-            useWideViewPort = true
-            mediaPlaybackRequiresUserGesture = false
-        }
-        // Persist cookies (incl. the httpOnly refresh token) so login survives restarts.
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
-
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val target = request.url
-                val server = serverUrl?.let { Uri.parse(it) } ?: return false
-                // Same-server links stay in the app; external links open in the browser.
-                return if (target.host.equals(server.host, ignoreCase = true)) {
-                    false
-                } else {
-                    try {
-                        startActivity(Intent(Intent.ACTION_VIEW, target))
-                    } catch (_: Exception) {
-                    }
-                    true
-                }
-            }
-
-            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) {
-                    // Server unreachable: drop into the bundled offline reader if there
-                    // are downloads, otherwise show the connect panel.
-                    if (::nativeBridge.isInitialized && nativeBridge.hasDownloads()) {
-                        loadOfflineReader()
-                    } else {
-                        showServerPanel(getString(R.string.error_lost))
+        setContent {
+            RenzoTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    val state by authViewModel.state.collectAsState()
+                    when (val step = state.step) {
+                        is AuthStep.Connect -> ConnectScreen(
+                            loading = state.loading,
+                            error = state.error,
+                            onConnect = authViewModel::connect,
+                        )
+                        is AuthStep.Login -> LoginScreen(
+                            step = step,
+                            loading = state.loading,
+                            error = state.error,
+                            onLogin = authViewModel::login,
+                            onSelectUser = authViewModel::selectUser,
+                        )
+                        is AuthStep.SignedIn -> SignedInNavHost(
+                            username = step.user.username,
+                            onLogout = authViewModel::logout,
+                        )
                     }
                 }
             }
-
-            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-                CookieManager.getInstance().flush()
-            }
-        }
-
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onShowFileChooser(
-                view: WebView,
-                callback: ValueCallback<Array<Uri>>,
-                params: FileChooserParams
-            ): Boolean {
-                fileChooserCallback?.onReceiveValue(null)
-                fileChooserCallback = callback
-                return try {
-                    fileChooserLauncher.launch(params.createIntent())
-                    true
-                } catch (_: Exception) {
-                    fileChooserCallback = null
-                    false
-                }
-            }
-        }
-
-        // Offline bridge — window.__RenzoAndroid. Only the trusted server UI runs
-        // in this WebView (external links open in the system browser).
-        nativeBridge = RenzoNativeBridge(
-            this,
-            onPickFolder = { folderPicker.launch(null) },
-            onReconnect = { runOnUiThread { reconnectToServer() } },
-        )
-        webView.addJavascriptInterface(nativeBridge, "__RenzoAndroid")
-
-        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
-            try {
-                val request = DownloadManager.Request(Uri.parse(url)).apply {
-                    setMimeType(mimeType)
-                    addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url))
-                    addRequestHeader("User-Agent", userAgent)
-                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    setDestinationInExternalPublicDir(
-                        Environment.DIRECTORY_DOWNLOADS,
-                        URLUtil.guessFileName(url, contentDisposition, mimeType)
-                    )
-                }
-                (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
-            } catch (_: Exception) {
-            }
         }
     }
+}
 
-    private fun connect(rawInput: String) {
-        val input = rawInput.trim().trimEnd('/')
-        if (input.isEmpty()) {
-            showError(getString(R.string.error_empty))
-            return
+@androidx.compose.runtime.Composable
+private fun SignedInNavHost(username: String, onLogout: () -> Unit) {
+    val nav = rememberNavController()
+
+    NavHost(navController = nav, startDestination = "home") {
+        composable("home") {
+            HomeShell(
+                onOpenSeries = { id -> nav.navigate("series/$id") },
+                onOpenOfflineSeries = { id -> nav.navigate("offline-series/$id") },
+                onOpenAccount = { nav.navigate("account") },
+            )
         }
-        setBusy(true)
-        executor.execute {
-            val candidates =
-                if (input.startsWith("http://", true) || input.startsWith("https://", true)) listOf(input)
-                else listOf("https://$input", "http://$input")
-            val server = candidates.firstOrNull { isRenzoServer(it) }
-            runOnUiThread {
-                setBusy(false)
-                if (server == null) {
-                    showError(getString(R.string.error_unreachable))
-                } else {
-                    serverUrl = server
-                    prefs.edit().putString("serverUrl", server).apply()
-                    errorText.visibility = View.GONE
-                    serverPanel.visibility = View.GONE
-                    webView.visibility = View.VISIBLE
-                    webView.loadUrl(server)
-                }
-            }
+        composable(
+            "series/{seriesId}",
+            arguments = listOf(navArgument("seriesId") { type = NavType.StringType }),
+        ) { entry ->
+            val seriesId = entry.arguments!!.getString("seriesId")!!
+            SeriesDetailScreen(
+                seriesId = seriesId,
+                onBack = { nav.popBackStack() },
+                onReadChapter = { sid, ch -> nav.navigate("reader/$sid/$ch") },
+            )
         }
-    }
-
-    /** Probes {base}/api/system/info/public — same discovery endpoint the web client uses. */
-    private fun isRenzoServer(base: String): Boolean {
-        return try {
-            val conn = URL("$base/api/system/info/public").openConnection() as HttpURLConnection
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 10_000
-            try {
-                if (conn.responseCode != 200) return false
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
-                // Accept the current brand plus the legacy handshake ids (the server
-                // reported "Renzo"/"Rensaio" as product for older clients).
-                val product = JSONObject(body).optString("product")
-                product.equals("Renzo Shiori", ignoreCase = true) ||
-                    product.equals("Renzo", ignoreCase = true) || product.equals("Rensaio", ignoreCase = true)
-            } finally {
-                conn.disconnect()
-            }
-        } catch (_: Exception) {
-            false
+        composable(
+            "offline-series/{seriesId}",
+            arguments = listOf(navArgument("seriesId") { type = NavType.StringType }),
+        ) { entry ->
+            val seriesId = entry.arguments!!.getString("seriesId")!!
+            OfflineSeriesScreen(
+                seriesId = seriesId,
+                onBack = { nav.popBackStack() },
+                onReadChapter = { sid, ch -> nav.navigate("reader/$sid/$ch") },
+            )
         }
-    }
-
-    private fun showExitDialog() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.exit_dialog_title)
-            .setPositiveButton(R.string.exit_dialog_exit) { _, _ -> finish() }
-            .setNeutralButton(R.string.exit_dialog_change_server) { _, _ -> showServerPanel(null) }
-            .setNegativeButton(R.string.exit_dialog_cancel, null)
-            .show()
-    }
-
-    /** Load the bundled offline reader (reads downloads via window.__RenzoAndroid). */
-    private fun loadOfflineReader() {
-        serverPanel.visibility = View.GONE
-        errorText.visibility = View.GONE
-        webView.visibility = View.VISIBLE
-        webView.loadUrl("file:///android_asset/offline/index.html")
-    }
-
-    /** From the offline reader's "Reconnect" button: retry the saved server. */
-    private fun reconnectToServer() {
-        val saved = serverUrl ?: prefs.getString("serverUrl", null)
-        if (saved != null) connect(saved) else showServerPanel(null)
-    }
-
-    private fun showServerPanel(error: String?) {
-        webView.visibility = View.GONE
-        serverPanel.visibility = View.VISIBLE
-        addressInput.setText(serverUrl ?: prefs.getString("serverUrl", "") ?: "")
-        if (error != null) showError(error) else errorText.visibility = View.GONE
-    }
-
-    private fun showError(message: String) {
-        errorText.text = message
-        errorText.visibility = View.VISIBLE
-    }
-
-    private fun setBusy(busy: Boolean) {
-        connectButton.isEnabled = !busy
-        addressInput.isEnabled = !busy
-        progress.visibility = if (busy) View.VISIBLE else View.GONE
-        if (busy) errorText.visibility = View.GONE
-    }
-
-    override fun onPause() {
-        super.onPause()
-        CookieManager.getInstance().flush()
-    }
-
-    override fun onDestroy() {
-        try {
-            connectivityManager.unregisterNetworkCallback(netCallback)
-        } catch (_: Exception) {
+        composable(
+            "reader/{seriesId}/{chapter}",
+            arguments = listOf(
+                navArgument("seriesId") { type = NavType.StringType },
+                navArgument("chapter") { type = NavType.FloatType },
+            ),
+        ) { entry ->
+            val seriesId = entry.arguments!!.getString("seriesId")!!
+            val chapter = entry.arguments!!.getFloat("chapter").toDouble()
+            ReaderScreen(
+                seriesId = seriesId,
+                chapterNumber = chapter,
+                onExit = { nav.popBackStack() },
+            )
         }
-        try {
-            unregisterReceiver(downloadReceiver)
-        } catch (_: Exception) {
+        composable("account") {
+            AccountScreen(
+                username = username,
+                onBack = { nav.popBackStack() },
+                onLogout = onLogout,
+            )
         }
-        executor.shutdownNow()
-        super.onDestroy()
     }
 }

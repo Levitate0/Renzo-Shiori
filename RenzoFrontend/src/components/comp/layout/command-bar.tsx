@@ -1,8 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Menu, Monitor, Moon, Search, Sun, X } from "lucide-react";
-import { useTheme } from "next-themes";
+import { Menu, Search, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -13,6 +12,7 @@ import { RenzoBanner } from "@/components/comp/layout/renzo-banner";
 import { SectionList, SectionPills } from "@/components/comp/layout/section-pills";
 import { UserAvatarDropdown } from "@/components/comp/layout/user-menu";
 import { DownloadStatus } from "@/components/comp/layout/download-status";
+import { OnlineOfflinePill } from "@/components/comp/layout/online-offline-pill";
 import { ExternalLinks } from "@/components/comp/layout/external-links";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -161,9 +161,10 @@ export function CommandBar() {
             </div>
             <SectionList onNavigate={() => setSheetOpen(false)} />
 
-            {/* Drawer footer — download status + project links, restored from
-                the old sidebar bottom group. */}
+            {/* Drawer footer — view mode, download status + project links,
+                restored from the old sidebar bottom group. */}
             <div className="mt-2 space-y-3 border-t px-3 pt-3">
+              <OnlineOfflinePill className="sm:hidden" />
               <DownloadStatus variant="drawer" />
               <ExternalLinks />
             </div>
@@ -282,15 +283,13 @@ export function CommandBar() {
           )}
         </div>
 
+        {/* Online/Offline view-mode pill — native shells only, hidden on web */}
+        <OnlineOfflinePill className="hidden sm:inline-flex" />
+
         {/* Download status badges (desktop) — active / queued / failed counts,
             restored from the old sidebar. Links to the queue. */}
         <div className="hidden lg:flex items-center shrink-0">
           <DownloadStatus variant="bar" />
-        </div>
-
-        {/* Theme toggle (desktop) */}
-        <div className="hidden lg:flex items-center shrink-0">
-          <ThemeToggleButton />
         </div>
 
         {/* User avatar */}
@@ -319,51 +318,6 @@ export function CommandBar() {
         />
       </div>
     </div>
-  );
-}
-
-/* ─── Theme toggle ─────────────────────────────────────────────────────── */
-
-function ThemeToggleButton() {
-  const { theme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted) {
-    // Render a placeholder of the same size so the bar doesn't jiggle once the
-    // hook hydrates.
-    return <div className="h-9 w-9" />;
-  }
-
-  const cycle = () => {
-    const order = ["light", "dark", "system"] as const;
-    const idx = order.findIndex((t) => t === theme);
-    const next = order[(idx + 1) % order.length]!;
-    setTheme(next);
-  };
-
-  const label =
-    theme === "light" ? "Light" : theme === "dark" ? "Dark" : "System";
-  const Icon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-9 w-9"
-          onClick={cycle}
-          aria-label={`Theme: ${label}. Click to cycle.`}
-        >
-          <Icon className="h-4 w-4" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">Theme: {label}</TooltipContent>
-    </Tooltip>
   );
 }
 

@@ -21,7 +21,6 @@ const jetbrainsMono = JetBrains_Mono({
   variable: "--font-jetbrains-mono",
 });
 
-import { ThemeProvider } from "@/components/theme/theme-provider";
 import { ThemeSync } from "@/components/theme/theme-sync";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import QueryProvider from "@/components/providers/query-provider";
@@ -33,6 +32,7 @@ import { ImportProgressPill } from "@/components/comp/setup-wizard/import-progre
 import { ImportWizard } from "@/components/comp/import-wizard";
 import { FontLoader } from "@/components/ui/font-loader";
 import { SearchProvider } from "@/contexts/search-context";
+import { OfflineModeProvider } from "@/contexts/offline-mode-context";
 import { ServiceWorkerRegistrar } from "@/components/comp/service-worker-registrar";
 import { OfflineWatcher } from "@/components/comp/offline-watcher";
 import { OfflineDownloadPill } from "@/components/comp/offline-download-pill";
@@ -45,7 +45,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${GeistSans.variable} ${fraunces.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`dark ${GeistSans.variable} ${fraunces.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
       <head>
         <title>Renzo Shiori</title>
         <meta name="description" content="Series Downloader" />
@@ -64,37 +64,17 @@ export default function RootLayout({
         <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=2"/>
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2"/>
         <link rel="manifest" href="/site.webmanifest?v=2"/>
+        {/* Renzo Shiori is dark-only (no light mode) — the `dark` class on
+            <html> above is static, so there's no mode to bootstrap here.
+            This only applies the named palette preset + custom accent
+            (see theme-preset.ts), which still vary per user. */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
                 try {
-                  var storageKey = 'renzo-theme';
-                  var theme = localStorage.getItem(storageKey);
-                  var systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-                  
-                  if (theme === 'dark' || (theme === 'system' && systemTheme === 'dark') || (!theme && systemTheme === 'dark')) {
-                    document.documentElement.classList.add('dark');
-                    document.documentElement.style.colorScheme = 'dark';
-                  } else {
-                    document.documentElement.classList.remove('dark');
-                    document.documentElement.style.colorScheme = 'light';
-                  }
-                } catch (_) {
-                  // Fallback to system preference
-                  if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-                    document.documentElement.classList.add('dark');
-                    document.documentElement.style.colorScheme = 'dark';
-                  }
-                }
-
-                try {
-                  // Named theme preset — palette via [data-theme]; see
-                  // src/lib/utils/theme-preset.ts. "renzo"/"daylight" are the
-                  // base dark/light and need no attribute.
                   var preset = localStorage.getItem('renzo-preset');
-                  var base = ['renzo', 'daylight'];
-                  if (preset && base.indexOf(preset) === -1) {
+                  if (preset && preset !== 'renzo') {
                     document.documentElement.setAttribute('data-theme', preset);
                   }
                   // Custom accent overrides the preset's accent. Non-custom means
@@ -117,49 +97,34 @@ export default function RootLayout({
             `,
           }}
         />
-        <style dangerouslySetInnerHTML={{
-          __html: `
-            /* Prevent any flash by setting initial colors immediately */
-            html { background: white; }
-            html.dark { background: hsl(20, 14.3%, 4.1%); }
-            @media (prefers-color-scheme: dark) {
-              html:not(.light) { background: hsl(20, 14.3%, 4.1%); }
-            }
-          `
-        }} />
       </head>
-      <body suppressHydrationWarning>        <ThemeProvider
-          attribute="class"
-          defaultTheme="system"
-          enableSystem
-          disableTransitionOnChange
-          storageKey="renzo-theme"
-        >
+      <body suppressHydrationWarning>
           <TooltipProvider>
             <QueryProvider>
               <AuthProvider>
                 <SetupWizardProvider>
                   <ImportWizardProvider>
                     <SearchProvider>
-                      <FontLoader />
-                      <ThemeSync />
-                      <ServiceWorkerRegistrar />
-                      <OfflineWatcher />
-                      <OfflineDownloadPill />
-                      <VersionRefresher />
-                      <ClientSideSetupWizard />
-                      <OnboardingWalkthrough />
-                      <ImportProgressPill />
-                      <ImportWizard />
-                      {children}
-                      <Toaster position="top-center" richColors />
+                      <OfflineModeProvider>
+                        <FontLoader />
+                        <ThemeSync />
+                        <ServiceWorkerRegistrar />
+                        <OfflineWatcher />
+                        <OfflineDownloadPill />
+                        <VersionRefresher />
+                        <ClientSideSetupWizard />
+                        <OnboardingWalkthrough />
+                        <ImportProgressPill />
+                        <ImportWizard />
+                        {children}
+                        <Toaster position="top-center" richColors />
+                      </OfflineModeProvider>
                     </SearchProvider>
                   </ImportWizardProvider>
                 </SetupWizardProvider>
               </AuthProvider>
             </QueryProvider>
           </TooltipProvider>
-        </ThemeProvider>
       </body>
     </html>
   );

@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.Renzo" parent="Theme.AppCompat.NoActionBar">
+    <!-- Platform theme, not AppCompat/Material-Components — the native-Compose
+         rewrite drops appcompat entirely; MaterialTheme (Kotlin) owns all
+         actual app theming, this XML theme only configures system chrome
+         (splash screen, status/nav bar, window background) before Compose
+         takes over. -->
+    <style name="Theme.Renzo" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
-        <item name="colorPrimary">@color/foreground</item>
-        <item name="colorPrimaryDark">@color/background</item>
-        <item name="colorAccent">@color/foreground</item>
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:navigationBarColor">@color/background</item>
 

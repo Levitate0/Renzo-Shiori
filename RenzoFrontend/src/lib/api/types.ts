@@ -71,6 +71,9 @@ export interface Settings {
   downloadAllChapters: boolean;
   /** Rolling library scan interval in hours (3-12). */
   libraryScanIntervalHours: number;
+  // The redownload-on-upgrade toggle and the default source-priority order
+  // are per-user now, not instance-wide — see priority-prefs.ts (stored in
+  // the user's own `preferences` blob, same as theme).
 }
 
 // ── Built-in reader ────────────────────────────────────────────────────
