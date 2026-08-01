@@ -236,7 +236,15 @@ private fun SourcesTab(api: SourcesApi?, baseUrl: String, snackbar: SnackbarHost
             extensions.clear()
             extensions.addAll(list)
         } else {
-            snackbar.showSnackbar("Failed to load sources")
+            // Say WHY — a bare "failed" hides whether this was a 401, a 500
+            // from the extension manager, or a decode failure.
+            val cause = result.exceptionOrNull()
+            val detail = when (cause) {
+                is retrofit2.HttpException -> "HTTP ${cause.code()}"
+                is java.io.IOException -> "can't reach the server"
+                else -> cause?.message?.take(140) ?: "unknown error"
+            }
+            snackbar.showSnackbar("Failed to load sources — $detail")
         }
     }
 

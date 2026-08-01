@@ -14,7 +14,20 @@ import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.concurrent.ConcurrentHashMap
 
-private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
+/**
+ * `coerceInputValues` is load-bearing, not tidiness: plenty of backend DTOs
+ * declare non-nullable C# reference types with no initializer (ExtensionDto's
+ * `package`/`thumbnailUrl`, ExtensionRepositoryDto's `name`/`id`, …), so the
+ * wire can legitimately carry `null` where the Kotlin field is a non-null
+ * `String` with a default. Without coercion kotlinx throws and the whole
+ * screen fails to load; with it, null falls back to the declared default.
+ */
+private val json = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = false
+    coerceInputValues = true
+    explicitNulls = false
+}
 
 /**
  * In-memory cookie jar scoped to exactly the one cookie the backend actually
@@ -55,6 +68,29 @@ private class AuthInterceptor(private val tokenStore: TokenStore) : Interceptor 
 }
 
 /**
+ * Per-request timeout override. A few endpoints do all their work inline and
+ * can run for minutes — `POST /api/scrobbler/matches/auto` walks the whole
+ * library against the tracker's API before it answers — so they carry
+ * `X-Renzo-Timeout: <seconds>` and this strips the header back off before the
+ * request leaves. Without it those calls die on the default read timeout and
+ * surface as a generic failure even though the server is working fine.
+ */
+const val TIMEOUT_HEADER = "X-Renzo-Timeout"
+
+private class PerRequestTimeoutInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val seconds = request.header(TIMEOUT_HEADER)?.toIntOrNull()
+            ?: return chain.proceed(request)
+        val stripped = request.newBuilder().removeHeader(TIMEOUT_HEADER).build()
+        return chain
+            .withReadTimeout(seconds, java.util.concurrent.TimeUnit.SECONDS)
+            .withWriteTimeout(seconds, java.util.concurrent.TimeUnit.SECONDS)
+            .proceed(stripped)
+    }
+}
+
+/**
  * Rebuilds the Retrofit/OkHttp stack whenever the connected server changes —
  * the base URL isn't known at compile time, it's whatever the user entered on
  * the Connect screen (see ConnectScreen / SystemInfoApi.isRenzoServer).
@@ -66,7 +102,15 @@ class NetworkModule(private val tokenStore: TokenStore) {
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
             .addInterceptor(AuthInterceptor(tokenStore))
+            .addInterceptor(PerRequestTimeoutInterceptor())
             .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            // OkHttp defaults to a 10s read timeout, which several endpoints
+            // legitimately exceed: /api/provider/list walks the online
+            // extension repositories, scans and imports do real work, and
+            // stream/page pulls an image from the source site.
+            .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
             .build()
     }
 

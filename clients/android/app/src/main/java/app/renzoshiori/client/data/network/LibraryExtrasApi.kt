@@ -7,6 +7,7 @@ import app.renzoshiori.client.data.model.SettingsLiteDto
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.GET
+import retrofit2.http.Headers
 import retrofit2.http.POST
 import retrofit2.http.Query
 
@@ -29,7 +30,12 @@ interface LibraryExtrasApi {
     @GET("api/scrobbler/config")
     suspend fun scrobblerConfigs(): List<ScrobblerConfigLiteDto>
 
-    /** "Track all" — auto-match the whole library on one connected tracker. */
+    /**
+     * "Track all" — auto-match the whole library on one connected tracker.
+     * The backend does this inline, series by series, against the tracker's
+     * API, so it needs far longer than the default read timeout.
+     */
+    @Headers("$TIMEOUT_HEADER: 600")
     @POST("api/scrobbler/matches/auto")
     suspend fun autoMatchAll(@Query("provider") provider: Int): Response<ResponseBody>
 }

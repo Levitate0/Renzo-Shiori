@@ -137,12 +137,28 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         _state.value = _state.value.copy(trackingAll = true)
         viewModelScope.launch {
             val api = extras()
-            val ok = runCatching {
-                connected.forEach { api?.autoMatchAll(it.provider) }
-            }.isSuccess
+            // Report what actually went wrong: a non-2xx never throws through
+            // Retrofit's Response<T>, so it has to be checked explicitly, and
+            // a timeout/connection drop should not read the same as a refusal.
+            var failure: String? = null
+            runCatching {
+                connected.forEach { tracker ->
+                    val response = api?.autoMatchAll(tracker.provider)
+                    if (response != null && !response.isSuccessful && failure == null) {
+                        failure = "${tracker.displayName}: HTTP ${response.code()}"
+                    }
+                }
+            }.onFailure { e ->
+                failure = when (e) {
+                    is java.net.SocketTimeoutException -> "the server is still working — give it a minute and check Trackers"
+                    is java.io.IOException -> "can't reach the server"
+                    else -> e.message?.take(120) ?: "unknown error"
+                }
+            }
+            val ok = failure == null
             _state.value = _state.value.copy(
                 trackingAll = false,
-                toast = if (ok) "Tracking all your series…" else "Couldn't start tracking all series.",
+                toast = if (ok) "Tracking all your series…" else "Couldn't track all series — $failure",
             )
         }
     }
