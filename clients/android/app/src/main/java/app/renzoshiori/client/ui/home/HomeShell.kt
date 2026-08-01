@@ -267,7 +267,7 @@ fun HomeShell(
                         modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
                     ) {
                         Icon(
-                            painterResource(android.R.drawable.stat_sys_download_done).let { _ -> null } ?: Icons.Filled.Language,
+                            Icons.Filled.Language,
                             contentDescription = "Project site",
                             tint = RenzoColors.MutedForeground,
                             modifier = Modifier.size(20.dp).clickable {

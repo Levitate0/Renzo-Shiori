@@ -21,6 +21,20 @@ class RenzoApp : Application(), SingletonImageLoader.Factory {
     val network: NetworkModule by lazy { NetworkModule(tokenStore) }
     val offline: OfflineRepository by lazy { OfflineRepository(this) }
 
+    override fun onCreate() {
+        super.onCreate()
+        // Persist any crash so MainActivity can show the stack trace on the
+        // next launch (there's no adb on the server this app talks to).
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                java.io.File(filesDir, "last-crash.txt")
+                    .writeText(android.util.Log.getStackTraceString(throwable))
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
+    }
+
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         val authedClient = OkHttpClient.Builder()
             .addInterceptor { chain ->

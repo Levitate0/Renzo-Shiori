@@ -4,12 +4,27 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -37,9 +52,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val crashFile = java.io.File(filesDir, "last-crash.txt")
         setContent {
             RenzoTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    var crashText by androidx.compose.runtime.remember {
+                        androidx.compose.runtime.mutableStateOf(
+                            if (crashFile.exists()) runCatching { crashFile.readText() }.getOrNull() else null,
+                        )
+                    }
+                    if (crashText != null) {
+                        CrashReportScreen(
+                            trace = crashText!!,
+                            onDismiss = { crashFile.delete(); crashText = null },
+                        )
+                        return@Surface
+                    }
                     val state by authViewModel.state.collectAsState()
                     when (val step = state.step) {
                         is AuthStep.Connect -> ConnectScreen(
@@ -60,6 +88,36 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Shown once after a crash: the saved stack trace, copyable, so crashes can
+ * be reported from the device itself. Dismiss deletes the record and boots
+ * the app normally.
+ */
+@Composable
+private fun CrashReportScreen(trace: String, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Text("The app crashed last time", style = MaterialTheme.typography.titleMedium)
+        Text(
+            trace,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(vertical = 12.dp)
+                .verticalScroll(rememberScrollState()),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { clipboard.setText(AnnotatedString(trace)) }) {
+                Text("Copy")
+            }
+            Button(onClick = onDismiss) {
+                Text("Continue")
             }
         }
     }
