@@ -3,6 +3,7 @@ package app.renzoshiori.client.ui.reader
 import android.app.Application
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -204,6 +205,7 @@ fun ReaderScreen(
                         onPosition = vm::onPosition,
                         onImageLoaded = vm::onImageLoaded,
                         onNearEnd = vm::maybeAppendNext,
+                        onRetryAppend = vm::retryAppend,
                         onToggleChrome = { chromeVisible = !chromeVisible },
                         onNextChapter = { vm.goToChapter(1) },
                         onPrevChapter = { vm.goToChapter(-1) },
@@ -412,6 +414,7 @@ private fun ContinuousReader(
     onPosition: (Int, Int) -> Unit,
     onImageLoaded: (Int, Int) -> Unit,
     onNearEnd: () -> Unit,
+    onRetryAppend: () -> Unit,
     onToggleChrome: () -> Unit,
     onNextChapter: () -> Unit,
     onPrevChapter: () -> Unit,
@@ -424,6 +427,13 @@ private fun ContinuousReader(
     // Real aspect ratios as images decode, so a page box stops being a guess
     // (the web reader's loadedDimsRef — without it, boxes leave gaps).
     val loadedAspect = remember { mutableStateMapOf<String, Float>() }
+    // A page whose image never arrives used to leave an empty box with no
+    // explanation and no way out — indistinguishable from the reader hanging.
+    // These track per-page failure and a manual retry counter (bumping it
+    // changes the request key, so Coil refetches instead of replaying its
+    // cached failure).
+    val loadFailed = remember { mutableStateMapOf<String, Boolean>() }
+    val retryTick = remember { mutableStateMapOf<String, Int>() }
     val placeholderHeight = (LocalConfiguration.current.screenHeightDp * 0.7f).dp
 
     val strip = remember(segments) {
@@ -529,7 +539,11 @@ private fun ContinuousReader(
                         dims.first.toFloat() / dims.second.toFloat()
                     }
                     val aspect = loadedAspect[cacheKey] ?: serverAspect
+                    val attempt = retryTick[cacheKey] ?: 0
+                    val failed = loadFailed[cacheKey] == true
+                    var settled by remember(cacheKey, attempt) { mutableStateOf(false) }
                     Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .fillMaxWidth(widthFraction)
                             .then(
@@ -537,11 +551,18 @@ private fun ContinuousReader(
                                 else Modifier.height(placeholderHeight),
                             ),
                     ) {
+                        val rawModel = seg.pages.getOrNull(item.pageIndex)
                         AsyncImage(
-                            model = seg.pages.getOrNull(item.pageIndex),
+                            model = if (attempt > 0 && rawModel is String) {
+                                rawModel + (if (rawModel.contains('?')) "&" else "?") + "retry=" + attempt
+                            } else {
+                                rawModel
+                            },
                             contentDescription = "Page ${item.pageIndex + 1}",
                             contentScale = ContentScale.FillWidth,
                             onSuccess = { success ->
+                                settled = true
+                                loadFailed[cacheKey] = false
                                 val w = success.result.image.width
                                 val h = success.result.image.height
                                 if (w > 0 && h > 0) {
@@ -549,8 +570,39 @@ private fun ContinuousReader(
                                     onImageLoaded(w, h)
                                 }
                             },
+                            onError = {
+                                settled = true
+                                loadFailed[cacheKey] = true
+                            },
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        if (failed) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.clickable {
+                                    loadFailed[cacheKey] = false
+                                    retryTick[cacheKey] = attempt + 1
+                                },
+                            ) {
+                                Text(
+                                    "Page ${item.pageIndex + 1} didn't load",
+                                    fontSize = 13.sp,
+                                    color = ReaderPalette.Text70,
+                                )
+                                Text(
+                                    "Tap to retry",
+                                    fontSize = 12.sp,
+                                    color = RenzoColors.Primary,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                        } else if (!settled) {
+                            CircularProgressIndicator(
+                                color = ReaderPalette.Text35,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 }
 
@@ -575,6 +627,9 @@ private fun ContinuousReader(
                             onNext = onNextChapter,
                             onPrev = onPrevChapter,
                             onExit = onExit,
+                            appendError = state.appendError,
+                            appending = state.appending,
+                            onRetryAppend = onRetryAppend,
                             modifier = Modifier.align(Alignment.Center),
                         )
                     }

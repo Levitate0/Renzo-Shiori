@@ -72,6 +72,8 @@ data class ReaderUiState(
     val lockedUrl: String? = null,
     val unlockChecking: Boolean = false,
     val appending: Boolean = false,
+    /** Why the next chapter couldn't be appended — surfaced with a Retry. */
+    val appendError: String? = null,
     val openingLabel: String? = null,
     val arrivedLabel: String? = null,
     val cacheBusy: Boolean = false,
@@ -297,8 +299,10 @@ class ReaderViewModel(
 
         val filename = chapter.filename
         if (filename != null) {
-            val info = runCatching { api.chapterInfo(seriesId, encodeFilename(filename)) }.getOrNull()
-            if (info == null || info.pageCount == 0) return SegResult.Failed("Couldn't load chapter pages.")
+            val attempt = runCatching { api.chapterInfo(seriesId, encodeFilename(filename)) }
+            val info = attempt.getOrNull()
+            if (info == null) return SegResult.Failed(describeFailure(attempt.exceptionOrNull()))
+            if (info.pageCount == 0) return SegResult.Failed("The server reported no pages for this chapter.")
             val dims = (0 until info.pageCount).map { i ->
                 info.pages.firstOrNull { it.index == i }?.let { p ->
                     val w = p.width ?: 0
@@ -321,9 +325,12 @@ class ReaderViewModel(
             )
         }
 
-        // Not downloaded anywhere → stream it live from the source.
-        val stream = runCatching { api.streamPages(seriesId, number) }.getOrNull()
-        if (stream == null) return SegResult.Failed("Couldn't load chapter pages.")
+        // Not downloaded anywhere → stream it live from the source. This is
+        // the slow path: the server fetches the page list from the source site
+        // (sometimes through a Cloudflare solver), so it can take a while.
+        val attempt = runCatching { api.streamPages(seriesId, number) }
+        val stream = attempt.getOrNull()
+        if (stream == null) return SegResult.Failed(describeFailure(attempt.exceptionOrNull()))
         if (stream.locked || stream.pageCount <= 0) return SegResult.Locked(chapter.url)
         return SegResult.Ok(
             ReaderSegment(
@@ -379,15 +386,42 @@ class ReaderViewModel(
             when (val result = buildSegment(next)) {
                 is SegResult.Ok -> {
                     if (result.source == PageSource.STREAM) usedStream = true
-                    if (result.segment.pageCount > 0)
-                        _state.update { it.copy(segments = it.segments + result.segment) }
-                    else appendStopped = true
+                    if (result.segment.pageCount > 0) {
+                        _state.update { it.copy(segments = it.segments + result.segment, appendError = null) }
+                    } else {
+                        appendStopped = true
+                    }
                 }
-                else -> appendStopped = true
+                // A failed append must not silently dead-end the reader: say
+                // what went wrong and let the reader try again, since the
+                // usual cause is a slow source that succeeds on a second go.
+                is SegResult.Failed -> {
+                    appendStopped = true
+                    _state.update { it.copy(appendError = result.message) }
+                }
+                is SegResult.Locked -> appendStopped = true
             }
             appending = false
             _state.update { it.copy(appending = false) }
         }
+    }
+
+    /** "Try again" from the end-of-chapter block after a failed append. */
+    fun retryAppend() {
+        appendStopped = false
+        _state.update { it.copy(appendError = null) }
+        maybeAppendNext()
+    }
+
+    /** Turn a network failure into something worth reading on screen. */
+    private fun describeFailure(cause: Throwable?): String = when (cause) {
+        is java.net.SocketTimeoutException ->
+            "The source is taking too long to answer."
+        is java.io.IOException ->
+            "Can't reach the server."
+        is retrofit2.HttpException ->
+            "The server returned HTTP ${cause.code()}."
+        else -> cause?.message?.take(120) ?: "Couldn't load chapter pages."
     }
 
     // ── Position + progress ───────────────────────────────────────────────

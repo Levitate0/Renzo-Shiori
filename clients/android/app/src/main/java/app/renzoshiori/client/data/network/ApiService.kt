@@ -99,6 +99,13 @@ interface ApiService {
         @Query("filename", encoded = true) filename: String,
     ): ReaderChapterInfoDto
 
+    /**
+     * The slow path: the server fetches the page list from the source site,
+     * sometimes via a Cloudflare solver, so this legitimately takes far longer
+     * than a normal API call. Without the bigger budget an infinite-scroll
+     * append just times out and dead-ends the reader.
+     */
+    @retrofit2.http.Headers("$TIMEOUT_HEADER: 180")
     @GET("api/reader/stream/pages")
     suspend fun streamPages(
         @Query("seriesId") seriesId: String,

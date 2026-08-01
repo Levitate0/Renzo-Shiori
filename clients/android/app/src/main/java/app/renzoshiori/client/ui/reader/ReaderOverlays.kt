@@ -85,6 +85,10 @@ fun EndOfChapter(
     onPrev: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Set when an infinite-scroll append failed; shown with a Retry. */
+    appendError: String? = null,
+    appending: Boolean = false,
+    onRetryAppend: () -> Unit = {},
 ) {
     Column(
         modifier = modifier.fillMaxWidth().padding(24.dp),
@@ -129,12 +133,41 @@ fun EndOfChapter(
             }
         }
         if (hasNext) {
-            Text(
-                if (infinite) "keep scrolling to continue" else "or tap the right side",
-                fontSize = 12.sp,
-                color = ReaderPalette.Text35,
-                modifier = Modifier.padding(top = 12.dp),
-            )
+            when {
+                appending -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 12.dp),
+                ) {
+                    CircularProgressIndicator(
+                        color = ReaderPalette.Text70,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(12.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Loading the next chapter…", fontSize = 12.sp, color = ReaderPalette.Text35)
+                }
+
+                appendError != null -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(top = 12.dp),
+                ) {
+                    Text(
+                        appendError,
+                        fontSize = 12.sp,
+                        color = ReaderPalette.Text35,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SecondaryButton("Try again", onRetryAppend)
+                }
+
+                else -> Text(
+                    if (infinite) "keep scrolling to continue" else "or tap the right side",
+                    fontSize = 12.sp,
+                    color = ReaderPalette.Text35,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+            }
         }
     }
 }
