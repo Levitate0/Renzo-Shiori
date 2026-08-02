@@ -26,6 +26,7 @@ android {
         targetSdk = 35
         versionCode = 14
         versionName = "1.3.1"
+        buildConfigField("boolean", "PLACEHOLDER_ART", "false")
     }
 
     signingConfigs {
@@ -40,6 +41,19 @@ android {
     }
 
     buildTypes {
+        /**
+         * Screenshot build for the Play listing. Identical to release in every
+         * way EXCEPT that every remote image is swapped for bundled placeholder
+         * art, so store screenshots carry no third-party cover or page artwork.
+         * Its own applicationId means it installs alongside the real app.
+         */
+        create("placeholder") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".artplaceholder"
+            versionNameSuffix = "-placeholder"
+            buildConfigField("boolean", "PLACEHOLDER_ART", "true")
+            isMinifyEnabled = false
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -57,6 +71,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

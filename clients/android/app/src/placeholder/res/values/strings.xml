@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launcher label only, so this build is obvious next to the real app.
+         The in-app wordmark is unchanged, so screenshots still read "Renzo Shiori". -->
+    <string name="app_name">Renzo Shiori (Art)</string>
+</resources>
