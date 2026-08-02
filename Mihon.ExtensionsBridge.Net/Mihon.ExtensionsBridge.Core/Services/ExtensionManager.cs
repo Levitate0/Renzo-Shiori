@@ -201,7 +201,22 @@ namespace Mihon.ExtensionsBridge.Core.Services
         {
             if (!_localInitialized)
                 throw new InvalidOperationException("Local extensions not initialized.");
+            // Callers only ever hold a CLONE of the group (see
+            // PublicProxyExtensionManager.FindExtension/ListExtensions): they set
+            // AutoUpdate / ActiveEntry on that clone and hand it back here. The
+            // requested state therefore lives on the argument, and must be copied
+            // onto the live group before saving — resolving straight over the top
+            // of it silently discarded every change, so pinning an extension and
+            // toggling auto-update both persisted nothing and answered with the
+            // old value.
+            RepositoryGroup requested = group;
             group = ResolveLocal(group);
+            if (!ReferenceEquals(requested, group))
+            {
+                group.AutoUpdate = requested.AutoUpdate;
+                if (requested.ActiveEntry >= 0 && requested.ActiveEntry < group.Entries.Count)
+                    group.ActiveEntry = requested.ActiveEntry;
+            }
             if (group.ActiveEntry < 0 || group.ActiveEntry >= group.Entries.Count)
                 throw new InvalidOperationException("Active entry index is out of bounds for repository group.");
             RepositoryEntry current = group.Entries[group.ActiveEntry];
