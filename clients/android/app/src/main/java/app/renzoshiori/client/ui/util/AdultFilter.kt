@@ -33,10 +33,17 @@ object AdultFilter {
 
     private var hiddenState by mutableStateOf(false)
 
-    /** Loads the persisted flag. Called once from RenzoApp.onCreate. */
+    /**
+     * Loads the persisted flag. Called once from RenzoApp.onCreate.
+     *
+     * Defaults to HIDDEN. A fresh install shows nothing adult until the user
+     * asks for it — the catalogue a source returns is not under our control,
+     * so opt-in is the only defensible default (and it's what the store
+     * questionnaire is really asking about).
+     */
     fun init(context: Context) {
         hiddenState = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY, false)
+            .getBoolean(KEY, true)
     }
 
     /** Observable — a composable that reads this recomposes when it changes. */

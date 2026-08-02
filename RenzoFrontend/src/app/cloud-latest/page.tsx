@@ -4,7 +4,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { getResponsiveCardDefault } from "@/lib/utils/responsive-card-default";
-import { Globe, Tag, X, Check, Search, Compass, Plus } from "lucide-react";
+import { Globe, Tag, X, Check, Search, Compass, Plus, Eye, EyeOff } from "lucide-react";
 import {
   Select,
   SelectTrigger,
@@ -194,7 +194,7 @@ export default function CloudLatestPage() {
   }, [setSelectedGenres]);
 
   const { debouncedSearchTerm } = useSearch();
-  const [hideAdult] = useHideAdult();
+  const [hideAdult, toggleHideAdult] = useHideAdult();
   const { data: sources } = useSearchSources();
   const { data: genresData, isLoading: isGenresLoading } = useLatestGenres();
 
@@ -594,6 +594,26 @@ export default function CloudLatestPage() {
               </SelectContent>
             </Select>
           </div>
+
+          {/* 18+ visibility — the same flag the account menu carries. Browse is
+              where an unwanted adult cover actually ambushes you (the catalogue
+              is whatever the source returns), so the control lives here too. */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleHideAdult}
+            aria-pressed={!hideAdult}
+            title={hideAdult ? "Adult (18+) titles are hidden" : "Adult (18+) titles are shown"}
+            className={`h-8 shrink-0 gap-1.5 px-2.5 text-xs ${
+              hideAdult
+                ? ""
+                : "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/15 dark:text-amber-400"
+            }`}
+          >
+            {hideAdult ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            <span className="hidden sm:inline">{hideAdult ? "18+ Hidden" : "18+ Shown"}</span>
+            <span className="sm:hidden">18+</span>
+          </Button>
 
           {/* Tag popover — anchored to the trigger button; opens below the ribbon. */}
           <div className="relative shrink-0">

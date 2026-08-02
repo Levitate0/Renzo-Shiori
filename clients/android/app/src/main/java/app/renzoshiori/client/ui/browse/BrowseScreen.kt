@@ -38,6 +38,8 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -85,6 +87,7 @@ import app.renzoshiori.client.ui.library.formatChapter
 import app.renzoshiori.client.ui.library.getStatusDisplay
 import app.renzoshiori.client.ui.theme.RenzoColors
 import app.renzoshiori.client.ui.util.AdultFilter
+import app.renzoshiori.client.ui.util.rememberHideAdult
 import coil3.compose.AsyncImage
 
 // ---------------------------------------------------------------------------
@@ -133,7 +136,11 @@ fun BrowseScreen() {
 
     val api = remember { renzoApp.network.currentServiceOf<BrowseApi>() }
     val baseUrl = renzoApp.tokenStore.serverUrl ?: ""
-    val hideAdult = AdultFilter.isHidden(context)
+    // Same flag the account menu toggles — Browse is where an unwanted adult
+    // cover actually ambushes you (the catalogue is whatever the source
+    // returns), so the control belongs in this ribbon too, not three taps away.
+    val adultFilter = rememberHideAdult(context)
+    val hideAdult by adultFilter.hidden
 
     var selectedSourceId by remember { mutableStateOf("__ALL__") }
     var cardWidth by remember { mutableStateOf("w-32") }
@@ -322,6 +329,36 @@ fun BrowseScreen() {
             }
 
             Spacer(Modifier.width(4.dp))
+
+            // 18+ visibility — mirrors the account menu's "Adult (18+)" item.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .height(32.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(
+                        1.dp,
+                        if (hideAdult) RenzoColors.Border else RenzoColors.Amber.copy(alpha = 0.5f),
+                        RoundedCornerShape(8.dp),
+                    )
+                    .background(if (hideAdult) RenzoColors.Card else RenzoColors.Amber.copy(alpha = 0.12f))
+                    .clickable { adultFilter.toggle() }
+                    .padding(horizontal = 10.dp),
+            ) {
+                Icon(
+                    if (hideAdult) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                    contentDescription = null,
+                    tint = if (hideAdult) RenzoColors.MutedForeground else RenzoColors.Amber,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    if (hideAdult) "18+ Hidden" else "18+ Shown",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (hideAdult) RenzoColors.Foreground else RenzoColors.Amber,
+                    maxLines = 1,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            }
 
             // Card size.
             RibbonSelect(

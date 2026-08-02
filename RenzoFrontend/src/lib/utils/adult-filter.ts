@@ -53,9 +53,15 @@ export function isAdultItem(item: { genre?: string[] | null; isNsfw?: boolean })
 const STORAGE_KEY = "renzo_hide_adult";
 const CHANGE_EVENT = "renzo-hide-adult-changed";
 
+/**
+ * Defaults to HIDDEN. A fresh browser (or a fresh install of the native
+ * shells, which mirror this key) shows nothing adult until the user asks for
+ * it — the catalogue a source returns isn't under our control, so opt-in is
+ * the only defensible default. Only an explicit "0" means "show".
+ */
 function getHideAdult(): boolean {
-  if (typeof window === "undefined") return false;
-  return localStorage.getItem(STORAGE_KEY) === "1";
+  if (typeof window === "undefined") return true;
+  return localStorage.getItem(STORAGE_KEY) !== "0";
 }
 
 function setHideAdult(value: boolean): void {
