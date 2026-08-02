@@ -162,6 +162,8 @@ const SETTINGS_KEY = "renzo_reader_settings";
 // Continuous scroll keeps at most this many chapters on each side of the active
 // one loaded; the rest are pruned (and their page cache freed) as you scroll.
 const CHAPTER_WINDOW = 2;
+/** Minimum gap between infinite-scroll appends (see lastAppendAtRef). */
+const APPEND_COOLDOWN_MS = 1200;
 const seriesModeKey = (id: string) => `renzo_reader_mode_${id}`;
 
 function loadSettings(): ReaderSettings {
@@ -216,6 +218,14 @@ function ReaderInner() {
   const [prepended, setPrepended] = useState<Segment[]>([]);
   // Which segment ([...prepended, primary, ...appended]) is currently on screen.
   const [activeSegIndex, setActiveSegIndex] = useState(0);
+  // Mirrored in a ref so maybeAppend (called from the scroll handler) reads
+  // the CURRENT on-screen segment rather than a stale closure value.
+  const activeSegIndexRef = useRef(0);
+  // When the last append finished. A scroll that is still running when a
+  // chapter lands would otherwise be free to trigger the next one instantly,
+  // over and over; one append per cooldown keeps a fling or an autoscroll
+  // from burning through the series.
+  const lastAppendAtRef = useRef(0);
   // Sliding window: continuous scroll keeps at most CHAPTER_WINDOW chapters on
   // either side of the active one, pruning (and so freeing the page cache of)
   // chapters that scroll out of range. Once the opening chapter itself scrolls
@@ -374,6 +384,7 @@ function ReaderInner() {
       setPrimaryHidden(false);
       pruneAnchorRef.current = null;
       setActiveSegIndex(0);
+      activeSegIndexRef.current = 0;
       appendStoppedRef.current = false;
       prependStoppedRef.current = false;
       prependAdjustRef.current = null;
@@ -848,6 +859,14 @@ function ReaderInner() {
     // Defer to near the boundary (was ~1.5 screens) so the next chapter isn't
     // pulled from the source while the user is nowhere near the end.
     if (scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight) > scroller.clientHeight * 0.75) return;
+    // Never queue a chapter while the reader is still inside an earlier one.
+    // An append inserts pages ABOVE the end block, so at an unchanged scroll
+    // position the distance-to-bottom check can be satisfied again immediately
+    // — with a continuous scroll running (middle-click autoscroll, a held
+    // key), that chain-loads chapter after chapter and marks them read. The
+    // reader has to genuinely arrive in the newest segment first.
+    if (activeSegIndexRef.current < segments.length - 1) return;
+    if (Date.now() - lastAppendAtRef.current < APPEND_COOLDOWN_MS) return;
     const last = segments[segments.length - 1];
     if (!last || !chapterExistsFrom(last, 1)) return;
     appendLockRef.current = true;
@@ -869,7 +888,11 @@ function ReaderInner() {
         // next chapter is still reachable via the nav buttons.
         else appendStoppedRef.current = true;
       } catch { appendStoppedRef.current = true; }
-      finally { appendLockRef.current = false; setAppending(false); }
+      finally {
+        lastAppendAtRef.current = Date.now();
+        appendLockRef.current = false;
+        setAppending(false);
+      }
     })();
   }, [settings.infiniteScroll, isContinuous, segments, chapterExistsFrom, isPreview, previewOrder, readableChapters, buildPreviewSeg, buildLibrarySeg]);
 
@@ -982,6 +1005,7 @@ function ReaderInner() {
     setAppended(newAppended);
     if (newHidden !== primaryHidden) setPrimaryHidden(newHidden);
     setActiveSegIndex(active - dropFront);
+    activeSegIndexRef.current = active - dropFront;
   }, [isContinuous, settings.infiniteScroll, segments, segOffsets, prepended, appended, primaryHidden, primarySeg]);
 
   const pruneWindowRef = useRef(pruneWindow);
@@ -1037,6 +1061,7 @@ function ReaderInner() {
         if (off != null && current >= off) si = k; else break;
       }
       setActiveSegIndex(si);
+      activeSegIndexRef.current = si;
       setCurrentPage(current - (segOffsets[si] ?? 0));
       maybeAppendRef.current();
       if (scrollingUp) maybePrependRef.current();

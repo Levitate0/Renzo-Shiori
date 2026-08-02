@@ -380,6 +380,11 @@ class ReaderViewModel(
         // nobody has looked at. The probe line moves activeSegIndex onto the
         // newest segment only once it is genuinely on screen.
         if (s.activeSegIndex < s.segments.lastIndex) return
+        // A scroll still running when a chapter lands would otherwise be free
+        // to trigger the next one instantly, over and over. One append per
+        // cooldown keeps a fling — or a held tap-scroll — from burning
+        // through the series.
+        if (android.os.SystemClock.elapsedRealtime() - lastAppendAt < APPEND_COOLDOWN_MS) return
         val last = s.segments.lastOrNull() ?: return
         val list = s.readable
         val idx = list.indexOfFirst { it.number == last.chapterNumber }
@@ -407,14 +412,20 @@ class ReaderViewModel(
                 }
                 is SegResult.Locked -> appendStopped = true
             }
+            lastAppendAt = android.os.SystemClock.elapsedRealtime()
             appending = false
             _state.update { it.copy(appending = false) }
         }
     }
 
+    /** Minimum gap between infinite-scroll appends (see maybeAppendNext). */
+    private var lastAppendAt = 0L
+    private val APPEND_COOLDOWN_MS = 1200L
+
     /** "Try again" from the end-of-chapter block after a failed append. */
     fun retryAppend() {
         appendStopped = false
+        lastAppendAt = 0L
         _state.update { it.copy(appendError = null) }
         maybeAppendNext()
     }

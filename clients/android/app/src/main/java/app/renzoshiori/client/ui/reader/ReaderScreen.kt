@@ -500,6 +500,15 @@ private fun ContinuousReader(
     // short chapter is appended, because the new pages are unmeasured
     // placeholders that haven't been laid out yet. That fires another append,
     // and another, walking the whole series in seconds.
+    //
+    // One append must also require real forward scrolling. Appending inserts
+    // items ABOVE the end block, so at an unchanged scroll offset the viewport
+    // is suddenly showing the new chapter's placeholders — the reader "arrives"
+    // in it without moving, which re-arms every other guard. Holding a
+    // tap-to-scroll at the bottom hit exactly that and looped. So a trigger is
+    // only allowed once the first visible item has advanced past wherever the
+    // previous one fired.
+    var appendArmedAt by remember(segments.size) { mutableStateOf(-1) }
     LaunchedEffect(strip) {
         snapshotFlow {
             val info = listState.layoutInfo
@@ -512,7 +521,13 @@ private fun ContinuousReader(
             }
         }
             .distinctUntilChanged()
-            .collect { near -> if (near) onNearEnd() }
+            .collect { near ->
+                if (!near) return@collect
+                val first = listState.firstVisibleItemIndex
+                if (first <= appendArmedAt) return@collect
+                appendArmedAt = first
+                onNearEnd()
+            }
     }
 
     val widthFraction = (settings.maxWidthPct / 100f).coerceIn(0.2f, 1f)
