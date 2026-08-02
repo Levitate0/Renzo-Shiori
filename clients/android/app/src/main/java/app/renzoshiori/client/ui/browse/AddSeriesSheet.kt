@@ -444,6 +444,41 @@ private fun SearchStage(
                         .heightIn(max = 220.dp)
                         .padding(horizontal = 16.dp),
                 ) {
+                    // Select all / none. Note that selecting everything makes
+                    // each search query every installed extension live, which
+                    // is slow enough to trip a proxy's gateway timeout — hence
+                    // the count next to it rather than a silent toggle.
+                    val allSelected = selectedSources.size == sources.size && sources.isNotEmpty()
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (allSelected) {
+                                    selectedSources.clear()
+                                } else {
+                                    selectedSources.clear()
+                                    selectedSources.addAll(
+                                        sources.mapNotNull { it.mihonProviderId.takeIf(String::isNotBlank) },
+                                    )
+                                }
+                            }
+                            .padding(vertical = 6.dp),
+                    ) {
+                        CheckBox(allSelected)
+                        Text(
+                            if (allSelected) "Select none" else "Select all",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = RenzoColors.Primary,
+                            modifier = Modifier.padding(start = 8.dp).weight(1f),
+                        )
+                        Text(
+                            "${selectedSources.size}/${sources.size}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = RenzoColors.MutedForeground,
+                        )
+                    }
+                    HorizontalDivider(color = RenzoColors.Border)
                     LazyColumn {
                         items(sources, key = { it.mihonProviderId }) { source ->
                             val checked = selectedSources.contains(source.mihonProviderId)
