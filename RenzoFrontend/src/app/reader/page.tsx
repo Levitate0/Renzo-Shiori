@@ -226,6 +226,10 @@ function ReaderInner() {
   // over and over; one append per cooldown keeps a fling or an autoscroll
   // from burning through the series.
   const lastAppendAtRef = useRef(0);
+  const lastPrependAtRef = useRef(0);
+  // Segments owning the pages at the bottom / top of the viewport — see the
+  // scroll handler. null until the first measurement.
+  const boundarySegRef = useRef<{ bottom: number | null; top: number | null }>({ bottom: null, top: null });
   // Sliding window: continuous scroll keeps at most CHAPTER_WINDOW chapters on
   // either side of the active one, pruning (and so freeing the page cache of)
   // chapters that scroll out of range. Once the opening chapter itself scrolls
@@ -863,9 +867,12 @@ function ReaderInner() {
     // An append inserts pages ABOVE the end block, so at an unchanged scroll
     // position the distance-to-bottom check can be satisfied again immediately
     // — with a continuous scroll running (middle-click autoscroll, a held
-    // key), that chain-loads chapter after chapter and marks them read. The
-    // reader has to genuinely arrive in the newest segment first.
-    if (activeSegIndexRef.current < segments.length - 1) return;
+    // key), that chain-loads chapter after chapter and marks them read.
+    // The test is the chapter owning the page at the BOTTOM of the viewport,
+    // i.e. the page above the end block; an insert can't fake that the way it
+    // can shift the probe-derived active segment.
+    const bottomSeg = boundarySegRef.current.bottom ?? activeSegIndexRef.current;
+    if (bottomSeg < segments.length - 1) return;
     if (Date.now() - lastAppendAtRef.current < APPEND_COOLDOWN_MS) return;
     const last = segments[segments.length - 1];
     if (!last || !chapterExistsFrom(last, 1)) return;
@@ -908,6 +915,13 @@ function ReaderInner() {
     if (!scroller) return;
     // Defer to near the top boundary (was ~1 screen).
     if (scroller.scrollTop > scroller.clientHeight * 0.5) return;
+    // Mirror of the append guard, for back-tracking: don't pull the previous
+    // chapter while the reader is still inside a later one, and leave a gap
+    // between prepends so a scroll that is still running when a chapter lands
+    // can't chain them.
+    const topSeg = boundarySegRef.current.top ?? activeSegIndexRef.current;
+    if (topSeg > 0) return;
+    if (Date.now() - lastPrependAtRef.current < APPEND_COOLDOWN_MS) return;
     const first = segments[0];
     if (!first || !chapterExistsFrom(first, -1)) return;
     prependLockRef.current = true;
@@ -929,7 +943,11 @@ function ReaderInner() {
           setPrepended((p) => [prev!, ...p]);
         } else prependStoppedRef.current = true;
       } catch { prependStoppedRef.current = true; }
-      finally { prependLockRef.current = false; setPrepending(false); }
+      finally {
+        lastPrependAtRef.current = Date.now();
+        prependLockRef.current = false;
+        setPrepending(false);
+      }
     })();
   }, [settings.infiniteScroll, isContinuous, segments, chapterExistsFrom, isPreview, previewOrder, readableChapters, buildPreviewSeg, buildLibrarySeg]);
 
@@ -1054,6 +1072,32 @@ function ReaderInner() {
         if (rect.top > probe) break;      // past the probe — keep the last one below it
         current = gi;
       }
+      // Which chapter owns the page ABOVE the bottom boundary, and which owns
+      // the page BELOW the top boundary. These drive the append/prepend
+      // guards: unlike the probe-derived active segment, they can't be faked
+      // by an insert shifting content under a stationary viewport.
+      let lastVisibleGi: number | null = null;
+      let firstVisibleGi: number | null = null;
+      for (const [gi, node] of entries) {
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom > box.top && rect.top < box.bottom) {
+          if (firstVisibleGi == null) firstVisibleGi = gi;
+          lastVisibleGi = gi;
+        }
+      }
+      const segOfGi = (gi: number | null) => {
+        if (gi == null) return null;
+        let k2 = 0;
+        for (let k = 0; k < segOffsets.length; k++) {
+          const off = segOffsets[k];
+          if (off != null && gi >= off) k2 = k; else break;
+        }
+        return k2;
+      };
+      boundarySegRef.current = {
+        bottom: segOfGi(lastVisibleGi),
+        top: segOfGi(firstVisibleGi),
+      };
       // Map the global page index back to (segment, page-in-segment).
       let si = 0;
       for (let k = 0; k < segOffsets.length; k++) {

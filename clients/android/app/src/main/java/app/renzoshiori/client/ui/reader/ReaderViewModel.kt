@@ -371,20 +371,35 @@ class ReaderViewModel(
      * the bottom approaches; no-ops unless infinite scroll is on and there is a
      * further, unlocked chapter to pull.
      */
-    fun maybeAppendNext() {
+    fun maybeAppendNext(fromSegIndex: Int = _state.value.activeSegIndex) {
         val s = _state.value
         if (!s.settings.infiniteScroll || appending || appendStopped || s.loading) return
         // Never queue a chapter while the reader is still inside an earlier
-        // one. Without this, one append makes room for the next trigger and
-        // the reader chain-loads (and marks read) chapter after chapter that
-        // nobody has looked at. The probe line moves activeSegIndex onto the
-        // newest segment only once it is genuinely on screen.
-        if (s.activeSegIndex < s.segments.lastIndex) return
+        // one, or one append makes room for the next and the reader
+        // chain-loads (and marks read) chapters nobody has looked at.
+        // [fromSegIndex] is the chapter owning the last page above the
+        // boundary block, which an insert cannot fake — unlike the tracked
+        // active segment, which shifts when pages appear above it.
+        if (fromSegIndex < s.segments.lastIndex) return
         // A scroll still running when a chapter lands would otherwise be free
         // to trigger the next one instantly, over and over. One append per
         // cooldown keeps a fling — or a held tap-scroll — from burning
         // through the series.
-        if (android.os.SystemClock.elapsedRealtime() - lastAppendAt < APPEND_COOLDOWN_MS) return
+        val sinceLast = android.os.SystemClock.elapsedRealtime() - lastAppendAt
+        if (sinceLast < APPEND_COOLDOWN_MS) {
+            // Re-arm rather than drop it: the reader may already be parked at
+            // the boundary, in which case no further scroll event would come
+            // to try again.
+            if (!cooldownRetryQueued) {
+                cooldownRetryQueued = true
+                viewModelScope.launch {
+                    kotlinx.coroutines.delay(APPEND_COOLDOWN_MS - sinceLast)
+                    cooldownRetryQueued = false
+                    maybeAppendNext(fromSegIndex)
+                }
+            }
+            return
+        }
         val last = s.segments.lastOrNull() ?: return
         val list = s.readable
         val idx = list.indexOfFirst { it.number == last.chapterNumber }
@@ -420,6 +435,7 @@ class ReaderViewModel(
 
     /** Minimum gap between infinite-scroll appends (see maybeAppendNext). */
     private var lastAppendAt = 0L
+    private var cooldownRetryQueued = false
     private val APPEND_COOLDOWN_MS = 1200L
 
     /** "Try again" from the end-of-chapter block after a failed append. */

@@ -414,7 +414,7 @@ private fun ContinuousReader(
     onSeekHandled: () -> Unit,
     onPosition: (Int, Int) -> Unit,
     onImageLoaded: (Int, Int) -> Unit,
-    onNearEnd: () -> Unit,
+    onNearEnd: (Int) -> Unit,
     onRetryAppend: () -> Unit,
     onToggleChrome: () -> Unit,
     onNextChapter: () -> Unit,
@@ -501,33 +501,32 @@ private fun ContinuousReader(
     // placeholders that haven't been laid out yet. That fires another append,
     // and another, walking the whole series in seconds.
     //
-    // One append must also require real forward scrolling. Appending inserts
-    // items ABOVE the end block, so at an unchanged scroll offset the viewport
-    // is suddenly showing the new chapter's placeholders — the reader "arrives"
-    // in it without moving, which re-arms every other guard. Holding a
-    // tap-to-scroll at the bottom hit exactly that and looped. So a trigger is
-    // only allowed once the first visible item has advanced past wherever the
-    // previous one fired.
-    var appendArmedAt by remember(segments.size) { mutableStateOf(-1) }
+    // The decision also needs to know WHICH chapter the reader is in, and the
+    // honest answer is the chapter owning the last real page above the
+    // boundary block — not the tracked "active" segment, which an insert can
+    // shift onto the new chapter without the reader moving.
+    //
+    // Re-evaluated on every layout change rather than on the rising edge: an
+    // edge only fires once, so if a guard (cooldown, a still-loading append)
+    // rejected it, nothing fired again until the condition went false and true
+    // — i.e. until you scrolled up and back down.
     LaunchedEffect(strip) {
         snapshotFlow {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull()
-            if (last == null || last.index < strip.size - 1) {
-                false
-            } else {
-                val remaining = (last.offset + last.size) - info.viewportEndOffset
-                remaining < info.viewportEndOffset * 0.75f
-            }
+            val near = last != null && last.index >= strip.size - 1 &&
+                (last.offset + last.size) - info.viewportEndOffset < info.viewportEndOffset * 0.75f
+            // Segment of the last page above the boundary — "what chapter does
+            // the page above the next-chapter marker belong to".
+            val pageSeg = info.visibleItemsInfo
+                .asReversed()
+                .firstNotNullOfOrNull { item ->
+                    strip.getOrNull(item.index)?.takeIf { it.kind == KIND_PAGE }?.segIndex
+                }
+            near to pageSeg
+        }.collect { (near, pageSeg) ->
+            if (near && pageSeg != null) onNearEnd(pageSeg)
         }
-            .distinctUntilChanged()
-            .collect { near ->
-                if (!near) return@collect
-                val first = listState.firstVisibleItemIndex
-                if (first <= appendArmedAt) return@collect
-                appendArmedAt = first
-                onNearEnd()
-            }
     }
 
     val widthFraction = (settings.maxWidthPct / 100f).coerceIn(0.2f, 1f)
