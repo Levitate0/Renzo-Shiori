@@ -38,7 +38,12 @@ interface BrowseApi {
     @GET("api/serie/latest/genres")
     suspend fun latestGenres(): List<LatestGenreDto>
 
-    /** Cross-source search — raw rows, kept verbatim for [augment]. */
+    /**
+     * Cross-source search — raw rows, kept verbatim for [augment]. Every
+     * selected source is queried live, so this is slow by nature and needs
+     * far more than the default read timeout.
+     */
+    @retrofit2.http.Headers("$TIMEOUT_HEADER: 180")
     @GET("api/search")
     suspend fun searchRaw(
         @Query("keyword") keyword: String,
@@ -46,6 +51,7 @@ interface BrowseApi {
     ): JsonArray
 
     /** Expands the selected search rows into full series with chapter lists. */
+    @retrofit2.http.Headers("$TIMEOUT_HEADER: 180")
     @POST("api/search/augment")
     suspend fun augment(@Body linkedSeries: JsonArray): JsonObject
 

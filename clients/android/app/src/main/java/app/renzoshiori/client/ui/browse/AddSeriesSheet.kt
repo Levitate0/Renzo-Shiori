@@ -88,7 +88,8 @@ fun AddSeriesSheet(
     onDismiss: () -> Unit,
     onAdded: () -> Unit,
 ) {
-    val renzoApp = LocalContext.current.applicationContext as RenzoApp
+    val context = LocalContext.current
+    val renzoApp = context.applicationContext as RenzoApp
     val scope = rememberCoroutineScope()
     val api = remember { renzoApp.network.currentServiceOf<BrowseApi>() }
     val baseUrl = renzoApp.tokenStore.serverUrl ?: ""
@@ -113,12 +114,21 @@ fun AddSeriesSheet(
     var augmented by remember { mutableStateOf<JsonObject?>(null) }
     var confirmRows by remember { mutableStateOf<List<ConfirmRow>>(emptyList()) }
 
+    // Which sources to search, remembered between visits — the web keeps the
+    // same choice in localStorage. Preselecting EVERY source (what this did
+    // before) fans a single keystroke out across every installed extension;
+    // that takes long enough that a reverse proxy in front of the server
+    // returns 502 before the search finishes.
     LaunchedEffect(Unit) {
         runCatching { api?.searchSources() }.getOrNull()?.let { list ->
             sources = list.sortedBy { it.provider.lowercase() }
+            val available = list.mapNotNull { it.mihonProviderId.takeIf(String::isNotBlank) }.toSet()
             selectedSources.clear()
-            selectedSources.addAll(list.map { it.mihonProviderId }.filter { it.isNotBlank() })
+            selectedSources.addAll(loadSearchSources(context).filter { it in available })
         }
+    }
+    LaunchedEffect(selectedSources.size, selectedSources.toList()) {
+        if (sources.isNotEmpty()) saveSearchSources(context, selectedSources.toList())
     }
 
     LaunchedEffect(searchValue) {
@@ -127,7 +137,7 @@ fun AddSeriesSheet(
     }
 
     LaunchedEffect(debounced, selectedSources.size) {
-        if (debounced.trim().length < 3) {
+        if (debounced.trim().length < 3 || selectedSources.isEmpty()) {
             results = emptyList()
             rawResults = null
             return@LaunchedEffect
@@ -135,10 +145,7 @@ fun AddSeriesSheet(
         searching = true
         error = null
         runCatching {
-            api?.searchRaw(
-                debounced.trim(),
-                selectedSources.toList().takeIf { it.isNotEmpty() },
-            )
+            api?.searchRaw(debounced.trim(), selectedSources.toList())
         }
             .onSuccess { arr ->
                 rawResults = arr
@@ -148,7 +155,19 @@ fun AddSeriesSheet(
                 val valid = results.map { it.rowId }.toSet()
                 selectedRows.retainAll { it in valid }
             }
-            .onFailure { error = it.message ?: "Search failed." }
+            .onFailure { cause ->
+                val code = (cause as? retrofit2.HttpException)?.code()
+                error = when {
+                    code == 502 || code == 504 ->
+                        "The search took too long and the connection timed out. " +
+                            "Try fewer sources, or a longer keyword."
+                    code != null -> "Search failed (HTTP $code)."
+                    cause is java.net.SocketTimeoutException ->
+                        "The sources are taking too long to answer. Try fewer of them."
+                    cause is java.io.IOException -> "Can't reach the server."
+                    else -> cause.message ?: "Search failed."
+                }
+            }
         searching = false
     }
 
@@ -466,6 +485,7 @@ private fun SearchStage(
 
         // Results.
         when {
+            selectedSources.isEmpty() -> CenteredNote("Pick at least one source to search")
             searchValue.isEmpty() -> CenteredNote("Start typing to search…")
             results.isEmpty() && !searching -> CenteredNote(
                 if (searchValue.trim().length < 3) {
@@ -843,4 +863,25 @@ private fun buildSubmitPayload(original: JsonObject, rows: List<ConfirmRow>): Js
             put("series", JsonArray(updated))
         },
     )
+}
+
+/**
+ * The source selection for Add Series, remembered between visits — the native
+ * twin of the web step's localStorage entry. Persisting it is what keeps a
+ * search scoped to a handful of sources instead of every installed extension.
+ */
+private const val SEARCH_SOURCES_PREFS = "renzo_prefs"
+private const val SEARCH_SOURCES_KEY = "renzo_add_series_sources"
+
+private fun loadSearchSources(context: android.content.Context): List<String> =
+    context.getSharedPreferences(SEARCH_SOURCES_PREFS, android.content.Context.MODE_PRIVATE)
+        .getStringSet(SEARCH_SOURCES_KEY, emptySet())
+        ?.toList()
+        .orEmpty()
+
+private fun saveSearchSources(context: android.content.Context, ids: List<String>) {
+    context.getSharedPreferences(SEARCH_SOURCES_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet(SEARCH_SOURCES_KEY, ids.toSet())
+        .apply()
 }
