@@ -228,7 +228,9 @@ class ReaderViewModel(
             // enough for buildSegment to find on-device pages.
             val chapter = known ?: ReaderChapterDto(number = number)
 
-            when (val result = buildSegment(chapter)) {
+            val cached = prefetched?.takeIf { it.first == number }?.second
+            prefetched = null
+            when (val result = cached ?: buildSegment(chapter)) {
                 is SegResult.Ok -> {
                     if (result.source == PageSource.STREAM) usedStream = true
                     _state.update {
@@ -436,7 +438,29 @@ class ReaderViewModel(
     /** Minimum gap between infinite-scroll appends (see maybeAppendNext). */
     private var lastAppendAt = 0L
     private var cooldownRetryQueued = false
-    private val APPEND_COOLDOWN_MS = 1200L
+    private val APPEND_COOLDOWN_MS = 400L
+
+    /**
+     * Paged mode has no strip to append into, so instead the NEXT chapter's
+     * page list is resolved a couple of pages before the end and parked here.
+     * [openChapter] takes it if the reader actually turns the page, which
+     * makes the chapter change instant rather than a spinner. Nothing is
+     * fetched for a reader who stops before the last pages.
+     */
+    private var prefetched: Pair<Double, SegResult.Ok>? = null
+    private var prefetching = false
+
+    fun prefetchChapter(number: Double) {
+        if (prefetching || prefetched?.first == number) return
+        val chapter = _state.value.chapters.firstOrNull { it.number == number } ?: return
+        if (chapter.locked) return
+        prefetching = true
+        viewModelScope.launch {
+            val result = buildSegment(chapter)
+            if (result is SegResult.Ok) prefetched = number to result
+            prefetching = false
+        }
+    }
 
     /** "Try again" from the end-of-chapter block after a failed append. */
     fun retryAppend() {

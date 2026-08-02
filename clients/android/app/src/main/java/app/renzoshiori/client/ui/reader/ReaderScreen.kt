@@ -220,6 +220,7 @@ fun ReaderScreen(
                         onSeekHandled = { seekTarget = null },
                         onPosition = vm::onPosition,
                         onImageLoaded = vm::onImageLoaded,
+                        onPrefetchNext = { vm.neighborChapter(1)?.number?.let(vm::prefetchChapter) },
                         onToggleChrome = { chromeVisible = !chromeVisible },
                         onNextChapter = { vm.goToChapter(1) },
                         onPrevChapter = { vm.goToChapter(-1) },
@@ -400,6 +401,17 @@ private fun Pill(text: String, spinner: Boolean, modifier: Modifier = Modifier) 
 
 // ── Continuous (webtoon / longstrip / vertical) ───────────────────────────
 
+/**
+ * How close to the end the reader must be before the next chapter is fetched.
+ *
+ * The two modes are measured differently on purpose. Continuous (longstrip,
+ * webtoon, vertical) is measured in SCREENS: a "page" there can be a banner or
+ * a metre-long strip, so a page count says nothing about how much scrolling is
+ * actually left. Paged mode is measured in PAGES, where one page is one turn.
+ */
+private const val CONTINUOUS_PREFETCH_SCREENS = 1.5f
+private const val PAGED_PREFETCH_PAGES = 2
+
 private const val KIND_PAGE = 0
 private const val KIND_DIVIDER = 1
 private const val KIND_END = 2
@@ -514,8 +526,19 @@ private fun ContinuousReader(
         snapshotFlow {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull()
-            val near = last != null && last.index >= strip.size - 1 &&
-                (last.offset + last.size) - info.viewportEndOffset < info.viewportEndOffset * 0.75f
+            // Within CONTINUOUS_PREFETCH_SCREENS of the end of what's loaded.
+            // Anything below the last VISIBLE item is unmeasured, so when the
+            // final page is on screen, allow for the end block beneath it —
+            // it is deliberately one viewport tall.
+            val viewport = info.viewportEndOffset
+            val near = when {
+                last == null || viewport <= 0 -> false
+                last.index == strip.size - 1 ->
+                    (last.offset + last.size) - viewport < viewport * CONTINUOUS_PREFETCH_SCREENS
+                last.index == strip.size - 2 ->
+                    (last.offset + last.size) < viewport * CONTINUOUS_PREFETCH_SCREENS
+                else -> false
+            }
             // Segment of the last page above the boundary — "what chapter does
             // the page above the next-chapter marker belong to".
             val pageSeg = info.visibleItemsInfo
@@ -681,6 +704,7 @@ private fun PagedReader(
     onSeekHandled: () -> Unit,
     onPosition: (Int, Int) -> Unit,
     onImageLoaded: (Int, Int) -> Unit,
+    onPrefetchNext: () -> Unit,
     onToggleChrome: () -> Unit,
     onNextChapter: () -> Unit,
     onPrevChapter: () -> Unit,
@@ -704,6 +728,11 @@ private fun PagedReader(
             if (slot < contentSlots) {
                 val page = if (doubled) (slot * 2 + 1).coerceAtMost(pageCount - 1) else slot
                 onPosition(0, page)
+                // Two pages from the end, start resolving the next chapter so
+                // the turn is instant instead of a spinner. Same distance as
+                // the continuous reader, and equally nothing is fetched for a
+                // reader who stops before then.
+                if (pageCount - 1 - page <= PAGED_PREFETCH_PAGES) onPrefetchNext()
             }
         }
     }

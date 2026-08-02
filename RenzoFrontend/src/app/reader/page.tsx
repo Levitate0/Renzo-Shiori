@@ -162,8 +162,25 @@ const SETTINGS_KEY = "renzo_reader_settings";
 // Continuous scroll keeps at most this many chapters on each side of the active
 // one loaded; the rest are pruned (and their page cache freed) as you scroll.
 const CHAPTER_WINDOW = 2;
-/** Minimum gap between infinite-scroll appends (see lastAppendAtRef). */
-const APPEND_COOLDOWN_MS = 1200;
+/**
+ * Minimum gap between infinite-scroll appends (see lastAppendAtRef). Short:
+ * the boundary-chapter guard is what stops runaway loading, and a long gap
+ * would stall a continuous scroll at the boundary.
+ */
+const APPEND_COOLDOWN_MS = 400;
+/**
+ * How close to the end of the loaded pages the reader must be before the next
+ * chapter is fetched, measured in PAGES rather than viewports — two pages
+ * means the same thing to a reader whether the chapter is a webtoon strip or
+ * a set of full pages, while a fraction of a viewport does not.
+ *
+ * Kept short on purpose: fetching further ahead would smooth out a continuous
+ * scroll crossing the boundary, but it spends a source request on a chapter
+ * the reader may never open if they stop here. Nothing is blocked by the short
+ * distance, because the trigger is re-evaluated on every scroll rather than on
+ * a single crossing.
+ */
+const PREFETCH_PAGES = 2;
 const seriesModeKey = (id: string) => `renzo_reader_mode_${id}`;
 
 function loadSettings(): ReaderSettings {
@@ -230,6 +247,10 @@ function ReaderInner() {
   // Segments owning the pages at the bottom / top of the viewport — see the
   // scroll handler. null until the first measurement.
   const boundarySegRef = useRef<{ bottom: number | null; top: number | null }>({ bottom: null, top: null });
+  // Pages left below / above what's on screen, maintained by the scroll
+  // handler and used by the append/prepend triggers.
+  const pagesRemainingRef = useRef(Number.MAX_SAFE_INTEGER);
+  const pagesBehindRef = useRef(Number.MAX_SAFE_INTEGER);
   // Sliding window: continuous scroll keeps at most CHAPTER_WINDOW chapters on
   // either side of the active one, pruning (and so freeing the page cache of)
   // chapters that scroll out of range. Once the opening chapter itself scrolls
@@ -860,9 +881,8 @@ function ReaderInner() {
     if (!settings.infiniteScroll || !isContinuous || appendLockRef.current || appendStoppedRef.current) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
-    // Defer to near the boundary (was ~1.5 screens) so the next chapter isn't
-    // pulled from the source while the user is nowhere near the end.
-    if (scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight) > scroller.clientHeight * 0.75) return;
+    // Within PREFETCH_PAGES of the last loaded page (see the constant).
+    if (pagesRemainingRef.current > PREFETCH_PAGES) return;
     // Never queue a chapter while the reader is still inside an earlier one.
     // An append inserts pages ABOVE the end block, so at an unchanged scroll
     // position the distance-to-bottom check can be satisfied again immediately
@@ -913,8 +933,8 @@ function ReaderInner() {
     if (!settings.infiniteScroll || !isContinuous || prependLockRef.current || prependStoppedRef.current) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
-    // Defer to near the top boundary (was ~1 screen).
-    if (scroller.scrollTop > scroller.clientHeight * 0.5) return;
+    // Same idea when back-tracking: pages left above, not pixels.
+    if (pagesBehindRef.current > PREFETCH_PAGES) return;
     // Mirror of the append guard, for back-tracking: don't pull the previous
     // chapter while the reader is still inside a later one, and leave a gap
     // between prepends so a scroll that is still running when a chapter lands
@@ -1098,6 +1118,9 @@ function ReaderInner() {
         bottom: segOfGi(lastVisibleGi),
         top: segOfGi(firstVisibleGi),
       };
+      pagesRemainingRef.current =
+        lastVisibleGi == null ? Number.MAX_SAFE_INTEGER : totalPages - 1 - lastVisibleGi;
+      pagesBehindRef.current = firstVisibleGi ?? Number.MAX_SAFE_INTEGER;
       // Map the global page index back to (segment, page-in-segment).
       let si = 0;
       for (let k = 0; k < segOffsets.length; k++) {
