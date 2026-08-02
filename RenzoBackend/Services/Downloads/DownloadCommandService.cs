@@ -119,8 +119,12 @@ namespace RenzoBackend.Services.Downloads
                 // Bounded: an extension call into the sidecar can otherwise block
                 // forever (no exception, nothing logged) and permanently leak this
                 // download's concurrency slot — see SourceTimeout's doc comment.
+                // A paid chapter announces itself by throwing here; keep the
+                // exception so it can be told apart from a transient failure.
+                Exception? pageFailure = null;
                 List<Page>? pages = await _mihon.MihonErrorWrapperAsync(
                                 () => SourceTimeout.RunAsync(ct => src.GetPagesAsync(ch.Chapter, ct), token),
+                                e => pageFailure = e,
                                 "Unable to get Pages from Chapter {ParsedNumber}, Series {Title} from {provider}", ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
                 // A coin-gated chapter the user already bought yields nothing here:
                 // on the Astro/"vcomics" platform the paid pages are never in the
@@ -135,11 +139,24 @@ namespace RenzoBackend.Services.Downloads
                         pages = owned;
                 }
 
+                // Paid/locked chapter: retrying can never succeed — no amount of
+                // waiting buys it — and re-queuing every 30 minutes for days
+                // fills the log with errors and burns a queue slot per chapter,
+                // which reads as "this source is broken". Record the lock so the
+                // UI shows it as purchasable and stop.
+                if (pages == null && ModelExtensions.IsPurchaseError(pageFailure))
+                    return await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
+
                 if (pages==null)
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
                 ch.Pages = pages;
                 if (ch.Pages.Count == 0)
                 {
+                    // Zero pages with no error is the other shape of a paywall
+                    // (the source withholds them rather than throwing).
+                    if (ModelExtensions.IsLockedChapterName(ch.Chapter?.Name) ||
+                        ModelExtensions.IsLockedChapterName(ch.Chapter?.ParsedName))
+                        return await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
                     _logger.LogError("No pages found from source for provider {provider} when downloading chapter {ParsedNumber} of series {SeriesTitle}",
                         provider, ch.Chapter.ParsedNumber, ch.Title);
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
@@ -619,6 +636,50 @@ namespace RenzoBackend.Services.Downloads
         /// <param name="download">Chapter download to reschedule</param>
         /// <param name="token">Cancellation token</param>
         /// <returns>Job result</returns>
+        /// <summary>
+        /// Flags a chapter as paid/locked and drops its download. Called when the
+        /// source says the chapter must be purchased — a permanent condition, so
+        /// the job completes rather than retrying until the retry budget runs out.
+        /// </summary>
+        private async Task<JobResult> MarkChapterLockedAsync(ChapterDownload download, string provider, CancellationToken token = default)
+        {
+            _logger.LogInformation(
+                "Chapter {ChapterNumber} of series {SeriesTitle} is locked on {provider} (requires purchase) — not retrying.",
+                download.Chapter.ParsedNumber, download.Title, provider);
+            try
+            {
+                // Chapters live inside each provider's JSON column, so the flag is
+                // set on the matching chapter of every provider row for this series
+                // — the paywall belongs to the source, not to one queue entry.
+                decimal number = download.Chapter.ParsedNumber;
+                List<SeriesProviderEntity> providers = await _db.SeriesProviders
+                    .Where(p => p.SeriesId == download.SeriesId)
+                    .ToListAsync(token).ConfigureAwait(false);
+                bool changed = false;
+                foreach (SeriesProviderEntity provRow in providers)
+                {
+                    if (!string.Equals(provRow.Provider, download.ProviderName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    foreach (Models.Chapter c in provRow.Chapters.Where(c => c.Number == number && !c.IsLocked))
+                    {
+                        c.IsLocked = true;
+                        c.ShouldDownload = false;
+                        changed = true;
+                    }
+                    if (changed)
+                        _db.Entry(provRow).Property(p => p.Chapters).IsModified = true;
+                }
+                if (changed)
+                    await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Could not flag chapter {ChapterNumber} of series {SeriesId} as locked.",
+                    download.Chapter.ParsedNumber, download.SeriesId);
+            }
+            return JobResult.Success;
+        }
+
         private async Task<JobResult> RescheduleDownloadAsync(ChapterDownload download, CancellationToken token = default)
         {
             SettingsDto appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);

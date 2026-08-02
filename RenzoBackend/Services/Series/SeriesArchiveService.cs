@@ -88,6 +88,7 @@ namespace RenzoBackend.Services.Series
 
             // Process each provider
             var providersToRemove = new List<SeriesProviderEntity>();
+            int restored = 0;
 
             foreach (SeriesProviderEntity provider in series.Sources)
             {
@@ -102,6 +103,21 @@ namespace RenzoBackend.Services.Series
                     {
                         chaptersToRemove.Add(chapter);
                         continue;
+                    }
+
+                    // The archive is right there on disk, so this chapter is not
+                    // gone — whatever marked it deleted was wrong. A folder scan
+                    // that came back empty or partial (a storage hiccup, a moved
+                    // library folder) marks every unmatched chapter deleted, and
+                    // deleted chapters are hidden from the chapter list, so a
+                    // series can silently lose its whole back catalogue while the
+                    // files sit untouched. Restore it.
+                    if (chapter.IsDeleted)
+                    {
+                        chapter.IsDeleted = false;
+                        restored++;
+                        _db.Touch(provider, c => c.Chapters);
+                        dbChanged = true;
                     }
 
                     // Populate pages if empty or force is true
@@ -146,6 +162,13 @@ namespace RenzoBackend.Services.Series
             if (dbChanged)
             {
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            }
+
+            if (restored > 0)
+            {
+                _logger.LogInformation(
+                    "Restored {Count} chapter(s) of series {Series} that were flagged deleted while their archives were present on disk.",
+                    restored, series.Title);
             }
 
             // Clean up hash cache entries for removed chapters

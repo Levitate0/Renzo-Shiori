@@ -628,7 +628,12 @@ public static class SeriesExtensions
             }
         }
 
-        if (archives != null)
+        // An EMPTY archive list is a failed or partial scan, not "every file was
+        // deleted at once" — treating it as the latter marks the provider's whole
+        // back catalogue deleted (and deleted chapters are hidden), losing a
+        // series' history because storage blinked. Only act on a scan that
+        // actually found something.
+        if (archives is { Count: > 0 })
         {
             List<Chapter> toBeDeletedChapters = provider.Chapters.ToList();
             foreach (ProviderArchiveSnapshot a in archives)

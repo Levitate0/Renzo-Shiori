@@ -18,6 +18,7 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { verticalSortableConstraints } from "@/lib/utils/dnd-constraints";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -95,6 +96,10 @@ function SortableProviderCard({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
+    // Lift the row being dragged above its siblings without letting it
+    // contribute to the page's scroll width.
+    zIndex: isDragging ? 20 : undefined,
+    position: isDragging ? ("relative" as const) : undefined,
   };
 
   return (
@@ -220,9 +225,14 @@ export function SourcesSection({
         )}
       </header>
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+        modifiers={verticalSortableConstraints}
+      >
         <SortableContext items={orderedProviders.map(p => p.id)} strategy={verticalListSortingStrategy}>
-          <div className="space-y-3">
+          <div className="space-y-3 overflow-x-clip">
             {orderedProviders.map((provider, index) => {
               const switches =
                 providerSwitches[provider.id] ?? {

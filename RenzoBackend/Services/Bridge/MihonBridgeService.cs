@@ -28,7 +28,16 @@ namespace RenzoBackend.Services.Bridge
             _bridgeManager = bridgeManager;
             _workingFolderStructure = workingFolderStructure;
         }
-        public async Task<T?> MihonErrorWrapperAsync<T>(Func<Task<T>> func, string errorMessage, params object[] pars) where T : class, new()
+        public Task<T?> MihonErrorWrapperAsync<T>(Func<Task<T>> func, string errorMessage, params object[] pars) where T : class, new()
+            => MihonErrorWrapperAsync(func, null, errorMessage, pars);
+
+        /// <summary>
+        /// As above, but hands the swallowed exception to <paramref name="onError"/>
+        /// first. Callers that must distinguish WHY a source call failed — a paid
+        /// chapter is not a transient error and must not be retried — need the
+        /// exception, which this wrapper otherwise absorbs.
+        /// </summary>
+        public async Task<T?> MihonErrorWrapperAsync<T>(Func<Task<T>> func, Action<Exception>? onError, string errorMessage, params object[] pars) where T : class, new()
         {
             try
             {
@@ -36,24 +45,28 @@ namespace RenzoBackend.Services.Bridge
             }
             catch (HttpRequestException httpEx)
             {
+                onError?.Invoke(httpEx);
                 object[] pars2 = pars.ToArray();
                 Array.Resize(ref pars2, pars2.Length + 1);
                 pars2[^1] = httpEx.StatusCode ?? HttpStatusCode.InternalServerError;
                 _logger.LogError(errorMessage + " Http Error: {httperror}", pars2);
                 return null;
             }
-            catch (TaskCanceledException)
+            catch (TaskCanceledException tce)
             {
+                onError?.Invoke(tce);
                 _logger.LogError(errorMessage + " Task was cancelled", pars);
                 return null;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException oce)
             {
+                onError?.Invoke(oce);
                 _logger.LogError(errorMessage + " Operation was cancelled", pars);
                 return null;
             }
             catch (Exception ex)
             {
+                onError?.Invoke(ex);
                 // IKVM-thrown Java exceptions surface with no .NET-visible stack —
                 // a bare "java.lang.NullPointerException" line is undiagnosable.
                 // Pull the Java-side stack (via reflection, so this assembly needs

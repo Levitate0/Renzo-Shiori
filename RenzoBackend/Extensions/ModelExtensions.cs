@@ -410,6 +410,25 @@ namespace RenzoBackend.Extensions
         public static bool IsLockedChapterName(string? name) =>
             !string.IsNullOrEmpty(name) && ChapterLockMarker.IsMatch(name!);
 
+        // A paid chapter only reveals itself when the pages are asked for — the
+        // chapter API has no lock field, so the source throws instead ("Chapter
+        // requires purchase (0 pages)…", "Log in via Webview and purchased this
+        // chapter to read."). Deliberately narrow, so a genuine transient
+        // failure ("Timed out waiting for page list") is never mistaken for a
+        // paywall and silently marked unreadable.
+        private static readonly Regex PurchaseErrorMarker = new(
+            @"(requires?\s+purchase|must\s+purchase|purchased?\s+this\s+chapter|log\s*in\s+via\s+webview|unlock\s+to\s+read|coins?\s+to\s+read|premium\s+chapter|chapter\s+locked|coins?\s+required)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>True when a page-fetch failure means "this chapter is paid".</summary>
+        public static bool IsPurchaseError(Exception? ex)
+        {
+            for (Exception? e = ex; e != null; e = e.InnerException)
+                if (!string.IsNullOrEmpty(e.Message) && PurchaseErrorMarker.IsMatch(e.Message))
+                    return true;
+            return false;
+        }
+
         /// <summary>
         /// A real source publish date. The extension API reports "no date" as 0,
         /// which we store as the Unix epoch (1970) — a non-null but meaningless

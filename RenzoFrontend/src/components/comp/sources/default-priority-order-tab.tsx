@@ -27,6 +27,7 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { verticalSortableConstraints } from "@/lib/utils/dnd-constraints";
 import { Button } from "@/components/ui/button";
 import { useProviders } from "@/lib/api/hooks/useProviders";
 import { useToast } from "@/hooks/use-toast";
@@ -73,6 +74,8 @@ function SortableProviderRow({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 20 : undefined,
+    position: isDragging ? ("relative" as const) : undefined,
   };
 
   return (
@@ -301,9 +304,14 @@ export function DefaultPriorityOrderTab() {
           No installed sources to rank yet — install some sources first.
         </div>
       ) : (
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+          modifiers={verticalSortableConstraints}
+        >
           <SortableContext items={order} strategy={verticalListSortingStrategy}>
-            <div className="space-y-2 pb-20">
+            <div className="space-y-2 overflow-x-clip pb-20">
               {order.map((name, index) => (
                 <SortableProviderRow
                   key={name}
