@@ -81,6 +81,41 @@ namespace Mihon.ExtensionsBridge.Core.Services
         /// </summary>
         private ConcurrentDictionary<RepositoryGroup, GatekeptExtensionInterop> InteropCache { get; } = new();
 
+        /// <summary>Sidecar generation the cached interops were built against.</summary>
+        private int _interopGeneration = -1;
+
+        /// <summary>
+        /// Drops every cached interop when the sidecar JVM has restarted since they
+        /// were created. Their source ids were registered with the DEAD process, so
+        /// every call through them fails "Source &lt;id&gt; not loaded" — permanently,
+        /// because nothing ever rebuilt them. Rebuilding re-loads the extension into
+        /// the live JVM. Cheap enough to check on every interop acquisition.
+        /// </summary>
+        private void DropInteropsIfSidecarRestarted()
+        {
+            if (_serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager))
+                is not Runtime.Sidecar.SidecarProcessManager mgr)
+                return;
+            int generation = mgr.Generation;
+            if (generation == _interopGeneration)
+                return;
+            if (_interopGeneration >= 0 && !InteropCache.IsEmpty)
+            {
+                _logger.LogWarning(
+                    "Sidecar restarted (generation {Old} -> {New}) — dropping {Count} cached extension interop(s); they point at sources the new JVM has not loaded.",
+                    _interopGeneration, generation, InteropCache.Count);
+                foreach (var kv in InteropCache.ToArray())
+                {
+                    if (InteropCache.TryRemove(kv.Key, out GatekeptExtensionInterop? stale))
+                    {
+                        try { stale.Dispose(); }
+                        catch (Exception ex) { _logger.LogError(ex, "Error disposing stale interop for group {GroupName}.", kv.Key.Name); }
+                    }
+                }
+            }
+            _interopGeneration = generation;
+        }
+
         /// <summary>
         /// In-memory list of local extension repository groups. Access guarded by <see cref="_localExtensionsLock"/>.
         /// </summary>
@@ -303,6 +338,7 @@ namespace Mihon.ExtensionsBridge.Core.Services
         {
             if (!_localInitialized)
                 throw new InvalidOperationException("Local extensions not initialized.");
+            DropInteropsIfSidecarRestarted();
             entry = ResolveLocal(entry);
             if (entry.ActiveEntry < 0 || entry.ActiveEntry >= entry.Entries.Count)
                 throw new InvalidOperationException("Active entry index is out of bounds for repository group.");

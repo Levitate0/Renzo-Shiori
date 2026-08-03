@@ -15,18 +15,51 @@ namespace RenzoBackend.Services.Bridge
         private readonly IBridgeManager _bridgeManager;
         private readonly IWorkingFolderStructure _workingFolderStructure;
         private readonly ILogger _logger;
+        private readonly IServiceProvider _services;
 
         private ConcurrentDictionary<string, Lazy<Task<IExtensionInterop>>> extOps = [];
+
+        /// <summary>Sidecar generation the cached interops were built against.</summary>
+        private int _interopGeneration = -1;
+
+        /// <summary>
+        /// The sidecar JVM is restarted automatically when it dies, but a restarted
+        /// process has NOTHING loaded — every interop cached here still refers to a
+        /// source id that only existed in the dead JVM, so every call through it
+        /// fails "Source &lt;id&gt; not loaded" until the whole container is restarted.
+        /// (That is what wedged downloads and made the reader answer 404 for
+        /// chapters it could otherwise stream.) Dropping the cache when the
+        /// generation moves forces a rebuild, which re-loads the extension.
+        /// </summary>
+        private void DropInteropsIfSidecarRestarted()
+        {
+            if (_services.GetService(typeof(Mihon.ExtensionsBridge.Core.Runtime.Sidecar.SidecarProcessManager))
+                is not Mihon.ExtensionsBridge.Core.Runtime.Sidecar.SidecarProcessManager mgr)
+                return;
+            int generation = mgr.Generation;
+            if (generation == _interopGeneration)
+                return;
+            if (_interopGeneration >= 0 && !extOps.IsEmpty)
+            {
+                _logger.LogWarning(
+                    "Sidecar restarted (generation {Old} -> {New}) — dropping {Count} cached source interop(s) so they reload into the new JVM.",
+                    _interopGeneration, generation, extOps.Count);
+                extOps.Clear();
+            }
+            _interopGeneration = generation;
+        }
         
         public Task<Preferences> GetPreferencesAsync(CancellationToken cancellationToken) => _bridgeManager.GetPreferencesAsync(cancellationToken);
         public Task SetPreferencesAsync(Preferences prefs, CancellationToken cancellationToken) => _bridgeManager.SetPreferencesAsync(prefs, cancellationToken);
 
-        public MihonBridgeService(ILogger<MihonBridgeService> logger, IBridgeManager bridgeManager, IWorkingFolderStructure workingFolderStructure)
+        public MihonBridgeService(ILogger<MihonBridgeService> logger, IBridgeManager bridgeManager,
+            IWorkingFolderStructure workingFolderStructure, IServiceProvider services)
         {
 
             _logger = logger;
             _bridgeManager = bridgeManager;
             _workingFolderStructure = workingFolderStructure;
+            _services = services;
         }
         public Task<T?> MihonErrorWrapperAsync<T>(Func<Task<T>> func, string errorMessage, params object[] pars) where T : class, new()
             => MihonErrorWrapperAsync(func, null, errorMessage, pars);
@@ -165,6 +198,7 @@ namespace RenzoBackend.Services.Bridge
 
         private async Task<IExtensionInterop> GetFromNameAsync(string name, CancellationToken token = default)
         {
+            DropInteropsIfSidecarRestarted();
             Lazy<Task<IExtensionInterop>> value = extOps.GetOrAdd(name, (nam) =>
             {
                 var allLocal = _bridgeManager.LocalExtensionManager.ListExtensions();
@@ -177,6 +211,7 @@ namespace RenzoBackend.Services.Bridge
         }
         private async Task<IExtensionInterop> GetFromPackageAsync(string package, CancellationToken token = default)
         {
+            DropInteropsIfSidecarRestarted();
             var allLocal = _bridgeManager.LocalExtensionManager.ListExtensions();
             var repo = allLocal.FirstOrDefault(a => a.GetActiveEntry().Extension.Package.Equals(package, StringComparison.OrdinalIgnoreCase));
             if (repo==null)

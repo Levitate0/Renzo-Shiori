@@ -33,6 +33,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         private readonly SemaphoreSlim _startLock = new(1, 1);
         private Process? _proc;
         private volatile bool _ready;
+        private int _generation;
+
+        /// <summary>
+        /// Bumped every time the JVM is (re)started. A restarted sidecar has NO
+        /// extensions loaded, so every interop handed out before the restart
+        /// refers to a source id the new process has never heard of — calls fail
+        /// with "Source &lt;id&gt; not loaded" forever. Anything caching an interop
+        /// must compare this against the generation it cached at and drop its
+        /// cache when they differ.
+        /// </summary>
+        public int Generation => Volatile.Read(ref _generation);
 
         public SidecarClient Client { get; }
 
@@ -61,8 +72,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 await StartProcessAsync(token).ConfigureAwait(false);
                 await WaitHealthyAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
                 await Client.SetupAsync(dataRoot, tempRoot, token).ConfigureAwait(false);
+                int generation = Interlocked.Increment(ref _generation);
                 _ready = true;
-                _logger.LogInformation("Sidecar ready on 127.0.0.1:{Port}.", _opts.Port);
+                _logger.LogInformation("Sidecar ready on 127.0.0.1:{Port} (generation {Generation}).", _opts.Port, generation);
             }
             finally { _startLock.Release(); }
         }
