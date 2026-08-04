@@ -72,10 +72,16 @@ public class ReaderService
         List<ChapterReadState> states = _readState.GetSeriesReadStates(username, series.StoragePath);
 
         // One entry per distinct chapter number; prefer the storage source's file.
+        // "Hide decimal chapters" applies here too, not just to the series page and
+        // the download queue: otherwise the .5 chapters a user opted out of still
+        // show up in the reader's chapter sheet, still sit between chapters for
+        // next/previous navigation, and still get rolled into by infinite scroll.
         var byNumber = series.Sources
             .Where(p => !p.IsDisabled)
             .SelectMany(p => p.Chapters, (p, c) => (Provider: p, Chapter: c))
-            .Where(x => x.Chapter.Number != null)
+            .Where(x => x.Chapter.Number != null
+                && !(series.HideDecimalChapters
+                     && x.Chapter.Number!.Value != decimal.Truncate(x.Chapter.Number!.Value)))
             .GroupBy(x => x.Chapter.Number!.Value)
             .OrderBy(g => g.Key);
 
