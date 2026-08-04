@@ -66,6 +66,34 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     private var api: ApiService? = null
 
+    init {
+        // Any 401 outside the auth endpoints means the session is gone (expired
+        // token, revoked session, server restarted). Land on the login screen
+        // rather than leaving the user staring at an empty library with no
+        // explanation. The server address is kept, so it's one tap to get back
+        // in — and this collector lives for the app's lifetime, so it catches
+        // an expiry on any screen, not just at startup.
+        viewModelScope.launch {
+            app.renzoshiori.client.data.auth.SessionEvents.expired.collect {
+                if (_state.value.step is AuthStep.SignedIn) {
+                    tokenStore.clearSession()
+                    val serverUrl = tokenStore.serverUrl
+                    val status = serverUrl?.let {
+                        runCatching { network.apiFor(it).authStatus() }.getOrNull()
+                    }
+                    _state.value = AuthUiState(
+                        step = if (serverUrl == null) {
+                            AuthStep.Connect
+                        } else {
+                            AuthStep.Login(users = status?.users, serverUrl = serverUrl)
+                        },
+                        error = "Your session expired — please sign in again.",
+                    )
+                }
+            }
+        }
+    }
+
     /** Retrofit client for the public password endpoints, bound to the connected server. */
     private fun authExtra(): AuthExtraApi? = network.currentServiceOf<AuthExtraApi>()
 

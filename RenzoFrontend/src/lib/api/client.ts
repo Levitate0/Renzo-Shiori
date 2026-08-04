@@ -28,6 +28,27 @@ async function trySilentRefresh(baseUrl: string): Promise<boolean> {
   return refreshPromise;
 }
 
+/**
+ * Session death is announced once, app-wide. Without this a token that expires
+ * (or a refresh cookie that's been revoked) leaves every request failing 401
+ * while the UI keeps rendering: a blank library, empty settings, endless
+ * spinners — with no hint that the fix is to sign in again. The auth context
+ * listens for this and clears the user, which its existing redirect effect
+ * turns into a trip back to /login (or /user-select in profile mode).
+ */
+export const SESSION_EXPIRED_EVENT = 'renzo:session-expired';
+
+let sessionExpiredAnnounced = false;
+
+function announceSessionExpired(): void {
+  if (typeof window === 'undefined' || sessionExpiredAnnounced) return;
+  sessionExpiredAnnounced = true;
+  try { sessionStorage.removeItem('renzo_token'); } catch { /* private mode */ }
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  // A fresh sign-in must be able to expire again later.
+  setTimeout(() => { sessionExpiredAnnounced = false; }, 5000);
+}
+
 class RenzoApiClient {
   // Resolved per-request (not captured at construction) so the WebUI-configured
   // public URL takes effect as soon as settings load, without a page reload.
@@ -100,6 +121,13 @@ class RenzoApiClient {
       if (refreshed) {
         return this.request<T>(endpoint, options, true);
       }
+      // Refresh failed: the session is genuinely over (expired refresh token,
+      // revoked session, server restarted with new keys). Say so once instead
+      // of letting every screen fail silently.
+      announceSessionExpired();
+    } else if (response.status === 401 && !endpoint.startsWith('/api/auth/')) {
+      // 401 with no token at all — same conclusion, no refresh to attempt.
+      announceSessionExpired();
     }
 
     if (!response.ok) {

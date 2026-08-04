@@ -1,5 +1,6 @@
 package app.renzoshiori.client.data.network
 
+import app.renzoshiori.client.data.auth.SessionEvents
 import app.renzoshiori.client.data.auth.TokenStore
 import kotlinx.serialization.json.Json
 import okhttp3.Cookie
@@ -63,7 +64,16 @@ private class AuthInterceptor(private val tokenStore: TokenStore) : Interceptor 
                     ?.let { addHeader("X-Renzo-User", it) }
             }
         }.build()
-        return chain.proceed(request)
+        val response = chain.proceed(request)
+
+        // A 401 anywhere other than the auth endpoints themselves means the
+        // session is over. Announce it once so the app returns to the login
+        // screen; otherwise every screen just renders empty with no
+        // explanation, which reads as "the app is broken".
+        if (response.code == 401 && !request.url.encodedPath.startsWith("/api/auth/")) {
+            SessionEvents.notifyExpired()
+        }
+        return response
     }
 }
 

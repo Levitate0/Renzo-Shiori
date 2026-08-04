@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { SESSION_EXPIRED_EVENT } from '@/lib/api/client';
 import { userService } from '@/lib/api/services/userService';
 import { ensureImageToken } from '@/lib/api/imageToken';
 import { type User, type AuthStatus, UserLevel } from '@/lib/api/types';
@@ -171,6 +172,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refreshAuth();
   }, [refreshAuth]);
+
+  // The API client announces a session it can no longer refresh (expired or
+  // revoked). Clear the user so the redirect effect above sends us to the login
+  // screen — otherwise every page keeps rendering with no data and no
+  // explanation, which reads as "the app is broken" rather than "sign in
+  // again". No logout call: the session is already gone server-side.
+  useEffect(() => {
+    const onExpired = () => {
+      setToken(null);
+      try {
+        sessionStorage.removeItem('renzo_token');
+        localStorage.removeItem('renzo_selected_user');
+      } catch { /* private mode */ }
+      clearSessionCookie();
+      setSelectedUsername(null);
+      setUser(null);
+      setIsLoading(false);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
 
   // Eagerly fetch the short-lived image-scoped token (see imageToken.ts) as soon
   // as we have a valid session, rather than waiting for the first <img> tag to
