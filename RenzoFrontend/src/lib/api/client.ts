@@ -111,10 +111,14 @@ class RenzoApiClient {
     // and retry once. Without this, a token expiring while the app is open leaves
     // every call failing 401 until a manual page reload. Auth endpoints are
     // excluded — a 401 there is a genuine credential failure, not expiry.
+    // NOTE: this deliberately runs even when there is no access token. A fresh
+    // page load with "Remember me" has exactly that shape — sessionStorage is
+    // empty but the httpOnly refresh cookie is still valid — and any query that
+    // fires before the auth context restores the session would otherwise be
+    // treated as a dead session and bounce the user to login.
     if (
       response.status === 401 &&
       !isRetryAfterRefresh &&
-      token !== null &&
       !endpoint.startsWith('/api/auth/')
     ) {
       const refreshed = await trySilentRefresh(this.baseUrl);
@@ -124,9 +128,6 @@ class RenzoApiClient {
       // Refresh failed: the session is genuinely over (expired refresh token,
       // revoked session, server restarted with new keys). Say so once instead
       // of letting every screen fail silently.
-      announceSessionExpired();
-    } else if (response.status === 401 && !endpoint.startsWith('/api/auth/')) {
-      // 401 with no token at all — same conclusion, no refresh to attempt.
       announceSessionExpired();
     }
 

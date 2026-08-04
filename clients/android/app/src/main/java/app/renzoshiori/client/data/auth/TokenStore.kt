@@ -30,14 +30,28 @@ class TokenStore(context: Context) {
         get() = prefs.getString(KEY_USERNAME, null)
         set(value) = prefs.edit().putString(KEY_USERNAME, value).apply()
 
+    /**
+     * The server's httpOnly `refresh_token` cookie, kept so "Remember me"
+     * survives the app being closed. Holding it only in OkHttp's in-memory
+     * cookie jar meant the access token's ~24h lifetime was the real session
+     * length no matter what the user ticked — the refresh cookie (valid for
+     * the server's rememberMeExpirationDays, 90 by default) was thrown away on
+     * every process death.
+     */
+    var refreshCookie: String?
+        get() = prefs.getString(KEY_REFRESH, null)
+        set(value) = prefs.edit().putString(KEY_REFRESH, value).apply()
+
+    /** Sign-out / expiry: drop the access token AND the remember-me cookie. */
     fun clearSession() {
-        prefs.edit().remove(KEY_TOKEN).apply()
+        prefs.edit().remove(KEY_TOKEN).remove(KEY_REFRESH).apply()
     }
 
     companion object {
         private const val KEY_TOKEN = "access_token"
         private const val KEY_SERVER = "server_url"
         private const val KEY_USERNAME = "last_username"
+        private const val KEY_REFRESH = "refresh_cookie"
         private const val PREFS_NAME = "renzo_secure"
 
         /** androidx.security's default MasterKey alias. */

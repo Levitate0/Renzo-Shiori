@@ -112,7 +112,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         // know locally so the offline library still opens on a plane.
         val savedServer = tokenStore.serverUrl
         val savedToken = tokenStore.accessToken
-        if (savedServer != null && savedToken != null) {
+        // A stored refresh cookie is enough on its own: the access token is
+        // short-lived by design, so "Remember me" means coming back days later
+        // with an expired token — the interceptor trades the cookie for a new
+        // one on the first 401.
+        if (savedServer != null && (savedToken != null || tokenStore.refreshCookie != null)) {
             api = network.apiFor(savedServer)
             viewModelScope.launch {
                 runCatching { api!!.me() }
