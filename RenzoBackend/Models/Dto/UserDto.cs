@@ -204,3 +204,23 @@ public class RegenerateOpdsResponseDto
     [JsonPropertyName("opdsPath")]
     public string OpdsPath { get; set; } = string.Empty;
 }
+/// <summary>Body of POST /api/auth/tv/code — what the TV calls itself.</summary>
+public class TvCodeRequestDto
+{
+    [JsonPropertyName("deviceName")]
+    public string? DeviceName { get; set; }
+}
+
+/// <summary>Body of POST /api/auth/tv/poll — the device's secret half.</summary>
+public class TvPollRequestDto
+{
+    [JsonPropertyName("deviceCode")]
+    public string DeviceCode { get; set; } = string.Empty;
+}
+
+/// <summary>Body of the TV approve/deny endpoints — the code read off the screen.</summary>
+public class TvApproveRequestDto
+{
+    [JsonPropertyName("userCode")]
+    public string UserCode { get; set; } = string.Empty;
+}

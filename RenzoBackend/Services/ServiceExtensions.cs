@@ -195,6 +195,8 @@ namespace RenzoBackend.Services
             services.TryAddScoped<EmailService>();
             services.TryAddScoped<UserQueryService>();
             services.TryAddScoped<UserCommandService>();
+            services.TryAddScoped<Auth.RefreshSessionService>();
+            services.TryAddScoped<Auth.TvPairingService>();
             services.TryAddSingleton<SiteAuth.CookieJarBridge>();
             services.TryAddSingleton<SiteAuth.SiteCredentialProtector>();
             services.TryAddScoped<SiteAuth.CoinSiteRegistry>();

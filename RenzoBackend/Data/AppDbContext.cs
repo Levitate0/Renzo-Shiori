@@ -101,6 +101,8 @@ namespace RenzoBackend.Data
         public DbSet<UserProviderEntity> UserProviders { get; set; }
         public DbSet<UserProviderPreferenceEntity> UserProviderPreferences { get; set; }
         public DbSet<SiteCredentialEntity> SiteCredentials { get; set; }
+        public DbSet<RefreshSessionEntity> RefreshSessions { get; set; }
+        public DbSet<TvPairingRequestEntity> TvPairingRequests { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -437,6 +439,30 @@ namespace RenzoBackend.Data
                 entity.Property(f => f.SeriesId).IsRequired();
                 entity.HasIndex(f => new { f.ListId, f.SeriesId }).IsUnique()
                     .HasDatabaseName("IX_FavoriteItem_ListId_SeriesId");
+            });
+
+            // One row per remembered device. Replaces the single refresh-token
+            // column on Users, which allowed only one remembered device per
+            // account — a second sign-in silently evicted the first.
+            modelBuilder.Entity<RefreshSessionEntity>(entity =>
+            {
+                entity.HasKey(s => s.Id);
+                entity.Property(s => s.UserId).IsRequired();
+                entity.Property(s => s.TokenHash).UseCollation("BINARY").IsRequired();
+                entity.HasIndex(s => s.UserId).HasDatabaseName("IX_RefreshSessions_UserId");
+                entity.HasOne(s => s.User)
+                    .WithMany()
+                    .HasForeignKey(s => s.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<TvPairingRequestEntity>(entity =>
+            {
+                entity.HasKey(r => r.Id);
+                entity.Property(r => r.UserCode).UseCollation("BINARY").IsRequired();
+                entity.Property(r => r.DeviceCodeHash).UseCollation("BINARY").IsRequired();
+                entity.HasIndex(r => r.UserCode).IsUnique()
+                    .HasDatabaseName("IX_TvPairingRequests_UserCode");
             });
 
             modelBuilder.Entity<SiteCredentialEntity>(entity =>

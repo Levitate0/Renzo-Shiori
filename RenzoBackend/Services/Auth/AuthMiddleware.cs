@@ -244,6 +244,14 @@ public class AuthMiddleware
             // Build fingerprint for the clients' silent auto-refresh poller —
             // no auth so it works on the login screen and stays cheap to poll.
             case "/api/system/version":
+            // TV pairing: the device has no credentials yet — that is the whole
+            // point. Only these two are public; approve/deny/pending all require
+            // a signed-in user, because the approver's identity is what gets
+            // granted. Both are rate-limited, the user code is short-lived and
+            // locks after a few misses, and possession of the user code alone
+            // can never mint a session — only the secret device code can.
+            case "/api/auth/tv/code":
+            case "/api/auth/tv/poll":
                 return true;
         }
 

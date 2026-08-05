@@ -174,8 +174,19 @@ public class JwtTokenService
     /// </summary>
     public bool ValidateRefreshToken(string rawToken, string storedHash)
     {
-        byte[] tokenBytes = Convert.FromBase64String(rawToken);
-        byte[] computedHash = SHA256.HashData(tokenBytes);
+        // A token that isn't even base64 is simply invalid — it must not throw.
+        // Convert.FromBase64String does, and this runs on values supplied by the
+        // caller: a corrupted refresh cookie (or any junk posted to a pairing
+        // poll) turned into an unhandled FormatException and a 500 instead of a
+        // clean "not authorised".
+        if (string.IsNullOrEmpty(rawToken) || string.IsNullOrEmpty(storedHash))
+            return false;
+
+        Span<byte> tokenBytes = stackalloc byte[((rawToken.Length * 3) / 4) + 3];
+        if (!Convert.TryFromBase64String(rawToken, tokenBytes, out int written))
+            return false;
+
+        byte[] computedHash = SHA256.HashData(tokenBytes[..written]);
         string computedHashString = Convert.ToBase64String(computedHash);
 
         return CryptographicOperations.FixedTimeEquals(

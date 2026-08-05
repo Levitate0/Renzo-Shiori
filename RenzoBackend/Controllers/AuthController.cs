@@ -25,6 +25,9 @@ public class AuthController : ControllerBase
     private readonly LoginThrottleService _loginThrottle;
     private readonly ILogger _logger;
 
+    private readonly RefreshSessionService _refreshSessions;
+    private readonly TvPairingService _tvPairing;
+
     public AuthController(
         AppDbContext db,
         PasswordService passwordService,
@@ -35,8 +38,12 @@ public class AuthController : ControllerBase
         SettingsService settingsService,
         EmailService emailService,
         LoginThrottleService loginThrottle,
+        RefreshSessionService refreshSessions,
+        TvPairingService tvPairing,
         ILogger<AuthController> logger)
     {
+        _refreshSessions = refreshSessions;
+        _tvPairing = tvPairing;
         _db = db;
         _passwordService = passwordService;
         _jwtTokenService = jwtTokenService;
@@ -141,11 +148,13 @@ public class AuthController : ControllerBase
         // Handle Remember Me (refresh token)
         if (request.RememberMe)
         {
-            var (rawRefreshToken, refreshHash) = _jwtTokenService.GenerateRefreshToken();
-            int expirationDays = _jwtTokenService.GetRememberMeExpirationDays();
-            DateTime expiresAt = DateTime.UtcNow.AddDays(expirationDays);
-
-            await _userCommandService.StoreRefreshTokenAsync(user, refreshHash, expiresAt, token);
+            // One session row per device: signing in here must not evict the
+            // user's other remembered devices (it used to — there was a single
+            // refresh-token column on the user).
+            var (rawRefreshToken, session) = await _refreshSessions
+                .CreateAsync(user, DeviceNameFromRequest(), ClientIp(), isTvPairing: false, token)
+                .ConfigureAwait(false);
+            DateTime expiresAt = session.ExpiresAt;
 
             // Set httpOnly cookie. Secure follows the request scheme: through the
             // Cloudflare Tunnel IsHttps is true (X-Forwarded-Proto is processed), so
@@ -198,40 +207,20 @@ public class AuthController : ControllerBase
         if (string.IsNullOrWhiteSpace(rawRefreshToken))
             return Unauthorized(new { error = "No refresh token" });
 
-        // Find user by iterating refresh token hashes
-        // (this is O(n) but user bases are small)
-        var users = await _db.Users
-            .Where(u => !string.IsNullOrWhiteSpace(u.RefreshTokenHash) && u.RefreshTokenExpiresAt > DateTime.UtcNow)
-            .ToListAsync(token);
-
-        UserEntity? matchedUser = null;
-        foreach (var u in users)
-        {
-            if (_jwtTokenService.ValidateRefreshToken(rawRefreshToken, u.RefreshTokenHash!))
-            {
-                matchedUser = u;
-                break;
-            }
-        }
-
-        if (matchedUser == null)
+        // Rotation happens in place on the device's own session row, so the
+        // device keeps its identity (name, paired-at) and other devices are
+        // untouched.
+        var rotated = await _refreshSessions.RotateAsync(rawRefreshToken, token).ConfigureAwait(false);
+        if (rotated == null)
         {
             Response.Cookies.Delete("refresh_token");
             return Unauthorized(new { error = "Invalid or expired refresh token" });
         }
 
-        // Rotate: clear old refresh token
-        await _userCommandService.ClearRefreshTokenAsync(matchedUser, token);
-
-        // Generate new access token
+        UserEntity matchedUser = rotated.Value.user;
+        string newRawRefreshToken = rotated.Value.newRawToken;
         string accessToken = _jwtTokenService.GenerateAccessToken(matchedUser);
-
-        // Generate new refresh token (auto-bump expiration)
-        var (newRawRefreshToken, newRefreshHash) = _jwtTokenService.GenerateRefreshToken();
-        int expirationDays = _jwtTokenService.GetRememberMeExpirationDays();
-        DateTime newExpiresAt = DateTime.UtcNow.AddDays(expirationDays);
-
-        await _userCommandService.StoreRefreshTokenAsync(matchedUser, newRefreshHash, newExpiresAt, token);
+        DateTime newExpiresAt = DateTime.UtcNow.AddDays(_jwtTokenService.GetRememberMeExpirationDays());
 
         // Secure follows the request scheme for the same LAN-vs-tunnel reason as in Login.
         Response.Cookies.Append("refresh_token", newRawRefreshToken, new CookieOptions
@@ -257,14 +246,233 @@ public class AuthController : ControllerBase
     [HttpPost("/api/auth/logout")]
     public async Task<ActionResult> Logout(CancellationToken token)
     {
-        UserEntity? user = HttpContext.Items["User"] as UserEntity;
-        if (user != null)
-        {
-            await _userCommandService.ClearRefreshTokenAsync(user, token);
-        }
+        // Revoke THIS device's session only — signing out on a phone must not
+        // sign the user out of their desktop and their TV as well.
+        string? rawRefreshToken = Request.Cookies["refresh_token"];
+        if (!string.IsNullOrWhiteSpace(rawRefreshToken))
+            await _refreshSessions.RevokeByTokenAsync(rawRefreshToken, token).ConfigureAwait(false);
 
         Response.Cookies.Delete("refresh_token");
         return Ok(new { success = true });
+    }
+
+
+    // ── TV pairing ─────────────────────────────────────────────────────
+    // Typing a password with a D-pad is miserable, and the users who most need
+    // TV access often have no phone to "set it up on". The alternative today is
+    // disabling authentication server-wide, which removes passwords for every
+    // account on the instance. This is the OAuth device-authorisation flow, so
+    // a television signs in without anyone typing a password into it.
+
+    /// <summary>POST /api/auth/tv/code — device asks for a pairing code. Public.</summary>
+    [HttpPost("/api/auth/tv/code")]
+    [EnableRateLimiting("login")]
+    public async Task<ActionResult> TvCode([FromBody] TvCodeRequestDto? request, CancellationToken token)
+    {
+        var (pairing, rawDeviceCode) = await _tvPairing
+            .CreateAsync(request?.DeviceName, ClientIp(), token).ConfigureAwait(false);
+
+        return Ok(new
+        {
+            userCode = FormatUserCode(pairing.UserCode),
+            deviceCode = rawDeviceCode,
+            verificationUrl = BuildVerificationUrl(),
+            expiresIn = (int)TvPairingService.Lifetime.TotalSeconds,
+            interval = TvPairingService.PollIntervalSeconds,
+        });
+    }
+
+    /// <summary>
+    /// POST /api/auth/tv/poll — device polls for approval. Public.
+    /// On approval this issues EXACTLY what a rememberMe login issues: an access
+    /// token, the user, and the refresh cookie. A TV that only got a 24h token
+    /// would need re-pairing daily, which defeats the feature.
+    /// </summary>
+    [HttpPost("/api/auth/tv/poll")]
+    public async Task<ActionResult> TvPoll([FromBody] TvPollRequestDto request, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(request?.DeviceCode))
+            return Ok(new { status = "expired" });
+
+        var claimed = await _tvPairing.TryClaimAsync(request.DeviceCode, token).ConfigureAwait(false);
+        if (claimed != null)
+        {
+            (TvPairingRequestEntity pairing, UserEntity user) = claimed.Value;
+            await _userCommandService.UpdateLastLoginAsync(user, token);
+
+            // Pairing is unconditionally "remember me" — a TV is the one place
+            // where not remembering makes no sense.
+            var (rawRefreshToken, session) = await _refreshSessions
+                .CreateAsync(user, pairing.DeviceName ?? "TV", pairing.RequestIp, isTvPairing: true, token)
+                .ConfigureAwait(false);
+
+            Response.Cookies.Append("refresh_token", rawRefreshToken, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = Request.IsHttps,
+                SameSite = SameSiteMode.Strict,
+                Expires = session.ExpiresAt,
+                Path = "/api/auth/refresh",
+            });
+
+            return Ok(new
+            {
+                status = "approved",
+                token = _jwtTokenService.GenerateAccessToken(user),
+                user = UserDto.FromEntity(user),
+            });
+        }
+
+        TvPairingRequestEntity? state = await _tvPairing
+            .FindByDeviceCodeAsync(request.DeviceCode, token).ConfigureAwait(false);
+        return state switch
+        {
+            null => Ok(new { status = "expired" }),
+            { Status: TvPairingStatus.Denied } => Ok(new { status = "denied" }),
+            // Approved but already claimed — a replay of a single-use code.
+            { Status: TvPairingStatus.Approved, Claimed: true } => Ok(new { status = "expired" }),
+            _ => Ok(new { status = "pending" }),
+        };
+    }
+
+    /// <summary>
+    /// POST /api/auth/tv/approve — the approval page grants the request.
+    /// Authenticated: the approver's identity is what the device receives, so a
+    /// username is never read from the body.
+    /// </summary>
+    [HttpPost("/api/auth/tv/approve")]
+    [EnableRateLimiting("login")]
+    public async Task<ActionResult> TvApprove([FromBody] TvApproveRequestDto request, CancellationToken token)
+    {
+        UserEntity? user = HttpContext.Items["User"] as UserEntity;
+        if (user == null)
+            return Unauthorized(new { error = "Sign in first" });
+        if (string.IsNullOrWhiteSpace(request?.UserCode))
+            return BadRequest(new { error = "Enter the code shown on your TV" });
+
+        TvPairingResult result = await _tvPairing.ApproveAsync(request.UserCode, user.Id, token).ConfigureAwait(false);
+        if (result == TvPairingResult.NotFound)
+        {
+            await _tvPairing.RecordFailedApprovalAsync(request.UserCode, token).ConfigureAwait(false);
+            return NotFound(new { error = "That code isn't valid — check it and try again, or restart pairing on the TV." });
+        }
+        return result switch
+        {
+            TvPairingResult.Locked => StatusCode(429, new { error = "Too many attempts for that code. Restart pairing on the TV." }),
+            TvPairingResult.AlreadyResolved => Conflict(new { error = "That code was already used." }),
+            _ => Ok(new { success = true }),
+        };
+    }
+
+    /// <summary>POST /api/auth/tv/deny — refuse a request so the TV stops polling.</summary>
+    [HttpPost("/api/auth/tv/deny")]
+    public async Task<ActionResult> TvDeny([FromBody] TvApproveRequestDto request, CancellationToken token)
+    {
+        if (HttpContext.Items["User"] is not UserEntity)
+            return Unauthorized(new { error = "Sign in first" });
+        if (string.IsNullOrWhiteSpace(request?.UserCode))
+            return BadRequest(new { error = "No code supplied" });
+        await _tvPairing.DenyAsync(request.UserCode, token).ConfigureAwait(false);
+        return Ok(new { success = true });
+    }
+
+    /// <summary>
+    /// GET /api/auth/tv/pending — what the approval page shows before granting:
+    /// the device name and requesting IP, so "Living Room TV from my own LAN"
+    /// can be told apart from something that looks wrong.
+    /// </summary>
+    [HttpGet("/api/auth/tv/pending")]
+    public async Task<ActionResult> TvPending([FromQuery] string userCode, CancellationToken token)
+    {
+        if (HttpContext.Items["User"] is not UserEntity)
+            return Unauthorized(new { error = "Sign in first" });
+        TvPairingRequestEntity? request = await _tvPairing
+            .FindPendingByUserCodeAsync(userCode, token).ConfigureAwait(false);
+        if (request == null || request.Status != TvPairingStatus.Pending)
+            return NotFound(new { error = "That code isn't valid — check it and try again." });
+        return Ok(new
+        {
+            deviceName = request.DeviceName ?? "Unnamed device",
+            requestIp = request.RequestIp,
+            expiresAt = request.ExpiresAt,
+        });
+    }
+
+    // ── Remembered devices ─────────────────────────────────────────────
+
+    /// <summary>GET /api/auth/devices — this account's remembered sign-ins.</summary>
+    [HttpGet("/api/auth/devices")]
+    public async Task<ActionResult> Devices(CancellationToken token)
+    {
+        UserEntity? user = HttpContext.Items["User"] as UserEntity;
+        if (user == null)
+            return Unauthorized();
+
+        string? currentRaw = Request.Cookies["refresh_token"];
+        List<RefreshSessionEntity> sessions = await _refreshSessions.ListAsync(user.Id, token).ConfigureAwait(false);
+        return Ok(sessions.Select(s => new
+        {
+            id = s.Id,
+            deviceName = s.DeviceName ?? "Existing session",
+            createdAt = s.CreatedAt,
+            lastSeenAt = s.LastSeenAt,
+            expiresAt = s.ExpiresAt,
+            createdIp = s.CreatedIp,
+            isTvPairing = s.IsTvPairing,
+            isCurrent = currentRaw != null && _jwtTokenService.ValidateRefreshToken(currentRaw, s.TokenHash),
+        }));
+    }
+
+    /// <summary>
+    /// DELETE /api/auth/devices/{id} — revoke ONE device. Retiring a TV must not
+    /// sign the user out everywhere else.
+    /// </summary>
+    [HttpDelete("/api/auth/devices/{id:guid}")]
+    public async Task<ActionResult> RevokeDevice(Guid id, CancellationToken token)
+    {
+        UserEntity? user = HttpContext.Items["User"] as UserEntity;
+        if (user == null)
+            return Unauthorized();
+        bool revoked = await _refreshSessions.RevokeAsync(user.Id, id, token).ConfigureAwait(false);
+        return revoked ? Ok(new { success = true }) : NotFound(new { error = "Unknown device" });
+    }
+
+    // ── helpers ────────────────────────────────────────────────────────
+
+    private string? ClientIp() => HttpContext.Connection.RemoteIpAddress?.ToString();
+
+    /// <summary>A best-effort label so the device list isn't a row of blanks.</summary>
+    private string? DeviceNameFromRequest()
+    {
+        string ua = Request.Headers.UserAgent.ToString();
+        if (string.IsNullOrWhiteSpace(ua))
+            return null;
+        if (ua.Contains("Renzo", StringComparison.OrdinalIgnoreCase)) return "Renzo app";
+        if (ua.Contains("Android", StringComparison.OrdinalIgnoreCase)) return "Android";
+        if (ua.Contains("iPhone", StringComparison.OrdinalIgnoreCase) ||
+            ua.Contains("iPad", StringComparison.OrdinalIgnoreCase)) return "iOS";
+        if (ua.Contains("Windows", StringComparison.OrdinalIgnoreCase)) return "Windows";
+        if (ua.Contains("Macintosh", StringComparison.OrdinalIgnoreCase)) return "Mac";
+        if (ua.Contains("Linux", StringComparison.OrdinalIgnoreCase)) return "Linux";
+        return "Browser";
+    }
+
+    /// <summary>Grouped for readability on a TV screen: ABCD-2345.</summary>
+    private static string FormatUserCode(string code) =>
+        code.Length == 8 ? $"{code[..4]}-{code[4..]}" : code;
+
+    /// <summary>
+    /// Absolute, so the TV can print it verbatim. Prefers the configured
+    /// external domain; falls back to the request's own origin, which is what a
+    /// LAN-only install needs.
+    /// </summary>
+    private string BuildVerificationUrl()
+    {
+        string configured = _settingsService.GetSettingsAsync().GetAwaiter().GetResult().ExternalDomain;
+        string root = string.IsNullOrWhiteSpace(configured)
+            ? $"{Request.Scheme}://{Request.Host}"
+            : configured.TrimEnd('/');
+        return $"{root}/tv";
     }
 
     /// <summary>
