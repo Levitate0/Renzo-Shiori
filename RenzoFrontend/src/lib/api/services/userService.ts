@@ -10,6 +10,8 @@ import {
   type InviteMessage,
   type ChangePasswordRequest,
   type NeedsPasswordResponse,
+  type TvPendingRequest,
+  type RememberedDevice,
 } from '@/lib/api/types';
 
 export const userService = {
@@ -56,6 +58,40 @@ export const userService = {
 
   async updateMe(data: UpdateUserRequest): Promise<User> {
     return apiClient.put<User>('/api/auth/me', data);
+  },
+
+  // --- TV pairing (see /tv) ---
+
+  /**
+   * What the typed code is asking to approve. The caller must show this to the
+   * user (device name + requesting IP) before approving — the whole point of
+   * the extra round-trip.
+   */
+  async getTvPending(userCode: string): Promise<TvPendingRequest> {
+    return apiClient.get<TvPendingRequest>(
+      `/api/auth/tv/pending?userCode=${encodeURIComponent(userCode)}`,
+    );
+  },
+
+  /** Grant the request — the TV is signed in as the *approving* account. */
+  async approveTvPairing(userCode: string): Promise<void> {
+    return apiClient.post<void>('/api/auth/tv/approve', { userCode });
+  },
+
+  /** Refuse the request so the TV stops polling. */
+  async denyTvPairing(userCode: string): Promise<void> {
+    return apiClient.post<void>('/api/auth/tv/deny', { userCode });
+  },
+
+  // --- Remembered devices ---
+
+  async listDevices(): Promise<RememberedDevice[]> {
+    return apiClient.get<RememberedDevice[]>('/api/auth/devices');
+  },
+
+  /** Revoke one remembered sign-in; the others stay signed in. */
+  async revokeDevice(id: string): Promise<void> {
+    return apiClient.delete<void>(`/api/auth/devices/${id}`);
   },
 
   // --- User management endpoints (admin) ---

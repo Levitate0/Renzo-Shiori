@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useState } from "react";
-import { Check, KeyRound, Lock, Mail, Radio, UserRound, Upload } from "lucide-react";
+import { Check, KeyRound, Lock, Mail, MonitorSmartphone, Radio, UserRound, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
   Card,
@@ -18,10 +18,12 @@ import { useAuth } from "@/contexts/auth-context";
 import { userService } from "@/lib/api/services/userService";
 import { fetchGravatarBase64 } from "@/lib/gravatar";
 import { SiteLoginsSection } from "@/components/comp/settings/site-logins-section";
+import { DevicesSection } from "@/components/comp/settings/devices-section";
 import { ScrobblerSettings } from "@/components/comp/scrobbler/scrobbler-settings";
 
 const ACCOUNT_SECTIONS = [
   { id: "account", title: "Account", icon: UserRound },
+  { id: "devices", title: "Devices", icon: MonitorSmartphone },
   { id: "site-logins", title: "Site Logins", icon: KeyRound },
   { id: "scrobbler", title: "Scrobbler", icon: Radio },
 ] as const;
@@ -189,8 +191,9 @@ export default function AccountPage() {
       {/* Section nav — a sidebar list on wider screens, a full drawer (same
           pattern as the app's main nav) on narrow ones. Profile picture and
           Security live under the same "Account" section (they're both "who
-          am I" for this account) — only Site Logins and Scrobbler get their
-          own nav entries, since those are substantial blocks on their own. */}
+          am I" for this account) — only Devices, Site Logins and Scrobbler get
+          their own nav entries, since those are substantial blocks on their
+          own. */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[200px_1fr] lg:items-start">
         <SettingsSectionNav
           sections={ACCOUNT_SECTIONS}
@@ -271,6 +274,20 @@ export default function AccountPage() {
               {savingAvatar ? "Saving…" : "Save avatar"}
             </Button>
           </CardContent>
+        </Card>
+        )}
+
+        {/* Devices — the remembered sign-ins on this account */}
+        {activeSectionId === "devices" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Devices</CardTitle>
+            <CardDescription>
+              Browsers and televisions that stay signed in to your account. Sign out anything you
+              don&apos;t recognise — or any TV you no longer use.
+            </CardDescription>
+          </CardHeader>
+          <DevicesSection />
         </Card>
         )}
 

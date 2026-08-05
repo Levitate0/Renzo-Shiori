@@ -49,6 +49,24 @@ function announceSessionExpired(): void {
   setTimeout(() => { sessionExpiredAnnounced = false; }, 5000);
 }
 
+/**
+ * An HTTP failure that still carries its status code. The message is already
+ * the server's own `{ "error": "..." }` text where one was sent, so most
+ * callers can keep using `err.message` unchanged — but a screen that must
+ * react differently per status (the TV approval page tells 404 "wrong code"
+ * apart from 429 "too many attempts" and 409 "already used") can branch on
+ * `status` instead of pattern-matching prose.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 class RenzoApiClient {
   // Resolved per-request (not captured at construction) so the WebUI-configured
   // public URL takes effect as soon as settings load, without a page reload.
@@ -149,7 +167,7 @@ class RenzoApiClient {
       } catch {
         // Ignore parsing errors, use the default error message
       }
-      throw new Error(errorMessage);
+      throw new ApiError(errorMessage, response.status);
     }    // Handle empty responses properly
     const contentLength = response.headers.get('content-length');
     const contentType = response.headers.get('content-type');

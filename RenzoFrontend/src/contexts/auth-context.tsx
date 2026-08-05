@@ -23,6 +23,30 @@ function getSessionCookie(): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
+/**
+ * Where to land after signing in, when the user didn't *choose* to visit
+ * /login but was bounced there from a page that needed a session. Deep links
+ * are the reason this exists: someone opening /tv from a code on their
+ * television must come back to /tv afterwards, not to the library.
+ * sessionStorage (not a query param) so the login page needs no wiring.
+ */
+const RETURN_TO_KEY = 'renzo_return_to';
+
+function rememberReturnTo(path: string): void {
+  try { sessionStorage.setItem(RETURN_TO_KEY, path); } catch { /* private mode */ }
+}
+
+/** Consumes the stored path. Only same-origin absolute paths are honoured. */
+function takeReturnTo(): string | null {
+  try {
+    const stored = sessionStorage.getItem(RETURN_TO_KEY);
+    sessionStorage.removeItem(RETURN_TO_KEY);
+    // "//evil.example" is a protocol-relative URL, not a local path.
+    if (stored?.startsWith('/') && !stored.startsWith('//')) return stored;
+  } catch { /* private mode */ }
+  return null;
+}
+
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
@@ -158,6 +182,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      // Remember the deep link so signing in returns here instead of dumping
+      // the user on the library (the root path has nothing to return to).
+      if (pathname !== '/') {
+        rememberReturnTo(pathname + window.location.search);
+      }
+
       if (isAuthEnabled) {
         router.push('/login');
       } else if (availableUsers && availableUsers.length > 0) {
@@ -220,7 +250,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(result.user);
     // Persist user session via cookie (backed by httpOnly refresh_token when rememberMe=true)
     setSessionCookie(username);
-    router.push('/library');
+    router.push(takeReturnTo() ?? '/library');
   }, [router]);
 
   const selectUser = useCallback(async (username: string) => {
@@ -229,7 +259,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSessionCookie(username);
     setSelectedUsername(username);
     setUser(result);
-    router.push('/library');
+    router.push(takeReturnTo() ?? '/library');
   }, [router]);
 
   const logout = useCallback(async () => {

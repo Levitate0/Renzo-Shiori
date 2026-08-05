@@ -866,6 +866,36 @@ export interface NeedsPasswordResponse {
   needsPassword: boolean;
 }
 
+/**
+ * What a TV is asking for, shown on /tv before the user grants anything.
+ * The device name and the IP that asked are the whole point of the
+ * confirmation step — "Living Room TV, from my own LAN" has to be
+ * distinguishable from something that doesn't belong.
+ */
+export interface TvPendingRequest {
+  deviceName: string;
+  requestIp?: string | null;
+  /** ISO timestamp — the pairing code stops working after this. */
+  expiresAt: string;
+}
+
+/**
+ * One remembered sign-in: a long-lived (90 days by default) session created by
+ * "Remember me" or by approving a TV. Each one can be revoked on its own.
+ */
+export interface RememberedDevice {
+  id: string;
+  deviceName: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  createdIp?: string | null;
+  /** Paired from a television rather than a normal browser sign-in. */
+  isTvPairing: boolean;
+  /** The session this browser is using right now — revoking it signs you out. */
+  isCurrent: boolean;
+}
+
 // ── Scrobbler Types ──
 
 export enum ScrobblerProvider {
