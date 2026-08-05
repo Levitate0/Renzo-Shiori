@@ -1,5 +1,6 @@
 package app.renzoshiori.client.ui.onboarding
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -47,6 +48,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -73,7 +77,9 @@ import app.renzoshiori.client.data.model.UserDto
 import app.renzoshiori.client.data.model.UserLevel
 import app.renzoshiori.client.data.model.preferencesUpdateBody
 import app.renzoshiori.client.data.network.OnboardingPrefsApi
+import app.renzoshiori.client.ui.home.dpadClickable
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -158,6 +164,10 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
     }
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
+    val isTv = LocalIsTv.current
+    val backdropInteraction = remember { MutableInteractionSource() }
+    // The primary action, so the D-pad starts there on every step.
+    val nextRequester = remember { FocusRequester() }
 
     var user by remember { mutableStateOf<UserDto?>(null) }
     var step by remember { mutableIntStateOf(0) }
@@ -166,6 +176,9 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
 
     LaunchedEffect(prefsApi) {
         runCatching { prefsApi?.me() }.onSuccess { user = it }
+    }
+    LaunchedEffect(isTv, step) {
+        if (isTv) runCatching { nextRequester.requestFocus() }
     }
 
     val canManage = (user?.level ?: 0) >= UserLevel.MANAGER
@@ -317,16 +330,30 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
         )
     }
 
+    // Back closes the tour rather than the app — and on TV it replaces the
+    // tap-anywhere-to-skip backdrop below.
+    BackHandler { close() }
+
     Box(modifier = Modifier.fillMaxSize()) {
         // Backdrop — dims everything and skips on tap. When a target is spotlit
         // the dimming is drawn by the spotlight canvas instead.
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = { close() },
+                .then(
+                    // A screen-sized tap target is a screen-sized *focus* target
+                    // on a D-pad: it swallows the cursor and the spotlight ends
+                    // up trapping focus rather than guiding it. TV skips via the
+                    // Skip/✕ controls and Back instead.
+                    if (isTv) {
+                        Modifier
+                    } else {
+                        Modifier.clickable(
+                            interactionSource = backdropInteraction,
+                            indication = null,
+                            onClick = { close() },
+                        )
+                    },
                 )
                 .background(if (spotlight == null) Color.Black.copy(alpha = 0.7f) else Color.Transparent),
         )
@@ -366,6 +393,7 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
                 .clip(RoundedCornerShape(16.dp))
                 .background(RenzoColors.Card)
                 .border(1.dp, RenzoColors.Border, RoundedCornerShape(16.dp))
+                .focusGroup()
                 .onSizeChanged { cardHeightPx = it.height },
         ) {
             Box(modifier = Modifier.fillMaxWidth()) {
@@ -439,7 +467,7 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
                         .padding(top = 12.dp, end = 12.dp)
                         .size(32.dp)
                         .clip(CircleShape)
-                        .clickable { close() },
+                        .dpadClickable(radius = 16.dp) { close() },
                 ) {
                     Icon(
                         Icons.Filled.Close,
@@ -463,7 +491,7 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
                         "Skip",
                         style = MaterialTheme.typography.labelSmall,
                         color = RenzoColors.MutedForeground,
-                        modifier = Modifier.clickable { close() },
+                        modifier = Modifier.dpadClickable(radius = 6.dp) { close() },
                     )
                 }
 
@@ -494,7 +522,7 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { step = maxOf(0, step - 1) }
+                            .dpadClickable(radius = 8.dp) { step = maxOf(0, step - 1) }
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                     ) {
                         Icon(
@@ -518,7 +546,8 @@ fun WalkthroughOverlay(onFinish: () -> Unit) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .background(RenzoColors.Primary)
-                        .clickable { if (isLast) close() else step += 1 }
+                        .focusRequester(nextRequester)
+                        .dpadClickable(radius = 8.dp, fill = null) { if (isLast) close() else step += 1 }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     if (isLast) {

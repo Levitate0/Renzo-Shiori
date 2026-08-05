@@ -9,7 +9,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -45,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -55,9 +55,12 @@ import app.renzoshiori.client.RenzoApp
 import app.renzoshiori.client.RenzoDownloadService
 import app.renzoshiori.client.RenzoStore
 import app.renzoshiori.client.data.offline.OfflineRepository
+import app.renzoshiori.client.ui.home.dpadClickable
 import app.renzoshiori.client.ui.library.formatBytes
 import app.renzoshiori.client.ui.library.formatChapter
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,6 +83,7 @@ fun DownloadsScreen() {
     val renzoApp = context.applicationContext as RenzoApp
     val scope = rememberCoroutineScope()
     val store = remember { RenzoStore(context.applicationContext) }
+    val isTv = LocalIsTv.current
 
     var chapters by remember { mutableStateOf<List<OfflineRepository.OfflineChapter>?>(null) }
     var bytes by remember { mutableStateOf(0L) }
@@ -191,7 +195,7 @@ fun DownloadsScreen() {
                             .height(32.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .border(1.dp, RenzoColors.Border, RoundedCornerShape(8.dp))
-                            .clickable {
+                            .dpadClickable(radius = 8.dp, fill = null) {
                                 scope.launch {
                                     val purged = withContext(Dispatchers.IO) {
                                         val all = renzoApp.offline.listChapters()
@@ -337,7 +341,13 @@ fun DownloadsScreen() {
                             .height(32.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .border(1.dp, RenzoColors.Border, RoundedCornerShape(8.dp))
-                            .clickable { folderPicker.launch(null) }
+                            // Not every television ships a document-tree picker;
+                            // a missing one must not take the app down.
+                            .dpadClickable(radius = 8.dp, fill = null) {
+                                if (runCatching { folderPicker.launch(null) }.isFailure) {
+                                    toast = "No file picker on this device — the app default is used."
+                                }
+                            }
                             .padding(horizontal = 12.dp),
                     ) {
                         Text(
@@ -376,6 +386,7 @@ fun DownloadsScreen() {
                             modifier = Modifier.padding(top = 2.dp),
                         )
                     }
+                    var switchFocused by remember { mutableStateOf(false) }
                     Switch(
                         checked = autoPurge,
                         onCheckedChange = { value ->
@@ -388,7 +399,10 @@ fun DownloadsScreen() {
                             uncheckedThumbColor = RenzoColors.MutedForeground,
                             uncheckedTrackColor = RenzoColors.Muted,
                         ),
-                        modifier = Modifier.padding(start = 12.dp),
+                        modifier = Modifier
+                            .padding(start = 12.dp)
+                            .onFocusChanged { switchFocused = it.isFocused }
+                            .focusRing(isTv && switchFocused, 50.dp),
                     )
                 }
             }
@@ -446,7 +460,7 @@ fun DownloadsScreen() {
                         modifier = Modifier
                             .size(32.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable {
+                            .dpadClickable(radius = 8.dp) {
                                 scope.launch {
                                     withContext(Dispatchers.IO) {
                                         renzoApp.offline.deleteChapter(chapter.chapterKey)

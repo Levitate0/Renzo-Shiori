@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
@@ -75,7 +76,12 @@ import app.renzoshiori.client.data.model.SetCadenceRequestDto
 import app.renzoshiori.client.data.model.UserLevel
 import app.renzoshiori.client.data.network.StatusApi
 import app.renzoshiori.client.data.network.absoluteUrl
+import app.renzoshiori.client.ui.home.DpadSegmentedPills
+import app.renzoshiori.client.ui.home.DpadToggleChip
+import app.renzoshiori.client.ui.home.dpadClickable
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 
@@ -281,6 +287,14 @@ fun StatusScreen(onOpenSeries: (String) -> Unit = {}) {
 
 @Composable
 private fun LibraryScopeToggle(viewAll: Boolean, onToggle: () -> Unit) {
+    if (LocalIsTv.current) {
+        DpadToggleChip(
+            label = if (viewAll) "All libraries" else "My library",
+            active = viewAll,
+            onClick = onToggle,
+        )
+        return
+    }
     val shape = RoundedCornerShape(50)
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -366,6 +380,18 @@ private fun SegmentedTabs(
     providerCount: Int,
     seriesCount: Int,
 ) {
+    // The open tab is *selected*, not focused: on TV it keeps its accent and
+    // check mark while the cursor moves off it (§2.1 of the TV spec).
+    if (LocalIsTv.current) {
+        val ids = listOf(TAB_PROVIDERS, TAB_SERIES)
+        DpadSegmentedPills(
+            labels = listOf("Sources", "Series"),
+            counts = listOf(providerCount, seriesCount),
+            selectedIndex = ids.indexOf(value).coerceAtLeast(0),
+            onSelect = { onChange(ids[it]) },
+        )
+        return
+    }
     val outer = RoundedCornerShape(50)
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -454,7 +480,7 @@ private fun DismissButton(onClick: () -> Unit) {
             .clip(shape)
             .background(White03)
             .border(1.dp, White10, shape)
-            .clickable { onClick() }
+            .dpadClickable(radius = 6.dp, fill = null) { onClick() }
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
         Text(
@@ -525,7 +551,7 @@ private fun levelAccent(level: Int): Color =
 private fun SeriesTitleLink(title: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier.clickable { onClick() },
+        modifier = modifier.dpadClickable(radius = 6.dp) { onClick() },
     ) {
         Text(
             title,
@@ -592,7 +618,7 @@ private fun ProviderCard(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { isOpen = !isOpen },
+                    .dpadClickable(radius = 8.dp) { isOpen = !isOpen },
             ) {
                 Icon(
                     if (isOpen) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
@@ -864,14 +890,17 @@ private fun CadenceInput(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(6.dp)
+    var focused by remember { mutableStateOf(false) }
+    val isTv = LocalIsTv.current
     Box(
         contentAlignment = Alignment.CenterEnd,
         modifier = modifier
-            .width(64.dp)
-            .height(28.dp)
+            .width(if (isTv) 84.dp else 64.dp)
+            .height(if (isTv) 36.dp else 28.dp)
             .clip(shape)
             .background(RenzoColors.Background)
             .border(1.dp, RenzoColors.Border, shape)
+            .focusRing(isTv && focused, 6.dp)
             .padding(horizontal = 8.dp),
     ) {
         if (value.isEmpty()) {
@@ -897,7 +926,7 @@ private fun CadenceInput(
             cursorBrush = SolidColor(RenzoColors.Primary),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { onDone() }),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
         )
     }
 }
@@ -915,7 +944,7 @@ private fun SaveCadenceButton(
             .clip(shape)
             .background(White03)
             .border(1.dp, White10, shape)
-            .clickable(enabled = enabled) { onClick() }
+            .dpadClickable(radius = 6.dp, enabled = enabled, fill = null) { onClick() }
             .alpha(if (enabled) 1f else 0.4f)
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {

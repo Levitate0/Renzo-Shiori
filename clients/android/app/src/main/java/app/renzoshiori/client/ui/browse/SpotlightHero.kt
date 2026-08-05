@@ -44,6 +44,10 @@ import androidx.compose.ui.unit.sp
 import app.renzoshiori.client.ui.library.getStatusDisplay
 import app.renzoshiori.client.ui.library.spotlightStripColor
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 
@@ -87,9 +91,16 @@ fun SpotlightHero(
     val safeItems = remember(items) { items.take(7) }
     if (safeItems.isEmpty()) return
 
+    val isTv = LocalIsTv.current
     var active by remember(safeItems) { mutableStateOf(0) }
     var pauseUntil by remember { mutableStateOf(0L) }
     var descExpanded by remember(active) { mutableStateOf(false) }
+
+    // On TV, focus anywhere in the hero pauses the carousel: a slide that
+    // rotates out from under the cursor changes what Centre does mid-press.
+    fun holdCarousel() {
+        if (isTv) pauseUntil = System.currentTimeMillis() + PAUSE_AFTER_MANUAL_MS
+    }
 
     // Auto-advance loop.
     LaunchedEffect(safeItems.size, active, pauseUntil) {
@@ -297,6 +308,7 @@ fun SpotlightHero(
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
                 )
+                val moreFocus = rememberFocusState()
                 Text(
                     if (descExpanded) "READ LESS" else "READ MORE",
                     style = MaterialTheme.typography.labelSmall.copy(
@@ -308,7 +320,21 @@ fun SpotlightHero(
                     modifier = Modifier
                         .padding(top = 6.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .clickable { descExpanded = !descExpanded }
+                        .then(
+                            if (isTv) {
+                                Modifier
+                                    .focusRing(moreFocus.focused, 4.dp)
+                                    .tvClickable(
+                                        onFocused = {
+                                            moreFocus.set(it)
+                                            if (it) holdCarousel()
+                                        },
+                                        onClick = { descExpanded = !descExpanded },
+                                    )
+                            } else {
+                                Modifier.clickable { descExpanded = !descExpanded }
+                            },
+                        )
                         .padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
@@ -345,13 +371,28 @@ fun SpotlightHero(
 
             // CTA.
             Spacer(Modifier.height(20.dp))
+            val ctaFocus = rememberFocusState()
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .height(40.dp)
+                    .height(if (isTv) 48.dp else 40.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(PINK)
-                    .clickable { onCtaClick(current) }
+                    .then(
+                        if (isTv) {
+                            Modifier
+                                .focusRing(ctaFocus.focused, 8.dp)
+                                .tvClickable(
+                                    onFocused = {
+                                        ctaFocus.set(it)
+                                        if (it) holdCarousel()
+                                    },
+                                    onClick = { onCtaClick(current) },
+                                )
+                        } else {
+                            Modifier.clickable { onCtaClick(current) }
+                        },
+                    )
                     .padding(horizontal = 20.dp),
             ) {
                 Icon(
@@ -380,10 +421,22 @@ fun SpotlightHero(
                 ) {
                     safeItems.forEachIndexed { index, item ->
                         val isActive = index == active
+                        // Selection is the un-dimmed thumbnail plus the pink
+                        // outline drawn *over* the cover below; the accent ring
+                        // sits outside the whole tile and is focus alone. Both
+                        // are legible at the same time.
+                        val thumbFocus = rememberFocusState()
                         Box(
                             modifier = Modifier
-                                .width(28.dp)
-                                .height(40.dp)
+                                .then(
+                                    if (isTv) {
+                                        Modifier.focusRing(thumbFocus.focused, 8.dp).padding(3.dp)
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .width(if (isTv) 40.dp else 28.dp)
+                                .height(if (isTv) 56.dp else 40.dp)
                                 .clip(RoundedCornerShape(6.dp))
                                 .border(
                                     1.dp,
@@ -391,10 +444,26 @@ fun SpotlightHero(
                                     RoundedCornerShape(6.dp),
                                 )
                                 .background(RenzoColors.Muted)
-                                .clickable {
-                                    active = index
-                                    pauseUntil = System.currentTimeMillis() + PAUSE_AFTER_MANUAL_MS
-                                },
+                                .then(
+                                    if (isTv) {
+                                        Modifier.tvClickable(
+                                            onFocused = {
+                                                thumbFocus.set(it)
+                                                if (it) holdCarousel()
+                                            },
+                                            onClick = {
+                                                active = index
+                                                pauseUntil =
+                                                    System.currentTimeMillis() + PAUSE_AFTER_MANUAL_MS
+                                            },
+                                        )
+                                    } else {
+                                        Modifier.clickable {
+                                            active = index
+                                            pauseUntil = System.currentTimeMillis() + PAUSE_AFTER_MANUAL_MS
+                                        }
+                                    },
+                                ),
                         ) {
                             if (item.thumbnailUrl != null) {
                                 AsyncImage(
@@ -409,6 +478,15 @@ fun SpotlightHero(
                                     modifier = Modifier
                                         .matchParentSize()
                                         .background(Color.Black.copy(alpha = 0.45f)),
+                                )
+                            } else if (isTv) {
+                                // Drawn as a child so it lands on top of the
+                                // cover — a border in the modifier chain paints
+                                // before the image and would be invisible.
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .border(2.dp, PINK, RoundedCornerShape(6.dp)),
                                 )
                             }
                         }

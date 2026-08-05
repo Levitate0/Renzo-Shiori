@@ -54,9 +54,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +69,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.renzoshiori.client.data.model.ReaderChapterDto
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvContentColor
+import app.renzoshiori.client.ui.tv.tvFocusable
 import kotlin.math.roundToInt
 
 /**
@@ -264,23 +270,46 @@ private fun SheetHeader(title: String, onClose: () -> Unit) {
  * The web reader's settings panel, option for option and label for label. The
  * web renders it as a right-hand drawer; on a phone that becomes a bottom sheet
  * (the "side-by-side becomes vertical" rule), with identical content and order.
+ *
+ * On a television the bottom sheet is replaced by [ReaderTvPanel] — a sheet does
+ * not contain D-pad focus — and the controls are re-ordered and swapped for
+ * focusable equivalents. The panel is the same content either way; only the
+ * container and the control widgets differ. See [ReaderSettingsBody].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReaderSettingsSheet(
     state: ReaderUiState,
     mode: ResolvedMode,
+    isTv: Boolean,
     onDismiss: () -> Unit,
     onModeChange: (ReaderMode) -> Unit,
     onSettingsChange: ((ReaderSettings) -> ReaderSettings) -> Unit,
     onClearCache: () -> Unit,
     onToggleChapterRead: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val settings = state.settings
-    val continuous = mode.continuous
-    val activeChapter = state.activeChapter
+    if (isTv) {
+        ReaderTvPanel(title = "Reader Settings", onDismiss = onDismiss) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                ReaderSettingsBody(
+                    state = state,
+                    mode = mode,
+                    isTv = true,
+                    onModeChange = onModeChange,
+                    onSettingsChange = onSettingsChange,
+                    onClearCache = onClearCache,
+                    onToggleChapterRead = onToggleChapterRead,
+                )
+            }
+        }
+        return
+    }
 
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -295,167 +324,315 @@ fun ReaderSettingsSheet(
                 .padding(bottom = 24.dp),
         ) {
             SheetHeader("Reader Settings", onDismiss)
-
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                // Reading mode
-                Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                    val autoSuffix =
-                        if (settings.mode == ReaderMode.AUTO && state.seriesModeOverride == null)
-                            " (auto → ${modeSlug(mode)})" else ""
-                    SettingsLabel("Reading mode$autoSuffix")
-                    SettingsSelect(
-                        options = ReaderMode.values().map { it.value to it.label },
-                        value = (state.seriesModeOverride ?: settings.mode).value,
-                        onChange = { onModeChange(ReaderMode.from(it)) },
-                    )
-                    SettingsHelp("Choice is remembered per series; “Auto” follows the chapter’s detected layout.")
-                }
-
-                // Page fit (paged modes only)
-                if (!continuous) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                        SettingsLabel("Page fit")
-                        SettingsSelect(
-                            options = FitMode.values().map { it.value to it.label },
-                            value = settings.fit.value,
-                            onChange = { v -> onSettingsChange { it.copy(fit = FitMode.from(v)) } },
-                        )
-                    }
-                }
-
-                // Page width (continuous)
-                if (continuous) {
-                    SettingsSlider(
-                        label = "Page width — ${settings.maxWidthPct}% of screen",
-                        value = settings.maxWidthPct, min = 20, max = 100, step = 5,
-                        help = "Auto-resize: every page is scaled to this same width, so mixed-size pages line up.",
-                        onChange = { v -> onSettingsChange { it.copy(maxWidthPct = v) } },
-                    )
-                    SettingsSlider(
-                        label = "Click-to-scroll step — ${settings.tapAdvancePct}% of screen",
-                        value = settings.tapAdvancePct, min = 20, max = 100, step = 10,
-                        help = "Tap the right side to scroll forward by this much; tap the left side to scroll back.",
-                        onChange = { v -> onSettingsChange { it.copy(tapAdvancePct = v) } },
-                    )
-                }
-
-                // Gap (vertical only)
-                if (mode == ResolvedMode.VERTICAL) {
-                    SettingsSlider(
-                        label = "Gap between pages — ${settings.gapPx}px",
-                        value = settings.gapPx, min = 0, max = 48, step = 4,
-                        onChange = { v -> onSettingsChange { it.copy(gapPx = v) } },
-                    )
-                }
-
-                // Background
-                Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                    SettingsLabel("Background")
-                    SettingsSelect(
-                        options = ReaderBackground.values().map { it.value to it.label },
-                        value = settings.background.value,
-                        onChange = { v -> onSettingsChange { it.copy(background = ReaderBackground.from(v)) } },
-                    )
-                }
-
-                // Preload (paged modes only)
-                if (!continuous) {
-                    SettingsSlider(
-                        label = "Preload pages — ${settings.preload}",
-                        value = settings.preload, min = 0, max = 10, step = 1,
-                        onChange = { v -> onSettingsChange { it.copy(preload = v) } },
-                    )
-                }
-
-                ToggleRow(
-                    label = "Tap zones (sides turn pages · tap to scroll)",
-                    checked = settings.tapNavigation,
-                    onChange = { v -> onSettingsChange { it.copy(tapNavigation = v) } },
+                ReaderSettingsBody(
+                    state = state,
+                    mode = mode,
+                    isTv = false,
+                    onModeChange = onModeChange,
+                    onSettingsChange = onSettingsChange,
+                    onClearCache = onClearCache,
+                    onToggleChapterRead = onToggleChapterRead,
                 )
-                if (continuous) {
-                    ToggleRow(
-                        label = "Infinite scroll (roll into next chapter)",
-                        checked = settings.infiniteScroll,
-                        onChange = { v -> onSettingsChange { it.copy(infiniteScroll = v) } },
-                    )
-                }
-                ToggleRow(
-                    label = "Show page number",
-                    checked = settings.showPageNumber,
-                    onChange = { v -> onSettingsChange { it.copy(showPageNumber = v) } },
-                )
-                if (!continuous) {
-                    ToggleRow(
-                        label = "Chapter transition screen (finished · up next)",
-                        checked = settings.chapterTransition,
-                        onChange = { v -> onSettingsChange { it.copy(chapterTransition = v) } },
-                    )
-                }
-                ToggleRow(
-                    label = "Mark read on last page",
-                    checked = settings.autoMarkRead,
-                    onChange = { v -> onSettingsChange { it.copy(autoMarkRead = v) } },
-                )
-
-                // ── Cache ──
-                HorizontalDivider(color = ReaderPalette.Hairline, modifier = Modifier.padding(vertical = 8.dp))
-                SettingsLabel("Streamed image cache")
-                Text(
-                    "Pages read live from a source (not downloaded) are cached in memory for smooth " +
-                        "scrolling. Clear it if a source served a stale or broken image.",
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    color = ReaderPalette.Text50,
-                    modifier = Modifier.padding(bottom = 10.dp),
-                )
-                ToggleRow(
-                    label = "Clear the cache when I exit the reader",
-                    checked = settings.autoClearCache,
-                    onChange = { v -> onSettingsChange { it.copy(autoClearCache = v) } },
-                )
-                Button(
-                    onClick = onClearCache,
-                    shape = MaterialTheme.shapes.small,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = RenzoColors.Secondary,
-                        contentColor = ReaderPalette.Text,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (state.cacheBusy) {
-                        CircularProgressIndicator(
-                            color = ReaderPalette.Text,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    } else {
-                        Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text("Clear reader cache (web pages)", fontSize = 14.sp)
-                }
-
-                // ── Read state ──
-                if (activeChapter != null) {
-                    HorizontalDivider(color = ReaderPalette.Hairline, modifier = Modifier.padding(vertical = 12.dp))
-                    Button(
-                        onClick = onToggleChapterRead,
-                        shape = MaterialTheme.shapes.small,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = RenzoColors.Secondary,
-                            contentColor = ReaderPalette.Text,
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            if (activeChapter.isCompleted) "Mark chapter unread" else "Mark chapter read",
-                            fontSize = 14.sp,
-                        )
-                    }
-                }
             }
         }
     }
+}
+
+/**
+ * Every reader setting, once.
+ *
+ * Two things change on a television and nothing else does:
+ *
+ *  - **Order.** Sizing comes first, because viewing distance is the only
+ *    problem a TV reader really has: scale, fit, page width, then mode,
+ *    background and the scroll step.
+ *  - **Widgets.** Dropdowns become inline option lists (a menu is a second
+ *    focus container, and it hides the current value while it is open) and
+ *    sliders become [TvStepper]s (drag is the only gesture `Slider` knows).
+ *
+ * Two rows are hidden rather than disabled: "tap zones" describes touch zones
+ * that do not exist on a remote, and "clear cache on exit" is a phone-storage
+ * concern. A disabled row invites the user to keep pressing it.
+ */
+@Composable
+private fun ReaderSettingsBody(
+    state: ReaderUiState,
+    mode: ResolvedMode,
+    isTv: Boolean,
+    onModeChange: (ReaderMode) -> Unit,
+    onSettingsChange: ((ReaderSettings) -> ReaderSettings) -> Unit,
+    onClearCache: () -> Unit,
+    onToggleChapterRead: () -> Unit,
+) {
+    val settings = state.settings
+    val continuous = mode.continuous
+    val activeChapter = state.activeChapter
+    val autoSuffix =
+        if (settings.mode == ReaderMode.AUTO && state.seriesModeOverride == null)
+            " (auto → ${modeSlug(mode)})" else ""
+    val modeHelp = "Choice is remembered per series; “Auto” follows the chapter’s detected layout."
+    val scaleHelp =
+        "Makes the page itself bigger — the one thing fit and page width can't do. " +
+            "Above 100% the page is larger than the screen and pans as you read."
+
+    // The first control on TV takes focus when the panel opens, so the user
+    // never has to hunt for the cursor.
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(isTv) {
+        if (!isTv) return@LaunchedEffect
+        // Not before the first frame: the row has to be attached to take focus.
+        withFrameNanos { }
+        runCatching { firstFocus.requestFocus() }
+    }
+
+    val scaleLabel = "Page scale — ${settings.scalePct}%"
+    val widthLabel = "Page width — ${settings.maxWidthPct}% of screen"
+    val widthHelp = "Auto-resize: every page is scaled to this same width, so mixed-size pages line up."
+    val stepLabel =
+        if (isTv) "Scroll step — ${settings.tapAdvancePct}% of screen"
+        else "Click-to-scroll step — ${settings.tapAdvancePct}% of screen"
+    val stepHelp =
+        if (isTv) "How far one press of up or down moves the page."
+        else "Tap the right side to scroll forward by this much; tap the left side to scroll back."
+
+    val modeOptions = ReaderMode.values().map { it.value to it.label }
+    val fitOptions = FitMode.values().map { it.value to it.label }
+    val backgroundOptions = ReaderBackground.values().map { it.value to it.label }
+    val modeValue = (state.seriesModeOverride ?: settings.mode).value
+
+    if (isTv) {
+        // Sizing first — it is the whole reason a TV needs this panel.
+        SettingsNumber(
+            isTv, scaleLabel, settings.scalePct,
+            ReaderPrefs.SCALE_MIN, ReaderPrefs.SCALE_MAX, ReaderPrefs.SCALE_STEP,
+            scaleHelp, Modifier.focusRequester(firstFocus),
+        ) { v -> onSettingsChange { it.copy(scalePct = v) } }
+        if (!continuous) {
+            SettingsOptions(isTv, "Page fit", fitOptions, settings.fit.value) { v ->
+                onSettingsChange { it.copy(fit = FitMode.from(v)) }
+            }
+        }
+        if (continuous) {
+            SettingsNumber(isTv, widthLabel, settings.maxWidthPct, 20, 100, 5, widthHelp) { v ->
+                onSettingsChange { it.copy(maxWidthPct = v) }
+            }
+        }
+        SettingsOptions(isTv, "Reading mode$autoSuffix", modeOptions, modeValue, modeHelp) { v ->
+            onModeChange(ReaderMode.from(v))
+        }
+        SettingsOptions(isTv, "Background", backgroundOptions, settings.background.value) { v ->
+            onSettingsChange { it.copy(background = ReaderBackground.from(v)) }
+        }
+        if (continuous) {
+            SettingsNumber(isTv, stepLabel, settings.tapAdvancePct, 20, 100, 10, stepHelp) { v ->
+                onSettingsChange { it.copy(tapAdvancePct = v) }
+            }
+        }
+    } else {
+        SettingsOptions(isTv, "Reading mode$autoSuffix", modeOptions, modeValue, modeHelp) { v ->
+            onModeChange(ReaderMode.from(v))
+        }
+        if (!continuous) {
+            SettingsOptions(isTv, "Page fit", fitOptions, settings.fit.value) { v ->
+                onSettingsChange { it.copy(fit = FitMode.from(v)) }
+            }
+        }
+        SettingsNumber(
+            isTv, scaleLabel, settings.scalePct,
+            ReaderPrefs.SCALE_MIN, ReaderPrefs.SCALE_MAX, ReaderPrefs.SCALE_STEP, scaleHelp,
+        ) { v -> onSettingsChange { it.copy(scalePct = v) } }
+        if (continuous) {
+            SettingsNumber(isTv, widthLabel, settings.maxWidthPct, 20, 100, 5, widthHelp) { v ->
+                onSettingsChange { it.copy(maxWidthPct = v) }
+            }
+            SettingsNumber(isTv, stepLabel, settings.tapAdvancePct, 20, 100, 10, stepHelp) { v ->
+                onSettingsChange { it.copy(tapAdvancePct = v) }
+            }
+        }
+    }
+
+    // Gap (vertical only)
+    if (mode == ResolvedMode.VERTICAL) {
+        SettingsNumber(isTv, "Gap between pages — ${settings.gapPx}px", settings.gapPx, 0, 48, 4) { v ->
+            onSettingsChange { it.copy(gapPx = v) }
+        }
+    }
+    if (!isTv) {
+        SettingsOptions(isTv, "Background", backgroundOptions, settings.background.value) { v ->
+            onSettingsChange { it.copy(background = ReaderBackground.from(v)) }
+        }
+    }
+
+    // Preload (paged modes only)
+    if (!continuous) {
+        SettingsNumber(isTv, "Preload pages — ${settings.preload}", settings.preload, 0, 10, 1) { v ->
+            onSettingsChange { it.copy(preload = v) }
+        }
+    }
+
+    // Tap zones describe something a remote does not have.
+    if (!isTv) {
+        SettingsToggle(
+            isTv = isTv,
+            label = "Tap zones (sides turn pages · tap to scroll)",
+            checked = settings.tapNavigation,
+            onChange = { v -> onSettingsChange { it.copy(tapNavigation = v) } },
+        )
+    }
+    if (continuous) {
+        SettingsToggle(
+            isTv = isTv,
+            label = "Infinite scroll (roll into next chapter)",
+            checked = settings.infiniteScroll,
+            onChange = { v -> onSettingsChange { it.copy(infiniteScroll = v) } },
+        )
+    }
+    SettingsToggle(
+        isTv = isTv,
+        label = "Show page number",
+        checked = settings.showPageNumber,
+        onChange = { v -> onSettingsChange { it.copy(showPageNumber = v) } },
+    )
+    if (!continuous) {
+        SettingsToggle(
+            isTv = isTv,
+            label = "Chapter transition screen (finished · up next)",
+            checked = settings.chapterTransition,
+            onChange = { v -> onSettingsChange { it.copy(chapterTransition = v) } },
+        )
+    }
+    SettingsToggle(
+        isTv = isTv,
+        label = "Mark read on last page",
+        checked = settings.autoMarkRead,
+        onChange = { v -> onSettingsChange { it.copy(autoMarkRead = v) } },
+    )
+
+    // ── Cache ──
+    HorizontalDivider(color = ReaderPalette.Hairline, modifier = Modifier.padding(vertical = 8.dp))
+    SettingsLabel("Streamed image cache")
+    Text(
+        "Pages read live from a source (not downloaded) are cached in memory for smooth " +
+            "scrolling. Clear it if a source served a stale or broken image.",
+        fontSize = 11.sp,
+        lineHeight = 15.sp,
+        color = ReaderPalette.Text50,
+        modifier = Modifier.padding(bottom = 10.dp),
+    )
+    // Auto-clear-on-exit is about phone storage; it is noise on a TV.
+    if (!isTv) {
+        SettingsToggle(
+            isTv = isTv,
+            label = "Clear the cache when I exit the reader",
+            checked = settings.autoClearCache,
+            onChange = { v -> onSettingsChange { it.copy(autoClearCache = v) } },
+        )
+    }
+    if (isTv) {
+        TvActionRow("Clear reader cache (web pages)", busy = state.cacheBusy, onClick = onClearCache)
+    } else {
+        Button(
+            onClick = onClearCache,
+            shape = MaterialTheme.shapes.small,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = RenzoColors.Secondary,
+                contentColor = ReaderPalette.Text,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.cacheBusy) {
+                CircularProgressIndicator(
+                    color = ReaderPalette.Text,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(16.dp),
+                )
+            } else {
+                Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("Clear reader cache (web pages)", fontSize = 14.sp)
+        }
+    }
+
+    // ── Read state ──
+    if (activeChapter != null) {
+        HorizontalDivider(color = ReaderPalette.Hairline, modifier = Modifier.padding(vertical = 12.dp))
+        val readLabel = if (activeChapter.isCompleted) "Mark chapter unread" else "Mark chapter read"
+        if (isTv) {
+            TvActionRow(readLabel, onClick = onToggleChapterRead)
+        } else {
+            Button(
+                onClick = onToggleChapterRead,
+                shape = MaterialTheme.shapes.small,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = RenzoColors.Secondary,
+                    contentColor = ReaderPalette.Text,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(readLabel, fontSize = 14.sp)
+            }
+        }
+    }
+    // Room to scroll the last row clear of the panel edge.
+    Spacer(Modifier.height(24.dp))
+}
+
+// ── One control, two input models ─────────────────────────────────────────
+//
+// These three are the whole of the touch/TV divergence in the settings panel.
+// Keeping the branch inside them is what stops the panel itself from forking:
+// the option set, the labels and the wiring are written once.
+
+/** Stepped number: a drag slider on touch, a focusable ±step row on a remote. */
+@Composable
+private fun SettingsNumber(
+    isTv: Boolean,
+    label: String,
+    value: Int,
+    min: Int,
+    max: Int,
+    step: Int,
+    help: String? = null,
+    modifier: Modifier = Modifier,
+    onChange: (Int) -> Unit,
+) {
+    if (isTv) {
+        TvStepper(
+            label = label, value = value, min = min, max = max, step = step,
+            help = help, modifier = modifier, onChange = onChange,
+        )
+    } else {
+        SettingsSlider(label = label, value = value, min = min, max = max, step = step, help = help, onChange = onChange)
+    }
+}
+
+/** Pick-one: a dropdown on touch, an always-visible option list on a remote. */
+@Composable
+private fun SettingsOptions(
+    isTv: Boolean,
+    label: String,
+    options: List<Pair<String, String>>,
+    value: String,
+    help: String? = null,
+    onChange: (String) -> Unit,
+) {
+    if (isTv) {
+        TvOptionGroup(label = label, options = options, value = value, help = help, onChange = onChange)
+    } else {
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+            SettingsLabel(label)
+            SettingsSelect(options = options, value = value, onChange = onChange)
+            if (help != null) SettingsHelp(help)
+        }
+    }
+}
+
+/** On/off: the row is the focus target on TV, so the switch itself stays inert. */
+@Composable
+private fun SettingsToggle(isTv: Boolean, label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    if (isTv) TvToggleRow(label, checked, onChange) else ToggleRow(label, checked, onChange)
 }
 
 /** "auto → webtoon" etc. — the web prints the resolved mode's slug. */
@@ -478,6 +655,7 @@ private fun modeSlug(mode: ResolvedMode): String = when (mode) {
 @Composable
 fun ReaderChapterListSheet(
     state: ReaderUiState,
+    isTv: Boolean,
     onDismiss: () -> Unit,
     onPick: (Double) -> Unit,
 ) {
@@ -497,6 +675,47 @@ fun ReaderChapterListSheet(
     LaunchedEffect(rows.size) {
         val idx = rows.indexOfFirst { it.number == currentNumber }
         if (idx > 0) listState.scrollToItem(idx)
+    }
+
+    if (isTv) {
+        // The filter box is deliberately absent: it is the one text field in the
+        // reader, and typing a chapter number on a leanback IME is slower than
+        // scrolling to it. The list opens on the chapter being read instead.
+        val activeFocus = remember { FocusRequester() }
+        LaunchedEffect(rows.size) {
+            // The row has to exist before it can take focus, and it only exists
+            // after the jump above has laid it out.
+            withFrameNanos { }
+            runCatching { activeFocus.requestFocus() }
+        }
+        ReaderTvPanel(title = "Chapters", onDismiss = onDismiss) {
+            if (rows.isEmpty()) {
+                Text(
+                    "No chapters yet.",
+                    fontSize = 13.sp,
+                    color = ReaderPalette.Text40,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    items(rows, key = { it.number }) { chapter ->
+                        val active = chapter.number == currentNumber
+                        TvChapterRow(
+                            chapter = chapter,
+                            active = active,
+                            modifier = if (active) Modifier.focusRequester(activeFocus) else Modifier,
+                            onClick = { onPick(chapter.number) },
+                        )
+                    }
+                }
+            }
+        }
+        return
     }
 
     ModalBottomSheet(
@@ -626,5 +845,80 @@ private fun ChapterRow(chapter: ReaderChapterDto, active: Boolean, onClick: () -
             )
         }
         if (active) Text("reading", fontSize = 11.sp, color = RenzoColors.Primary)
+    }
+}
+
+/**
+ * The same row for a remote.
+ *
+ * Focused and selected are different things and both have to survive being read
+ * from across a room: the ring and the fill say where the cursor is, the accent
+ * colour and the "reading" tag say which chapter is actually open. Move the
+ * cursor off the current chapter and it is still obvious which one that was.
+ */
+@Composable
+private fun TvChapterRow(
+    chapter: ReaderChapterDto,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val focus = rememberFocusState()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .tvFocusable(
+                focused = focus.focused,
+                onFocused = focus::set,
+                radius = 10.dp,
+                onClick = onClick,
+            )
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Box(modifier = Modifier.width(22.dp), contentAlignment = Alignment.CenterStart) {
+            when {
+                chapter.isCompleted -> Icon(
+                    Icons.Filled.Check,
+                    contentDescription = "Read",
+                    tint = ReaderPalette.Emerald400,
+                    modifier = Modifier.size(16.dp),
+                )
+                chapter.progress > 0f -> Text(
+                    "${(chapter.progress * 100).roundToInt()}%",
+                    fontSize = 11.sp,
+                    color = RenzoColors.Primary,
+                )
+            }
+        }
+        Text(
+            chapter.name.ifBlank { "Chapter ${trimNumber(chapter.number)}" },
+            fontSize = 15.sp,
+            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+            color = tvContentColor(selected = active, focused = focus.focused),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (chapter.locked) {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = "Locked",
+                tint = ReaderPalette.Violet400,
+                modifier = Modifier.size(14.dp),
+            )
+        } else if (chapter.filename == null) {
+            Text("WEB", fontSize = 11.sp, color = Color(0x4DFFFFFF))
+        }
+        if (chapter.bookmarked) {
+            Icon(
+                Icons.Filled.Bookmark,
+                contentDescription = "Bookmarked",
+                tint = ReaderPalette.Pink500,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+        if (active) Text("reading", fontSize = 12.sp, color = RenzoColors.Primary)
     }
 }

@@ -2,7 +2,6 @@ package app.renzoshiori.client.ui.queue
 
 import android.app.Application
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -59,11 +59,15 @@ import app.renzoshiori.client.data.model.QueueStatus
 import app.renzoshiori.client.data.network.ErrorDownloadAction
 import app.renzoshiori.client.data.network.QueueApi
 import app.renzoshiori.client.data.network.absoluteUrl
-import app.renzoshiori.client.ui.components.RibbonToggleChip
 import app.renzoshiori.client.ui.components.SegmentedPills
+import app.renzoshiori.client.ui.home.DpadSegmentedPills
+import app.renzoshiori.client.ui.home.DpadToggleChip
+import app.renzoshiori.client.ui.home.dpadClickable
 import app.renzoshiori.client.ui.library.LibraryViewModel
 import app.renzoshiori.client.ui.library.formatChapter
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -267,11 +271,22 @@ fun QueueScreen() {
             contentAlignment = Alignment.Center,
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         ) {
-            SegmentedPills(
-                labels = FILTER_LABELS,
-                selectedIndex = filterIndex,
-                onSelect = { filterIndex = it },
-            )
+            // The chosen filter is *selected* state, not focus: on TV it keeps
+            // its accent colour and check while the cursor moves along the row,
+            // so "which filter is applied" survives the cursor moving off it.
+            if (LocalIsTv.current) {
+                DpadSegmentedPills(
+                    labels = FILTER_LABELS,
+                    selectedIndex = filterIndex,
+                    onSelect = { filterIndex = it },
+                )
+            } else {
+                SegmentedPills(
+                    labels = FILTER_LABELS,
+                    selectedIndex = filterIndex,
+                    onSelect = { filterIndex = it },
+                )
+            }
         }
 
         // ── Header ───────────────────────────────────────────────────────
@@ -291,7 +306,7 @@ fun QueueScreen() {
                 modifier = Modifier.padding(start = 12.dp).weight(1f),
             )
             if (libraryState.canOwner) {
-                RibbonToggleChip(
+                DpadToggleChip(
                     label = if (viewAllLibraries) "All libraries" else "My library",
                     active = viewAllLibraries,
                     onClick = { viewAllLibraries = !viewAllLibraries },
@@ -304,7 +319,7 @@ fun QueueScreen() {
                 color = RenzoColors.MutedForeground,
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .clickable { jobsOpen = true }
+                    .dpadClickable(radius = 6.dp) { jobsOpen = true }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             )
         }
@@ -482,7 +497,9 @@ private fun QueueRow(
                                 textDecoration = TextDecoration.Underline,
                             ),
                             color = RenzoColors.Red.copy(alpha = 0.8f),
-                            modifier = Modifier.padding(start = 6.dp).clickable(onClick = onRetry),
+                            modifier = Modifier
+                                .padding(start = 6.dp)
+                                .dpadClickable(radius = 6.dp, onClick = onRetry),
                         )
                     }
                 }
@@ -551,7 +568,7 @@ private fun RowIcon(
             .padding(start = 4.dp)
             .size(28.dp)
             .clip(RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick),
+            .dpadClickable(radius = 6.dp, onClick = onClick),
     ) {
         Icon(icon, contentDescription = label, tint = RenzoColors.MutedForeground, modifier = Modifier.size(14.dp))
     }
@@ -567,6 +584,8 @@ private fun JobsDialog(onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var running by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var runFocused by remember { mutableStateOf(false) }
+    val isTv = LocalIsTv.current
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -599,6 +618,9 @@ private fun JobsDialog(onDismiss: () -> Unit) {
                 },
                 shape = MaterialTheme.shapes.small,
                 enabled = !running,
+                modifier = Modifier
+                    .onFocusChanged { runFocused = it.isFocused }
+                    .focusRing(isTv && runFocused, 8.dp),
             ) {
                 if (running) {
                     CircularProgressIndicator(
@@ -642,7 +664,7 @@ private fun JobsDialog(onDismiss: () -> Unit) {
                     color = RenzoColors.MutedForeground,
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
-                        .clickable(onClick = onDismiss)
+                        .dpadClickable(radius = 6.dp, onClick = onDismiss)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 )
             }

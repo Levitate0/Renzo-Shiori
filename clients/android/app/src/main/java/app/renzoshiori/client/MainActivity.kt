@@ -17,11 +17,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -46,6 +48,9 @@ import app.renzoshiori.client.ui.settings.hslStrToColor
 import app.renzoshiori.client.ui.settings.prefString
 import app.renzoshiori.client.ui.settings.presetById
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.TvUseAComputerScreen
+import app.renzoshiori.client.ui.tv.rememberIsTvDevice
 import app.renzoshiori.client.ui.settings.ServerSettingsScreen
 import app.renzoshiori.client.ui.settings.TrackersScreen
 import app.renzoshiori.client.ui.settings.UsersScreen
@@ -67,6 +72,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val crashFile = java.io.File(filesDir, "last-crash.txt")
         setContent {
+            // Provided once, here, so every screen below can branch on device
+            // class without re-detecting it. There is deliberately no separate
+            // TV screen tree — see ui/tv/TvFocus.kt.
+            CompositionLocalProvider(LocalIsTv provides rememberIsTvDevice()) {
             RenzoTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     var crashText by androidx.compose.runtime.remember {
@@ -101,6 +110,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
             }
         }
     }
@@ -188,18 +198,30 @@ private fun SignedInNavHost(user: app.renzoshiori.client.data.model.UserDto, onL
             )
             AccountDialogHost(dialog = dialog, onDismiss = { dialog = null })
         }
-        composable("appearance") { AppearanceScreen(onBack = { nav.popBackStack() }) }
-        composable("users") { UsersScreen(onBack = { nav.popBackStack() }) }
-        composable("server-settings") { ServerSettingsScreen(onBack = { nav.popBackStack() }) }
-        composable("trackers") { TrackersScreen(onBack = { nav.popBackStack() }) }
+        composable("appearance") {
+            ConfigRoute("Appearance", "/appearance") { AppearanceScreen(onBack = { nav.popBackStack() }) }
+        }
+        composable("users") {
+            ConfigRoute("Users", "/settings") { UsersScreen(onBack = { nav.popBackStack() }) }
+        }
+        composable("server-settings") {
+            ConfigRoute("Settings & sources", "/settings") {
+                ServerSettingsScreen(onBack = { nav.popBackStack() })
+            }
+        }
+        composable("trackers") {
+            ConfigRoute("Trackers", "/settings") { TrackersScreen(onBack = { nav.popBackStack() }) }
+        }
         composable(
             "import-wizard/{titleOnly}",
             arguments = listOf(navArgument("titleOnly") { type = NavType.BoolType }),
         ) { entry ->
-            ImportWizardScreen(
-                titleOnly = entry.arguments!!.getBoolean("titleOnly"),
-                onClose = { nav.popBackStack() },
-            )
+            ConfigRoute("Import series", "/library") {
+                ImportWizardScreen(
+                    titleOnly = entry.arguments!!.getBoolean("titleOnly"),
+                    onClose = { nav.popBackStack() },
+                )
+            }
         }
         composable(
             "series/{seriesId}",
@@ -239,11 +261,36 @@ private fun SignedInNavHost(user: app.renzoshiori.client.data.model.UserDto, onL
             )
         }
         composable("account") {
-            AccountScreen(
-                username = user.username,
-                onBack = { nav.popBackStack() },
-                onLogout = onLogout,
-            )
+            ConfigRoute("Account", "/account") {
+                AccountScreen(
+                    username = user.username,
+                    onBack = { nav.popBackStack() },
+                    onLogout = onLogout,
+                )
+            }
         }
     }
+}
+
+/**
+ * The configuration half of the app — settings, sources, the import wizard — is
+ * deliberately NOT ported to the D-pad: 67 clicks and 16 text fields in settings
+ * alone, extension-repository URLs in sources. Typed, long, error-prone and done
+ * rarely: exactly where TV UX dies.
+ *
+ * Leaving those routes reachable-but-broken would be worse than not shipping
+ * them, so on a television each one shows the instance's own web address
+ * instead. Any household computer or tablet does the job — which, unlike "do it
+ * on your phone", doesn't assume the user owns one. The shell hides the matching
+ * nav and account-panel entries too; this is the backstop for anything that
+ * still navigates here.
+ */
+@Composable
+private fun ConfigRoute(title: String, path: String, content: @Composable () -> Unit) {
+    if (!LocalIsTv.current) {
+        content()
+        return
+    }
+    val store = (LocalContext.current.applicationContext as RenzoApp).tokenStore
+    TvUseAComputerScreen(title = title, serverUrl = store.serverUrl, path = path)
 }

@@ -1,6 +1,7 @@
 package app.renzoshiori.client.ui.reader
 
 import android.content.Context
+import app.renzoshiori.client.ui.tv.isTvDevice
 
 /**
  * Reader settings — a 1:1 transliteration of the web reader's `ReaderSettings`
@@ -74,6 +75,16 @@ data class ReaderSettings(
     val fit: FitMode = FitMode.WIDTH,
     /** % of viewport width cap in continuous modes. */
     val maxWidthPct: Int = 60,
+    /**
+     * Absolute page magnification, % (100 = as before).
+     *
+     * `fit` and `maxWidthPct` are both viewport-relative, so neither can make a
+     * page bigger than the screen — which is exactly what viewing distance
+     * needs. This multiplies on top of them, and above 100% the page is
+     * pannable (touch: drag; D-pad: the arrows pan to the edge, then turn).
+     * Defaults higher on a television — see [ReaderPrefs.load].
+     */
+    val scalePct: Int = 100,
     val background: ReaderBackground = ReaderBackground.BLACK,
     val preload: Int = 4,
     /** Vertical-mode gap, in px on the web → dp here. */
@@ -96,12 +107,23 @@ class ReaderPrefs(context: Context) {
     private val prefs = context.applicationContext
         .getSharedPreferences("renzo_reader_settings", Context.MODE_PRIVATE)
 
+    /**
+     * Reader settings are device-local (never server-synced), so a television
+     * keeps its own values and can simply start from different defaults — no
+     * per-device namespacing needed. Only the DEFAULTS differ: once a value has
+     * been written it is honoured on every device class.
+     */
+    private val isTv = isTvDevice(context)
+
     fun load(): ReaderSettings {
         val d = ReaderSettings()
         return ReaderSettings(
             mode = ReaderMode.from(prefs.getString(KEY_MODE, d.mode.value)),
-            fit = FitMode.from(prefs.getString(KEY_FIT, d.fit.value)),
+            // Fit-width is a phone default: on a 16:9 panel it crops the page
+            // badly, where fit-height shows the whole thing.
+            fit = FitMode.from(prefs.getString(KEY_FIT, (if (isTv) FitMode.HEIGHT else d.fit).value)),
             maxWidthPct = prefs.getInt(KEY_MAX_WIDTH, d.maxWidthPct),
+            scalePct = prefs.getInt(KEY_SCALE, if (isTv) TV_DEFAULT_SCALE_PCT else d.scalePct),
             background = ReaderBackground.from(prefs.getString(KEY_BACKGROUND, d.background.value)),
             preload = prefs.getInt(KEY_PRELOAD, d.preload),
             gapPx = prefs.getInt(KEY_GAP, d.gapPx),
@@ -120,6 +142,7 @@ class ReaderPrefs(context: Context) {
             .putString(KEY_MODE, s.mode.value)
             .putString(KEY_FIT, s.fit.value)
             .putInt(KEY_MAX_WIDTH, s.maxWidthPct)
+            .putInt(KEY_SCALE, s.scalePct)
             .putString(KEY_BACKGROUND, s.background.value)
             .putInt(KEY_PRELOAD, s.preload)
             .putInt(KEY_GAP, s.gapPx)
@@ -146,19 +169,28 @@ class ReaderPrefs(context: Context) {
 
     private fun seriesModeKey(seriesId: String) = "renzo_reader_mode_$seriesId"
 
-    private companion object {
-        const val KEY_MODE = "mode"
-        const val KEY_FIT = "fit"
-        const val KEY_MAX_WIDTH = "maxWidthPct"
-        const val KEY_BACKGROUND = "background"
-        const val KEY_PRELOAD = "preload"
-        const val KEY_GAP = "gapPx"
-        const val KEY_SHOW_PAGE_NUMBER = "showPageNumber"
-        const val KEY_TAP_NAVIGATION = "tapNavigation"
-        const val KEY_TAP_ADVANCE = "tapAdvancePct"
-        const val KEY_INFINITE_SCROLL = "infiniteScroll"
-        const val KEY_CHAPTER_TRANSITION = "chapterTransition"
-        const val KEY_AUTO_MARK_READ = "autoMarkRead"
-        const val KEY_AUTO_CLEAR_CACHE = "autoClearCache"
+    companion object {
+        /** Scale bounds, shared by the touch slider and the TV stepper. */
+        const val SCALE_MIN = 50
+        const val SCALE_MAX = 300
+        const val SCALE_STEP = 10
+
+        /** A page at 100% is legible at arm's length, not across a room. */
+        private const val TV_DEFAULT_SCALE_PCT = 130
+
+        private const val KEY_MODE = "mode"
+        private const val KEY_FIT = "fit"
+        private const val KEY_MAX_WIDTH = "maxWidthPct"
+        private const val KEY_SCALE = "scalePct"
+        private const val KEY_BACKGROUND = "background"
+        private const val KEY_PRELOAD = "preload"
+        private const val KEY_GAP = "gapPx"
+        private const val KEY_SHOW_PAGE_NUMBER = "showPageNumber"
+        private const val KEY_TAP_NAVIGATION = "tapNavigation"
+        private const val KEY_TAP_ADVANCE = "tapAdvancePct"
+        private const val KEY_INFINITE_SCROLL = "infiniteScroll"
+        private const val KEY_CHAPTER_TRANSITION = "chapterTransition"
+        private const val KEY_AUTO_MARK_READ = "autoMarkRead"
+        private const val KEY_AUTO_CLEAR_CACHE = "autoClearCache"
     }
 }

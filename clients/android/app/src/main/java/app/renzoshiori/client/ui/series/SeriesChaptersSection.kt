@@ -3,6 +3,10 @@ package app.renzoshiori.client.ui.series
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +66,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.renzoshiori.client.ui.library.formatChapter
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
 
 /**
  * The chapters section header + toolbar from chapters-section.tsx: the
@@ -105,6 +112,7 @@ fun ChaptersSectionHeader(state: SeriesDetailUiState, vm: SeriesDetailViewModel)
         HairLine()
 
         // ── Filter + action chips ──
+        val focusManager = LocalFocusManager.current
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -122,6 +130,10 @@ fun ChaptersSectionHeader(state: SeriesDetailUiState, vm: SeriesDetailViewModel)
                     )
                 },
                 singleLine = true,
+                // The leanback IME needs an explicit action to close on; without
+                // one the remote's keyboard has no way to commit and dismiss.
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                 textStyle = MaterialTheme.typography.bodyMedium,
                 shape = MaterialTheme.shapes.small,
                 colors = OutlinedTextFieldDefaults.colors(
@@ -322,6 +334,11 @@ fun ChapterRow(
     onOpenChapter: (Double) -> Unit,
 ) {
     var sourceMenuOpen by remember { mutableStateOf(false) }
+    // One focus state per target in the row: the row itself, the split
+    // re-download button and its source dropdown are separately reachable.
+    val rowFocus = rememberFocusState()
+    val redownloadFocus = rememberFocusState()
+    val sourceMenuFocus = rememberFocusState()
     val selected = chapter.number in state.selected
     val selecting = state.selecting
     val isPending = chapter.number in state.pending
@@ -350,7 +367,8 @@ fun ChapterRow(
                 if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else Border40,
                 MaterialTheme.shapes.small,
             )
-            .clickable {
+            .focusRing(rowFocus.focused, 8.dp)
+            .tvClickable(onFocused = rowFocus::set) {
                 if (selecting) vm.toggleSelected(chapter.number) else onOpenChapter(chapter.number)
             }
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -494,9 +512,11 @@ fun ChapterRow(
                                 Border60,
                                 RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp),
                             )
-                            .clickable(enabled = disabledReason == null && !isPending) {
-                                vm.redownload(chapter.number)
-                            }
+                            .focusRing(redownloadFocus.focused, 8.dp)
+                            .tvClickable(
+                                onFocused = redownloadFocus::set,
+                                enabled = disabledReason == null && !isPending,
+                            ) { vm.redownload(chapter.number) }
                             .then(if (disabledReason == null && !isPending) Modifier else Modifier.alphaHalf()),
                     ) {
                         Icon(
@@ -519,7 +539,10 @@ fun ChapterRow(
                                     Border60,
                                     RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
                                 )
-                                .clickable(enabled = !isPending) { sourceMenuOpen = true }
+                                .focusRing(sourceMenuFocus.focused, 8.dp)
+                                .tvClickable(onFocused = sourceMenuFocus::set, enabled = !isPending) {
+                                    sourceMenuOpen = true
+                                }
                                 .then(if (isPending) Modifier.alphaHalf() else Modifier),
                         ) {
                             Icon(

@@ -3,6 +3,7 @@ package app.renzoshiori.client.ui.home
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -32,6 +33,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
@@ -80,6 +83,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
@@ -88,9 +93,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -112,6 +119,13 @@ import app.renzoshiori.client.ui.queue.QueueScreen
 import app.renzoshiori.client.ui.sources.SourcesScreen
 import app.renzoshiori.client.ui.status.StatusScreen
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.TvSelectedMark
+import app.renzoshiori.client.ui.tv.TvUseAComputerScreen
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
+import app.renzoshiori.client.ui.tv.tvContentColor
 import app.renzoshiori.client.ui.updates.UpdatesScreen
 import app.renzoshiori.client.ui.util.rememberHideAdult
 import kotlinx.coroutines.delay
@@ -174,6 +188,7 @@ fun HomeShell(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val app = context.applicationContext as RenzoApp
 
     // Queue metrics drive the drawer's Queue badge/live dot and the footer
@@ -202,27 +217,20 @@ fun HomeShell(
     )
     val libraryState by libraryVm.state.collectAsState()
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet(
-                drawerContainerColor = RenzoColors.Background,
-                modifier = Modifier.width(288.dp),
-            ) {
-                NavDrawerContent(
-                    current = current,
-                    metrics = metrics,
-                    offline = libraryState.offlineMode,
-                    onToggleOffline = { libraryVm.setOfflineMode(!libraryState.offlineMode) },
-                    onSelect = { s ->
-                        section = s.name
-                        scope.launch { drawerState.close() }
-                    },
-                    onClose = { scope.launch { drawerState.close() } },
-                )
-            }
-        },
-    ) {
+    // A drawer you must open before you can steer is hostile with a remote, so
+    // TV gets a persistent left rail instead. Same sections, same state, same
+    // composable below it — only the container differs (see ui/tv/TvFocus.kt on
+    // why there is no second screen tree).
+    val isTv = LocalIsTv.current
+
+    // On a set-top box, Back from a section must land somewhere rather than
+    // dropping out of the app; Library is home. Touch keeps its existing
+    // behaviour untouched.
+    BackHandler(enabled = isTv && (searchOpen || current != Section.Library)) {
+        if (searchOpen) searchOpen = false else section = Section.Library.name
+    }
+
+    val body: @Composable () -> Unit = {
         Box(modifier = Modifier.fillMaxSize().background(RenzoColors.Background)) {
             Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
                 // ── 56dp command bar ─────────────────────────────────────
@@ -230,11 +238,17 @@ fun HomeShell(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp),
                 ) {
-                    IconButton(
-                        onClick = { scope.launch { drawerState.open() } },
-                        modifier = Modifier.tourAnchor(TourAnchors.NAV),
-                    ) {
-                        Icon(Icons.Filled.Menu, contentDescription = "Open navigation menu", tint = RenzoColors.Foreground)
+                    if (!isTv) {
+                        IconButton(
+                            onClick = { scope.launch { drawerState.open() } },
+                            modifier = Modifier.tourAnchor(TourAnchors.NAV),
+                        ) {
+                            Icon(
+                                Icons.Filled.Menu,
+                                contentDescription = "Open navigation menu",
+                                tint = RenzoColors.Foreground,
+                            )
+                        }
                     }
                     Image(
                         painter = painterResource(R.drawable.splash_icon),
@@ -251,12 +265,19 @@ fun HomeShell(
                     }
                     Spacer(Modifier.weight(1f))
                     if (searchOpen) {
+                        var searchFocused by remember { mutableStateOf(false) }
                         BasicTextField(
                             value = libraryState.searchTerm,
                             onValueChange = libraryVm::setSearch,
                             singleLine = true,
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = RenzoColors.Foreground),
                             cursorBrush = SolidColor(RenzoColors.Foreground),
+                            // The leanback IME needs a declared action to submit
+                            // with; without one the remote's keyboard has no
+                            // "done" and the field can't be left cleanly.
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                            modifier = Modifier.onFocusChanged { searchFocused = it.isFocused },
                             decorationBox = { inner ->
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -266,6 +287,7 @@ fun HomeShell(
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(RenzoColors.Muted.copy(alpha = 0.7f))
                                         .border(1.dp, RenzoColors.Border.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                        .focusRing(isTv && searchFocused, 8.dp)
                                         .padding(horizontal = 10.dp),
                                 ) {
                                     Icon(
@@ -286,24 +308,20 @@ fun HomeShell(
                             },
                         )
                     }
-                    IconButton(
+                    DpadIconButton(
+                        icon = if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
+                        contentDescription = if (searchOpen) "Close search" else "Open search",
+                        modifier = Modifier.tourAnchor(TourAnchors.SEARCH),
                         onClick = {
                             if (searchOpen && libraryState.searchTerm.isNotEmpty()) libraryVm.setSearch("")
                             searchOpen = !searchOpen
                         },
-                        modifier = Modifier.tourAnchor(TourAnchors.SEARCH),
-                    ) {
-                        Icon(
-                            if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
-                            contentDescription = if (searchOpen) "Close search" else "Open search",
-                            tint = RenzoColors.Foreground,
-                        )
-                    }
+                    )
                     // The expanded search field needs the width: the pill
-                    // steps aside (it's still in the drawer footer), the
+                    // steps aside (it's still in the drawer footer / rail), the
                     // avatar always stays.
                     if (!searchOpen) {
-                        OnlineOfflinePill(
+                        ShellOnlineOfflinePill(
                             offline = libraryState.offlineMode,
                             onToggle = { libraryVm.setOfflineMode(!libraryState.offlineMode) },
                         )
@@ -328,7 +346,19 @@ fun HomeShell(
                         Section.Browse -> BrowseScreen()
                         Section.Queue -> QueueScreen()
                         Section.Status -> StatusScreen(onOpenSeries = onOpenSeries)
-                        Section.Sources -> SourcesScreen()
+                        // Sources is 36 clicks over extension-repository URLs —
+                        // deliberately not ported to the remote. It stays in the
+                        // rail (people go looking for it) but shows where to do
+                        // it instead of a form that can't be filled in.
+                        Section.Sources -> if (isTv) {
+                            TvUseAComputerScreen(
+                                title = "Manage sources",
+                                serverUrl = app.tokenStore.serverUrl,
+                                path = "/sources",
+                            )
+                        } else {
+                            SourcesScreen()
+                        }
                         Section.Downloads -> DownloadsScreen()
                     }
                 }
@@ -353,6 +383,188 @@ fun HomeShell(
                 WalkthroughOverlay(onFinish = onTourFinish)
             }
         }
+    }
+
+    if (isTv) {
+        Row(modifier = Modifier.fillMaxSize().background(RenzoColors.Background)) {
+            TvNavRail(
+                current = current,
+                metrics = metrics,
+                offline = libraryState.offlineMode,
+                onToggleOffline = { libraryVm.setOfflineMode(!libraryState.offlineMode) },
+                onSelect = { s -> section = s.name },
+                modifier = Modifier.tourAnchor(TourAnchors.NAV),
+            )
+            Box(modifier = Modifier.weight(1f)) { body() }
+        }
+    } else {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet(
+                    drawerContainerColor = RenzoColors.Background,
+                    modifier = Modifier.width(288.dp),
+                ) {
+                    NavDrawerContent(
+                        current = current,
+                        metrics = metrics,
+                        offline = libraryState.offlineMode,
+                        onToggleOffline = { libraryVm.setOfflineMode(!libraryState.offlineMode) },
+                        onSelect = { s ->
+                            section = s.name
+                            scope.launch { drawerState.close() }
+                        },
+                        onClose = { scope.launch { drawerState.close() } },
+                    )
+                }
+            },
+            content = body,
+        )
+    }
+}
+
+/**
+ * The TV navigation rail — the drawer's SectionList, always on screen.
+ *
+ * Selection and focus are on separate channels (§2.1 of the TV spec): the
+ * active section keeps its accent colour, left accent bar and check mark
+ * wherever the cursor goes, while the ring and fill follow the cursor. Both can
+ * be true on the same row and stay tellable apart.
+ */
+@Composable
+private fun TvNavRail(
+    current: Section,
+    metrics: DownloadsMetricsDto,
+    offline: Boolean,
+    onToggleOffline: () -> Unit,
+    onSelect: (Section) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .width(232.dp)
+            .fillMaxHeight()
+            .background(RenzoColors.Popover)
+            .statusBarsPadding()
+            .padding(horizontal = 10.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Image(
+            painter = painterResource(R.drawable.renzo_login_banner),
+            contentDescription = "Renzo Shiori",
+            modifier = Modifier.height(30.dp).padding(start = 8.dp, bottom = 14.dp),
+        )
+        Section.entries.forEach { s ->
+            val active = s == current
+            val focus = rememberFocusState()
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        when {
+                            active -> RenzoColors.Primary.copy(alpha = 0.10f)
+                            focus.focused -> RenzoColors.Card
+                            else -> Color.Transparent
+                        },
+                        RoundedCornerShape(10.dp),
+                    )
+                    .focusRing(focus.focused, 10.dp)
+                    .tvClickable(onFocused = focus::set) { onSelect(s) },
+            ) {
+                if (active) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(vertical = 10.dp)
+                            .width(3.dp)
+                            .height(26.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(RenzoColors.Primary),
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp),
+                ) {
+                    Icon(
+                        s.icon,
+                        contentDescription = null,
+                        tint = tvContentColor(active, focus.focused),
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        s.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = tvContentColor(active, focus.focused),
+                        modifier = Modifier.padding(start = 12.dp).weight(1f),
+                    )
+                    if (s == Section.Queue) {
+                        val badge = metrics.downloads + metrics.failed
+                        if (badge > 0) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(RenzoColors.Primary)
+                                    .padding(horizontal = 7.dp, vertical = 2.dp),
+                            ) {
+                                Text(
+                                    if (badge > 99) "99+" else badge.toString(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = RenzoColors.PrimaryForeground,
+                                )
+                            }
+                        }
+                    }
+                    TvSelectedMark(active)
+                }
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        ShellOnlineOfflinePill(offline = offline, onToggle = onToggleOffline)
+    }
+}
+
+/**
+ * The Online/Offline pill. On touch it's the library's own composable,
+ * unchanged; on TV the current mode is *selected* state, so it keeps its colour
+ * and check while the cursor is elsewhere.
+ */
+@Composable
+private fun ShellOnlineOfflinePill(offline: Boolean, onToggle: () -> Unit) {
+    if (!LocalIsTv.current) {
+        OnlineOfflinePill(offline = offline, onToggle = onToggle)
+        return
+    }
+    val focus = rememberFocusState()
+    val shape = RoundedCornerShape(50)
+    val dot = if (offline) Color(0xFFF59E0B) else Color(0xFF10B981)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .padding(end = 4.dp)
+            .background(
+                when {
+                    offline -> Color(0x26F59E0B)
+                    focus.focused -> RenzoColors.Card
+                    else -> RenzoColors.Foreground.copy(alpha = 0.06f)
+                },
+                shape,
+            )
+            .focusRing(focus.focused, 50.dp)
+            .tvClickable(onFocused = focus::set, onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dot))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (offline) "Offline" else "Online",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (offline) Color(0xFFFBBF24) else tvContentColor(false, focus.focused),
+            maxLines = 1,
+            softWrap = false,
+        )
     }
 }
 
@@ -527,7 +739,7 @@ private fun ExternalLinksRow(context: android.content.Context) {
                 modifier = Modifier
                     .size(32.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .clickable {
+                    .dpadClickable(radius = 6.dp) {
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(href))) }
                     },
             ) {
@@ -547,6 +759,9 @@ private fun UserAvatar(
     user: UserDto,
     size: androidx.compose.ui.unit.Dp,
     modifier: Modifier = Modifier,
+    /** False for the decorative copy in the account panel header — a D-pad stop
+     *  that does nothing is worse than no stop at all. */
+    interactive: Boolean = true,
     onClick: () -> Unit,
 ) {
     val avatar: Painter? = remember(user.avatarBase64) {
@@ -565,7 +780,13 @@ private fun UserAvatar(
             .clip(CircleShape)
             .background(RenzoColors.Primary.copy(alpha = 0.20f))
             .border(1.dp, RenzoColors.Primary.copy(alpha = 0.30f), CircleShape)
-            .clickable(onClick = onClick),
+            .then(
+                if (interactive) {
+                    Modifier.dpadClickable(radius = size / 2, fill = null, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         if (avatar != null) {
             Image(
@@ -596,6 +817,8 @@ private fun BoxScope.AccountPanel(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val hideAdult = rememberHideAdult(context)
+    val isTv = LocalIsTv.current
+    val scrimInteraction = remember { MutableInteractionSource() }
     var copied by remember { mutableStateOf(false) }
     var importPickerOpen by remember { mutableStateOf(false) }
 
@@ -606,15 +829,27 @@ private fun BoxScope.AccountPanel(
     val domain = externalDomain.ifBlank { "http://localhost:9833" }
     val fullOpdsUrl = "${domain.trimEnd('/')}/${user.opdsPath}"
 
+    // Back closes the panel rather than the app — and on TV it is the only way
+    // out, because the scrim below is deliberately not a focus stop.
+    BackHandler(enabled = visible) { onDismiss() }
+
     AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.55f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss,
+                .then(
+                    // A full-screen tap-to-dismiss scrim is a focusable element
+                    // the size of the screen; on a D-pad it swallows the cursor.
+                    if (isTv) {
+                        Modifier
+                    } else {
+                        Modifier.clickable(
+                            interactionSource = scrimInteraction,
+                            indication = null,
+                            onClick = onDismiss,
+                        )
+                    },
                 ),
         )
     }
@@ -630,6 +865,9 @@ private fun BoxScope.AccountPanel(
                 .fillMaxHeight()
                 .background(RenzoColors.Popover)
                 .statusBarsPadding()
+                // Keeps D-pad traversal inside the panel rather than wandering
+                // back into the chrome behind it; Back is the way out.
+                .focusGroup()
                 .verticalScroll(rememberScrollState())
                 .navigationBarsPadding(),
         ) {
@@ -637,20 +875,20 @@ private fun BoxScope.AccountPanel(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
             ) {
-                UserAvatar(user = user, size = 28.dp, onClick = {})
+                UserAvatar(user = user, size = 28.dp, interactive = false, onClick = {})
                 Text(
                     "Account",
                     style = MaterialTheme.typography.titleSmall,
                     color = RenzoColors.Foreground,
                     modifier = Modifier.padding(start = 10.dp).weight(1f),
                 )
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        Icons.Filled.Close, contentDescription = "Close",
-                        tint = RenzoColors.MutedForeground,
-                        modifier = Modifier.border(1.dp, RenzoColors.Border, CircleShape).padding(6.dp),
-                    )
-                }
+                DpadIconButton(
+                    icon = Icons.Filled.Close,
+                    contentDescription = "Close",
+                    tint = RenzoColors.MutedForeground,
+                    iconModifier = Modifier.border(1.dp, RenzoColors.Border, CircleShape).padding(6.dp),
+                    onClick = onDismiss,
+                )
             }
             HorizontalDivider(color = RenzoColors.Border)
 
@@ -716,7 +954,7 @@ private fun BoxScope.AccountPanel(
                     modifier = Modifier
                         .size(24.dp)
                         .clip(RoundedCornerShape(6.dp))
-                        .clickable {
+                        .dpadClickable(radius = 6.dp) {
                             clipboard.setText(AnnotatedString(fullOpdsUrl))
                             copied = true
                         },
@@ -731,28 +969,39 @@ private fun BoxScope.AccountPanel(
             }
             HorizontalDivider(color = RenzoColors.Border)
 
-            MenuRow(Icons.Filled.Edit, "Edit...") { onAction(AccountAction.EditProfile) }
-            if (user.hasPassword) {
-                MenuRow(Icons.Filled.VpnKey, "Change password...") { onAction(AccountAction.ChangePassword) }
-            }
-            MenuRow(Icons.Filled.Sensors, "Trackers...") { onAction(AccountAction.Trackers) }
-            MenuRow(Icons.Filled.Download, "Import Suwayomi Backup...") { onAction(AccountAction.ImportBackup) }
+            // Configuration is deliberately not ported to the remote: 67 clicks
+            // and 16 text fields across the settings area, plus the import
+            // wizard. Rather than a column of rows that each dead-end (or, worse,
+            // a column of disabled rows that invite repeated pressing), TV shows
+            // ONE row that leads to the instance's own web address.
+            if (isTv) {
+                MenuRow(Icons.Filled.Settings, "Settings, sources & import…") {
+                    onAction(AccountAction.ServerSettings)
+                }
+            } else {
+                MenuRow(Icons.Filled.Edit, "Edit...") { onAction(AccountAction.EditProfile) }
+                if (user.hasPassword) {
+                    MenuRow(Icons.Filled.VpnKey, "Change password...") { onAction(AccountAction.ChangePassword) }
+                }
+                MenuRow(Icons.Filled.Sensors, "Trackers...") { onAction(AccountAction.Trackers) }
+                MenuRow(Icons.Filled.Download, "Import Suwayomi Backup...") { onAction(AccountAction.ImportBackup) }
 
-            HorizontalDivider(color = RenzoColors.Border)
-
-            if (user.level >= UserLevel.ADMIN) {
-                MenuRow(Icons.Filled.People, "Users") { onAction(AccountAction.Users) }
-            }
-            MenuRow(Icons.Filled.VpnKey, "Account") { onAction(AccountAction.Account) }
-            if (user.level >= UserLevel.OWNER) {
-                MenuRow(Icons.Filled.Settings, "Settings") { onAction(AccountAction.ServerSettings) }
-            }
-            if (user.level >= UserLevel.MANAGER) {
-                MenuRow(Icons.Filled.Download, "Import Series") { importPickerOpen = true }
                 HorizontalDivider(color = RenzoColors.Border)
-            }
 
-            MenuRow(Icons.Filled.Palette, "Appearance") { onAction(AccountAction.Appearance) }
+                if (user.level >= UserLevel.ADMIN) {
+                    MenuRow(Icons.Filled.People, "Users") { onAction(AccountAction.Users) }
+                }
+                MenuRow(Icons.Filled.VpnKey, "Account") { onAction(AccountAction.Account) }
+                if (user.level >= UserLevel.OWNER) {
+                    MenuRow(Icons.Filled.Settings, "Settings") { onAction(AccountAction.ServerSettings) }
+                }
+                if (user.level >= UserLevel.MANAGER) {
+                    MenuRow(Icons.Filled.Download, "Import Series") { importPickerOpen = true }
+                    HorizontalDivider(color = RenzoColors.Border)
+                }
+
+                MenuRow(Icons.Filled.Palette, "Appearance") { onAction(AccountAction.Appearance) }
+            }
             MenuRow(Icons.Filled.Route, "Take a tour") { onAction(AccountAction.Tour) }
             MenuRow(
                 if (hideAdult.hidden.value) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
@@ -786,7 +1035,7 @@ private fun MenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .dpadClickable(radius = 8.dp, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 11.dp),
     ) {
         Icon(icon, contentDescription = null, tint = RenzoColors.Foreground, modifier = Modifier.size(16.dp))
@@ -852,7 +1101,7 @@ private fun ImportOption(icon: ImageVector, title: String, description: String, 
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .border(1.dp, RenzoColors.Border, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .dpadClickable(radius = 8.dp, fill = null, onClick = onClick)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

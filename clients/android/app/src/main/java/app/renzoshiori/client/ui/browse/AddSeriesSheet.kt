@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
@@ -56,6 +57,13 @@ import app.renzoshiori.client.data.model.LinkedSeriesRowDto
 import app.renzoshiori.client.data.model.SearchSourceDto
 import app.renzoshiori.client.data.network.BrowseApi
 import app.renzoshiori.client.data.network.absoluteUrl
+import app.renzoshiori.client.ui.components.TvSearchBar
+import app.renzoshiori.client.ui.components.tvFocusTarget
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
+import app.renzoshiori.client.ui.tv.tvContentColor
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -93,6 +101,7 @@ fun AddSeriesSheet(
     val scope = rememberCoroutineScope()
     val api = remember { renzoApp.network.currentServiceOf<BrowseApi>() }
     val baseUrl = renzoApp.tokenStore.serverUrl ?: ""
+    val isTv = LocalIsTv.current
 
     var stage by remember { mutableStateOf(0) }
     var searchValue by remember { mutableStateOf(initialTitle ?: "") }
@@ -192,18 +201,27 @@ fun AddSeriesSheet(
                     letterSpacing = 1.6.sp,
                     modifier = Modifier.weight(1f),
                 )
+                val closeFocus = rememberFocusState()
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(if (isTv) 44.dp else 32.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable(onClick = onDismiss),
+                        .then(
+                            if (isTv) {
+                                Modifier
+                                    .focusRing(closeFocus.focused, 8.dp)
+                                    .tvClickable(onFocused = closeFocus::set, onClick = onDismiss)
+                            } else {
+                                Modifier.clickable(onClick = onDismiss)
+                            },
+                        ),
                 ) {
                     Icon(
                         Icons.Filled.Close,
                         contentDescription = "Close",
-                        tint = RenzoColors.MutedForeground,
-                        modifier = Modifier.size(16.dp),
+                        tint = if (closeFocus.focused) RenzoColors.Foreground else RenzoColors.MutedForeground,
+                        modifier = Modifier.size(if (isTv) 22.dp else 16.dp),
                     )
                 }
             }
@@ -214,6 +232,12 @@ fun AddSeriesSheet(
                     SearchStage(
                         searchValue = searchValue,
                         onSearchValue = { searchValue = it },
+                        // IME Search / a voice result skips the 800ms debounce —
+                        // the user has explicitly said "go".
+                        onSubmitSearch = {
+                            searchValue = it
+                            debounced = it
+                        },
                         searching = searching,
                         sources = sources,
                         selectedSources = selectedSources,
@@ -277,26 +301,48 @@ fun AddSeriesSheet(
                     color = RenzoColors.MutedForeground,
                     modifier = Modifier.weight(1f),
                 )
+                val backFocus = rememberFocusState()
                 if (stage > 0) {
                     Text(
                         "Back",
                         style = MaterialTheme.typography.labelLarge,
-                        color = RenzoColors.MutedForeground,
+                        color = if (backFocus.focused) RenzoColors.Foreground else RenzoColors.MutedForeground,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { stage = 0 }
+                            .then(
+                                if (isTv) {
+                                    Modifier
+                                        .focusRing(backFocus.focused, 8.dp)
+                                        .tvClickable(onFocused = backFocus::set, onClick = { stage = 0 })
+                                } else {
+                                    Modifier.clickable { stage = 0 }
+                                },
+                            )
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                     )
                 }
                 val canProgress = if (stage == 0) selectedRows.isNotEmpty() else confirmRows.any { it.isSelected }
+                val ctaFocus = rememberFocusState()
                 if (canProgress && !pending) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .padding(start = 8.dp)
-                            .height(36.dp)
+                            .height(if (isTv) 44.dp else 36.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(RenzoColors.Primary)
+                            // The CTA's onClick is a long coroutine block, so it
+                            // keeps its clickable (already D-pad activatable) and
+                            // only gains the ring + focus reporting.
+                            .then(
+                                if (isTv) {
+                                    Modifier
+                                        .focusRing(ctaFocus.focused, 8.dp)
+                                        .onFocusChanged { ctaFocus.set(it.isFocused) }
+                                } else {
+                                    Modifier
+                                },
+                            )
                             .clickable {
                                 scope.launch {
                                     pending = true
@@ -364,6 +410,7 @@ fun AddSeriesSheet(
 private fun SearchStage(
     searchValue: String,
     onSearchValue: (String) -> Unit,
+    onSubmitSearch: (String) -> Unit,
     searching: Boolean,
     sources: List<SearchSourceDto>,
     selectedSources: MutableList<String>,
@@ -373,56 +420,96 @@ private fun SearchStage(
     selectedRows: MutableList<String>,
     baseUrl: String,
 ) {
+    val isTv = LocalIsTv.current
     Column(modifier = Modifier.fillMaxSize()) {
-        // Search input row.
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Icon(
-                Icons.Filled.Search,
-                contentDescription = null,
-                tint = RenzoColors.MutedForeground,
-                modifier = Modifier.size(22.dp),
-            )
-            BasicTextField(
-                value = searchValue,
-                onValueChange = onSearchValue,
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = RenzoColors.Foreground),
-                cursorBrush = SolidColor(RenzoColors.Foreground),
-                decorationBox = { inner ->
-                    Box(modifier = Modifier.padding(start = 12.dp)) {
-                        if (searchValue.isEmpty()) {
-                            Text(
-                                "Search for a series…",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = RenzoColors.MutedForeground,
-                            )
-                        }
-                        inner()
-                    }
-                },
-                modifier = Modifier.weight(1f),
-            )
-            if (searching) {
-                CircularProgressIndicator(
-                    color = RenzoColors.MutedForeground,
-                    strokeWidth = 1.5.dp,
-                    modifier = Modifier.size(16.dp),
+        // Search input row. On TV this becomes the bordered field + mic (voice
+        // fills the field and searches, but the transcript stays editable — a
+        // romanised title comes back mangled often enough that the user has to
+        // be able to fix it in place).
+        if (isTv) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Box(modifier = Modifier.weight(1f)) {
+                    TvSearchBar(
+                        value = searchValue,
+                        onValueChange = onSearchValue,
+                        onSubmit = onSubmitSearch,
+                        placeholder = "Search for a series…",
+                        voicePrompt = "Say the series title",
+                    )
+                }
+                if (searching) {
+                    CircularProgressIndicator(
+                        color = RenzoColors.MutedForeground,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.padding(end = 16.dp).size(20.dp),
+                    )
+                }
+            }
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Search,
+                    contentDescription = null,
+                    tint = RenzoColors.MutedForeground,
+                    modifier = Modifier.size(22.dp),
                 )
+                BasicTextField(
+                    value = searchValue,
+                    onValueChange = onSearchValue,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = RenzoColors.Foreground),
+                    cursorBrush = SolidColor(RenzoColors.Foreground),
+                    decorationBox = { inner ->
+                        Box(modifier = Modifier.padding(start = 12.dp)) {
+                            if (searchValue.isEmpty()) {
+                                Text(
+                                    "Search for a series…",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = RenzoColors.MutedForeground,
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                if (searching) {
+                    CircularProgressIndicator(
+                        color = RenzoColors.MutedForeground,
+                        strokeWidth = 1.5.dp,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
             }
         }
 
         // Sources selector — its own row, as in the web.
         if (sources.isNotEmpty()) {
+            val expandFocus = rememberFocusState()
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onToggleSourcesExpanded)
+                    .then(
+                        if (isTv) {
+                            Modifier
+                                .padding(horizontal = 12.dp)
+                                .tvFocusTarget(
+                                    focused = expandFocus.focused,
+                                    onFocused = expandFocus::set,
+                                    radius = 8.dp,
+                                    fill = RenzoColors.Card,
+                                    onClick = onToggleSourcesExpanded,
+                                )
+                        } else {
+                            Modifier.clickable(onClick = onToggleSourcesExpanded)
+                        },
+                    )
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             ) {
                 Text(
@@ -441,7 +528,7 @@ private fun SearchStage(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 220.dp)
+                        .heightIn(max = if (isTv) 320.dp else 220.dp)
                         .padding(horizontal = 16.dp),
                 ) {
                     // Select all / none. Note that selecting everything makes
@@ -449,21 +536,36 @@ private fun SearchStage(
                     // is slow enough to trip a proxy's gateway timeout — hence
                     // the count next to it rather than a silent toggle.
                     val allSelected = selectedSources.size == sources.size && sources.isNotEmpty()
+                    val allFocus = rememberFocusState()
+                    val toggleAll = {
+                        if (allSelected) {
+                            selectedSources.clear()
+                        } else {
+                            selectedSources.clear()
+                            selectedSources.addAll(
+                                sources.mapNotNull { it.mihonProviderId.takeIf(String::isNotBlank) },
+                            )
+                        }
+                        Unit
+                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                if (allSelected) {
-                                    selectedSources.clear()
-                                } else {
-                                    selectedSources.clear()
-                                    selectedSources.addAll(
-                                        sources.mapNotNull { it.mihonProviderId.takeIf(String::isNotBlank) },
+                            .then(
+                                if (isTv) {
+                                    Modifier.tvFocusTarget(
+                                        focused = allFocus.focused,
+                                        onFocused = allFocus::set,
+                                        radius = 8.dp,
+                                        fill = RenzoColors.Card,
+                                        onClick = toggleAll,
                                     )
-                                }
-                            }
-                            .padding(vertical = 6.dp),
+                                } else {
+                                    Modifier.clickable(onClick = toggleAll)
+                                },
+                            )
+                            .padding(horizontal = if (isTv) 8.dp else 0.dp, vertical = if (isTv) 10.dp else 6.dp),
                     ) {
                         CheckBox(allSelected)
                         Text(
@@ -482,24 +584,49 @@ private fun SearchStage(
                     LazyColumn {
                         items(sources, key = { it.mihonProviderId }) { source ->
                             val checked = selectedSources.contains(source.mihonProviderId)
+                            val sourceFocus = rememberFocusState()
+                            val toggleSource = {
+                                if (checked) {
+                                    selectedSources.remove(source.mihonProviderId)
+                                } else {
+                                    selectedSources.add(source.mihonProviderId)
+                                }
+                                Unit
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        if (checked) {
-                                            selectedSources.remove(source.mihonProviderId)
+                                    .then(
+                                        if (isTv) {
+                                            // Ticked (colour + box) is state and
+                                            // survives the cursor moving on; the
+                                            // ring is only ever focus.
+                                            Modifier.tvFocusTarget(
+                                                focused = sourceFocus.focused,
+                                                onFocused = sourceFocus::set,
+                                                radius = 8.dp,
+                                                fill = RenzoColors.Card,
+                                                onClick = toggleSource,
+                                            )
                                         } else {
-                                            selectedSources.add(source.mihonProviderId)
-                                        }
-                                    }
-                                    .padding(vertical = 6.dp),
+                                            Modifier.clickable(onClick = toggleSource)
+                                        },
+                                    )
+                                    .padding(
+                                        horizontal = if (isTv) 8.dp else 0.dp,
+                                        vertical = if (isTv) 10.dp else 6.dp,
+                                    ),
                             ) {
                                 CheckBox(checked)
                                 Text(
                                     source.provider,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = RenzoColors.Foreground,
+                                    color = if (isTv) {
+                                        tvContentColor(checked, sourceFocus.focused)
+                                    } else {
+                                        RenzoColors.Foreground
+                                    },
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.padding(start = 8.dp).weight(1f),
@@ -532,24 +659,37 @@ private fun SearchStage(
             else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(results, key = { it.rowId }) { series ->
                     val isSelected = selectedRows.contains(series.rowId)
+                    val rowFocus = rememberFocusState()
+                    val toggleRow = {
+                        if (isSelected) {
+                            selectedRows.remove(series.rowId)
+                        } else {
+                            selectedRows.add(series.rowId)
+                            // First pick also brings in its linked ids.
+                            if (selectedRows.size == 1) {
+                                series.linkedIds.forEach { linked ->
+                                    if (!selectedRows.contains(linked)) selectedRows.add(linked)
+                                }
+                            }
+                        }
+                        Unit
+                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
+                            // The primary wash is selection ("picked"); the ring
+                            // is focus. A row can be both, and reads as both.
                             .background(if (isSelected) RenzoColors.Primary.copy(alpha = 0.08f) else Color.Transparent)
-                            .clickable {
-                                if (isSelected) {
-                                    selectedRows.remove(series.rowId)
+                            .then(
+                                if (isTv) {
+                                    Modifier
+                                        .focusRing(rowFocus.focused, 8.dp)
+                                        .tvClickable(onFocused = rowFocus::set, onClick = toggleRow)
                                 } else {
-                                    selectedRows.add(series.rowId)
-                                    // First pick also brings in its linked ids.
-                                    if (selectedRows.size == 1) {
-                                        series.linkedIds.forEach { linked ->
-                                            if (!selectedRows.contains(linked)) selectedRows.add(linked)
-                                        }
-                                    }
-                                }
-                            }
+                                    Modifier.clickable(onClick = toggleRow)
+                                },
+                            )
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     ) {
                         // Accent bar.
@@ -644,15 +784,30 @@ private fun ConfirmStage(
     onRows: (List<ConfirmRow>) -> Unit,
     baseUrl: String,
 ) {
+    val isTv = LocalIsTv.current
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(rows, key = { it.index }) { row ->
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                val rowFocus = rememberFocusState()
+                val toggleRow = {
+                    onRows(rows.map { if (it.index == row.index) it.copy(isSelected = !it.isSelected) else it })
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    // TV: the whole row is the target — an 18dp checkbox is not
+                    // something a D-pad can aim at.
+                    modifier = if (isTv) {
+                        Modifier
+                            .fillMaxWidth()
+                            .focusRing(rowFocus.focused, 8.dp)
+                            .tvClickable(onFocused = rowFocus::set, onClick = toggleRow)
+                            .padding(6.dp)
+                    } else {
+                        Modifier
+                    },
+                ) {
                     Box(
-                        modifier = Modifier
-                            .clickable {
-                                onRows(rows.map { if (it.index == row.index) it.copy(isSelected = !it.isSelected) else it })
-                            },
+                        modifier = if (isTv) Modifier else Modifier.clickable(onClick = toggleRow),
                     ) {
                         CheckBox(row.isSelected)
                     }
@@ -754,6 +909,8 @@ private fun CheckBox(checked: Boolean) {
 
 @Composable
 private fun ToggleChip(label: String, active: Boolean, onClick: () -> Unit) {
+    val isTv = LocalIsTv.current
+    val focus = rememberFocusState()
     Text(
         label,
         style = MaterialTheme.typography.labelSmall,
@@ -765,9 +922,19 @@ private fun ToggleChip(label: String, active: Boolean, onClick: () -> Unit) {
                 if (active) RenzoColors.Primary else RenzoColors.Border,
                 RoundedCornerShape(50),
             )
+            // Filled = this source owns Storage/Cover/Title/Status (state);
+            // the ring is focus. Both stay readable together.
             .background(if (active) RenzoColors.Primary else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .then(
+                if (isTv) {
+                    Modifier
+                        .focusRing(focus.focused, 50.dp)
+                        .tvClickable(onFocused = focus::set, onClick = onClick)
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                },
+            )
+            .padding(horizontal = if (isTv) 14.dp else 10.dp, vertical = if (isTv) 8.dp else 4.dp),
     )
 }
 

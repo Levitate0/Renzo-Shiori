@@ -52,6 +52,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
+import app.renzoshiori.client.ui.tv.tvContentColor
 
 /**
  * The web app's shadcn primitives (card / label / input / button / checkbox /
@@ -225,6 +230,9 @@ fun AuthInput(
                 color = if (focused) RenzoColors.Primary else RenzoColors.Border,
                 shape = ControlShape,
             )
+            // A 1dp accent border is the right weight at arm's length and
+            // invisible across a room; TV gets the 3dp ring on top of it.
+            .focusRing(LocalIsTv.current && focused, 6.dp)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         decorationBox = { inner ->
             Box(contentAlignment = Alignment.CenterStart) {
@@ -250,6 +258,8 @@ fun AuthPrimaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    var focused by remember { mutableStateOf(false) }
+    val isTv = LocalIsTv.current
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -262,7 +272,11 @@ fun AuthPrimaryButton(
             disabledContentColor = RenzoColors.PrimaryForeground.copy(alpha = 0.5f),
         ),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        modifier = modifier.fillMaxWidth().heightIn(min = 36.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 36.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .focusRing(isTv && focused, 8.dp),
     ) {
         Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelLarge)
     }
@@ -275,6 +289,8 @@ fun AuthOutlineButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var focused by remember { mutableStateOf(false) }
+    val isTv = LocalIsTv.current
     OutlinedButton(
         onClick = onClick,
         shape = MaterialTheme.shapes.small,
@@ -284,7 +300,11 @@ fun AuthOutlineButton(
             contentColor = RenzoColors.Foreground,
         ),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        modifier = modifier.fillMaxWidth().heightIn(min = 36.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 36.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .focusRing(isTv && focused, 8.dp),
     ) {
         Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelLarge)
     }
@@ -330,12 +350,23 @@ fun AuthCheckboxRow(
     label: String,
 ) {
     val interaction = remember { MutableInteractionSource() }
+    val focus = rememberFocusState()
+    val isTv = LocalIsTv.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
             .clip(ControlShape)
-            .clickable(interactionSource = interaction, indication = null) { onCheckedChange(!checked) }
+            .focusRing(isTv && focus.focused, 6.dp)
+            .then(
+                if (isTv) {
+                    Modifier.tvClickable(onFocused = focus::set) { onCheckedChange(!checked) }
+                } else {
+                    Modifier.clickable(interactionSource = interaction, indication = null) {
+                        onCheckedChange(!checked)
+                    }
+                },
+            )
             .padding(vertical = 4.dp),
     ) {
         Box(
@@ -366,19 +397,28 @@ fun AuthCheckboxRow(
 @Composable
 fun AuthLinkRow(text: String, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
+    val focus = rememberFocusState()
+    val isTv = LocalIsTv.current
     Box(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text,
-            color = RenzoColors.MutedForeground,
+            color = if (isTv) tvContentColor(false, focus.focused) else RenzoColors.MutedForeground,
             fontSize = 14.sp,
             textAlign = TextAlign.Center,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier
                 .clip(ControlShape)
-                .clickable(interactionSource = interaction, indication = null) { onClick() }
+                .focusRing(isTv && focus.focused, 6.dp)
+                .then(
+                    if (isTv) {
+                        Modifier.tvClickable(onFocused = focus::set) { onClick() }
+                    } else {
+                        Modifier.clickable(interactionSource = interaction, indication = null) { onClick() }
+                    },
+                )
                 .padding(vertical = 6.dp, horizontal = 8.dp),
         )
     }

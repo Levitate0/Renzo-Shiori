@@ -63,8 +63,13 @@ import app.renzoshiori.client.ui.browse.AddSeriesSheet
 import app.renzoshiori.client.ui.components.RibbonSelect
 import app.renzoshiori.client.ui.components.RibbonToggleChip
 import app.renzoshiori.client.ui.components.SelectOption
+import app.renzoshiori.client.ui.components.TvSearchBar
 import app.renzoshiori.client.ui.queue.parseUtcMillis
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
 import app.renzoshiori.client.ui.util.AdultFilter
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
@@ -97,6 +102,9 @@ private val CARD_SIZES = listOf(
 /** getResponsiveCardDefault() — anything under 1024px wide defaults to "S". */
 private const val DEFAULT_CARD_SIZE = "w-32"
 
+/** Couch distance: a television opens on L, not the phone's S. */
+private const val TV_CARD_SIZE = "w-58"
+
 private fun cardSizeOf(value: String): CardSize =
     CARD_SIZES.firstOrNull { it.value == value } ?: CARD_SIZES[1]
 
@@ -120,6 +128,7 @@ fun LibraryContent(
 ) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
+    val isTv = LocalIsTv.current
 
     var statusFilter by rememberSaveable { mutableStateOf("all") }
     var selectedGenre by rememberSaveable { mutableStateOf("__ALL__") }
@@ -127,14 +136,38 @@ fun LibraryContent(
     var selectedCategory by rememberSaveable { mutableStateOf("__ALL__") }
     var selectedFavList by rememberSaveable { mutableStateOf("__ALL__") }
     var orderBy by rememberSaveable { mutableStateOf("title") }
-    var cardWidth by rememberSaveable { mutableStateOf(DEFAULT_CARD_SIZE) }
+    // A phone default (S = 128dp) is unreadable across a room, so a television
+    // starts at L. It's still the same ribbon control, so it can be changed.
+    var cardWidth by rememberSaveable { mutableStateOf(if (isTv) TV_CARD_SIZE else DEFAULT_CARD_SIZE) }
     var addSeriesOpen by rememberSaveable { mutableStateOf(false) }
 
     val hideAdult = AdultFilter.isHidden(context)
 
     // Search lives in the shell's command bar (like the web app) — this view
     // only renders the ribbon + grid.
+    //
+    // Except on TV: the command bar's 176dp field is a poor D-pad target and
+    // sits behind the shell's chrome, so the library gets its own full-width
+    // search row (with voice, where the set has a recogniser). It commits on the
+    // IME Search action rather than per keystroke — a remote's IME makes every
+    // character expensive, and re-filtering mid-word is just noise.
     Column(modifier = Modifier.fillMaxSize()) {
+        if (isTv) {
+            var draft by rememberSaveable { mutableStateOf(state.searchTerm) }
+            // The shell's command bar writes the same term; follow it so the two
+            // fields never disagree about what's being searched.
+            LaunchedEffect(state.searchTerm) {
+                if (state.searchTerm != draft.trim()) draft = state.searchTerm
+            }
+            TvSearchBar(
+                value = draft,
+                onValueChange = { draft = it },
+                onSubmit = { vm.setSearch(it.trim()) },
+                placeholder = "Search your library…",
+                voicePrompt = "Say a series title",
+            )
+        }
+
         if (!state.offlineMode) {
             LibraryRibbon(
                 state = state,
@@ -402,13 +435,23 @@ private fun LibraryRibbon(
 
         // Add Series — relabelled "Request Series" below Manager, exactly as the
         // web relabels the same always-available button.
+        val isTv = LocalIsTv.current
+        val addFocus = rememberFocusState()
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .height(32.dp)
+                .height(if (isTv) 40.dp else 32.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(RenzoColors.Primary)
-                .clickable(onClick = onAddSeries)
+                .then(
+                    if (isTv) {
+                        Modifier
+                            .focusRing(addFocus.focused, 8.dp)
+                            .tvClickable(onFocused = addFocus::set, onClick = onAddSeries)
+                    } else {
+                        Modifier.clickable(onClick = onAddSeries)
+                    },
+                )
                 .padding(horizontal = 12.dp),
         ) {
             Icon(
@@ -624,7 +667,9 @@ private fun OfflineSeriesCard(
         }
     }
 
-    Column(modifier = Modifier.clickable(onClick = onClick)) {
+    val isTv = LocalIsTv.current
+    TvFocusTile(onClick = onClick) {
+    Column(modifier = if (isTv) Modifier else Modifier.clickable(onClick = onClick)) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -675,6 +720,7 @@ private fun OfflineSeriesCard(
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         )
     }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -703,23 +749,26 @@ private fun SeriesCard(
     hasUnknown: Boolean,
     onClick: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(2f / 3f)
-            .then(
-                if (ringColor != null) {
-                    Modifier
-                        .border(1.5.dp, ringColor, RoundedCornerShape(6.dp))
-                        .padding(1.5.dp)
-                } else {
-                    Modifier
-                },
-            )
-            .clip(RoundedCornerShape(6.dp))
-            .background(RenzoColors.Muted)
-            .clickable(onClick = onClick),
-    ) {
+    val isTv = LocalIsTv.current
+    TvFocusTile(onClick = onClick) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .then(
+                    if (ringColor != null) {
+                        Modifier
+                            .border(1.5.dp, ringColor, RoundedCornerShape(6.dp))
+                            .padding(1.5.dp)
+                    } else {
+                        Modifier
+                    },
+                )
+                .clip(RoundedCornerShape(6.dp))
+                .background(RenzoColors.Muted)
+                // On TV the wrapper owns the click (it owns the focus ring too).
+                .then(if (isTv) Modifier else Modifier.clickable(onClick = onClick)),
+        ) {
         if (coverUrl != null) {
             AsyncImage(
                 model = coverUrl,
@@ -836,6 +885,39 @@ private fun SeriesCard(
                 .background(Color.Black.copy(alpha = 0.6f))
                 .padding(horizontal = 8.dp, vertical = 4.dp),
         )
+        }
+    }
+}
+
+/**
+ * Focus wrapper for a cover tile.
+ *
+ * The ring can't live on the card itself: a border modifier draws inside the
+ * node's bounds and *before* its children, so the full-bleed cover image would
+ * paint straight over it. It goes on a wrapper instead, with a 3dp gutter
+ * reserved whether focused or not — a tile that grew on focus would reflow its
+ * whole row under the cursor. On touch this is a pass-through.
+ *
+ * Scroll-into-view comes free: `focusable()` (inside `tvClickable`) asks its
+ * scrollable parent to bring it into view, so a focused tile in a lazy grid is
+ * never stranded off-screen.
+ */
+@Composable
+private fun TvFocusTile(onClick: () -> Unit, content: @Composable () -> Unit) {
+    val isTv = LocalIsTv.current
+    val focus = rememberFocusState()
+    if (!isTv) {
+        content()
+        return
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRing(focus.focused, 9.dp)
+            .tvClickable(onFocused = focus::set, onClick = onClick)
+            .padding(3.dp),
+    ) {
+        content()
     }
 }
 

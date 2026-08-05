@@ -13,12 +13,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.renzoshiori.client.R
+import app.renzoshiori.client.ui.tv.LocalIsTv
 
 /**
  * The signed-out half of the app, ported 1:1 from RenzoFrontend:
@@ -129,6 +132,14 @@ private fun LoginCard(
     var rememberMe by remember { mutableStateOf(true) }
     var localError by remember { mutableStateOf<String?>(null) }
 
+    // With a remote there's no tap to place the cursor, so land on the first
+    // field. Password then follows on ImeAction.Next and Go submits.
+    val isTv = LocalIsTv.current
+    val usernameRequester = remember { FocusRequester() }
+    LaunchedEffect(isTv) {
+        if (isTv) runCatching { usernameRequester.requestFocus() }
+    }
+
     fun submit() {
         if (username.isBlank() || password.isBlank()) {
             // The web form relies on the browser's `required` validation here.
@@ -168,6 +179,7 @@ private fun LoginCard(
                     onValueChange = { username = it; localError = null },
                     placeholder = "Enter your username",
                     imeAction = ImeAction.Next,
+                    modifier = Modifier.focusRequester(usernameRequester),
                 )
                 Spacer(Modifier.height(16.dp))
 

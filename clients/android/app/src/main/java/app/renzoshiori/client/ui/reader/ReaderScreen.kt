@@ -2,8 +2,11 @@ package app.renzoshiori.client.ui.reader
 
 import android.app.Application
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -48,7 +52,9 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -59,14 +65,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -76,6 +87,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.rememberIsTvDevice
+import app.renzoshiori.client.ui.tv.tvFocusable
 import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
@@ -118,6 +133,12 @@ fun ReaderScreen(
     val settings = state.settings
     val mode = state.resolvedMode()
     val context = LocalContext.current
+    // The app provides LocalIsTv; the device check is a fallback so the reader
+    // is never left pointer-only if something above it forgets to. Read
+    // unconditionally — a composable call behind `||` would appear and
+    // disappear with the local's value.
+    val deviceIsTv = rememberIsTvDevice()
+    val isTv = LocalIsTv.current || deviceIsTv
 
     var chromeVisible by remember { mutableStateOf(true) }
     var settingsOpen by remember { mutableStateOf(false) }
@@ -136,7 +157,63 @@ fun ReaderScreen(
         }
     }
 
+    // ── D-pad plumbing (TV only; none of it is reached on a touch device) ──
+    //
+    // The reading surface owns its own scrolling, so it publishes what an arrow
+    // means to it (page turn, scroll step, pan) through this handle and the key
+    // sink below calls into it.
+    val nav = rememberReaderNavHandle()
+    val contentFocus = remember { FocusRequester() }
+    val chromeFocus = remember { FocusRequester() }
+    val overlayOpen = settingsOpen || chaptersOpen
+    // Only the reading surface gets the key sink. The locked and error screens
+    // are ordinary button layouts — swallowing their arrows would make them
+    // unreachable, which is the exact failure this is meant to prevent.
+    val dpadReading = !state.loading && !state.locked && state.error == null
+
+    // On a television, chrome visible ⇔ the chrome holds focus. That is how
+    // every TV video player behaves and it keeps the arrows unambiguous: while
+    // the controls are up they move between controls, and while they are down
+    // they read. Nothing here can strand focus — one of the two is always
+    // focusable, and Back always leads out.
+    LaunchedEffect(isTv, chromeVisible, overlayOpen, state.loading, state.locked, state.error) {
+        if (!isTv || overlayOpen) return@LaunchedEffect
+        // The target has to be laid out before it can take focus.
+        withFrameNanos { }
+        runCatching {
+            if (chromeVisible && !state.loading) chromeFocus.requestFocus()
+            else if (dpadReading) contentFocus.requestFocus()
+        }
+    }
+    BackHandler(enabled = isTv && !overlayOpen) {
+        if (chromeVisible) chromeVisible = false else onExit()
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(Color(settings.background.argb))) {
+        if (isTv) {
+            // A key sink rather than a focusable wrapper around the content: it
+            // has no children, so it can never swallow the chrome's focus, and
+            // it consumes every arrow while reading so a stray focus search
+            // can't walk the cursor somewhere invisible. It stops being
+            // focusable while the chrome is up, which is what makes traversal
+            // between the top bar and the scrubber unambiguous.
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .focusRequester(contentFocus)
+                    .dpadKeys(
+                        onCenter = {
+                            chromeVisible = !chromeVisible
+                            true
+                        },
+                        onDir = { dir ->
+                            nav.onDpad?.invoke(dir)
+                            true
+                        },
+                    )
+                    .focusable(enabled = dpadReading && !chromeVisible),
+            )
+        }
         when {
             state.error != null -> Column(
                 modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -201,6 +278,7 @@ fun ReaderScreen(
                     ContinuousReader(
                         state = state,
                         mode = mode,
+                        nav = nav,
                         seekTarget = seekTarget,
                         onSeekHandled = { seekTarget = null },
                         onPosition = vm::onPosition,
@@ -216,6 +294,8 @@ fun ReaderScreen(
                     PagedReader(
                         state = state,
                         mode = mode,
+                        isTv = isTv,
+                        nav = nav,
                         seekTarget = seekTarget,
                         onSeekHandled = { seekTarget = null },
                         onPosition = vm::onPosition,
@@ -259,9 +339,13 @@ fun ReaderScreen(
                     .statusBarsPadding()
                     .padding(horizontal = 8.dp, vertical = 6.dp),
             ) {
-                IconButton(onClick = onExit) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ReaderPalette.Text)
-                }
+                ChromeIconButton(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = ReaderPalette.Text,
+                    isTv = isTv,
+                    onClick = onExit,
+                )
                 Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(
                         state.seriesTitle,
@@ -282,20 +366,34 @@ fun ReaderScreen(
                 }
                 val bookmarkable = state.activeChapter
                 if (bookmarkable != null) {
-                    IconButton(onClick = vm::toggleBookmark) {
-                        Icon(
-                            if (bookmarkable.bookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
-                            contentDescription = if (bookmarkable.bookmarked) "Remove bookmark" else "Bookmark chapter",
-                            tint = if (bookmarkable.bookmarked) ReaderPalette.Pink400 else ReaderPalette.Text,
-                        )
-                    }
+                    ChromeIconButton(
+                        icon = if (bookmarkable.bookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                        contentDescription = if (bookmarkable.bookmarked) "Remove bookmark" else "Bookmark chapter",
+                        // Colour already carries state here, so focus stays on
+                        // the ring — the two must not use the same channel.
+                        tint = if (bookmarkable.bookmarked) ReaderPalette.Pink400 else ReaderPalette.Text,
+                        isTv = isTv,
+                        onClick = vm::toggleBookmark,
+                    )
                 }
-                IconButton(onClick = { chaptersOpen = true }) {
-                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Chapters", tint = ReaderPalette.Text)
-                }
-                IconButton(onClick = { settingsOpen = true }) {
-                    Icon(Icons.Filled.Tune, contentDescription = "Reader settings", tint = ReaderPalette.Text)
-                }
+                ChromeIconButton(
+                    icon = Icons.AutoMirrored.Filled.List,
+                    contentDescription = "Chapters",
+                    tint = ReaderPalette.Text,
+                    isTv = isTv,
+                    onClick = { chaptersOpen = true },
+                )
+                // Reader settings is where the cursor lands when the chrome
+                // comes up: on a TV it is the control panel that matters, and
+                // it should never be more than one press away.
+                ChromeIconButton(
+                    icon = Icons.Filled.Tune,
+                    contentDescription = "Reader settings",
+                    tint = ReaderPalette.Text,
+                    isTv = isTv,
+                    modifier = if (isTv) Modifier.focusRequester(chromeFocus) else Modifier,
+                    onClick = { settingsOpen = true },
+                )
             }
         }
 
@@ -303,9 +401,7 @@ fun ReaderScreen(
         if (chromeVisible && !state.loading && state.error == null && !state.locked && state.activePageCount > 0) {
             val pageCount = state.activePageCount
             val current = state.currentPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
@@ -313,42 +409,80 @@ fun ReaderScreen(
                     .navigationBarsPadding()
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
-                IconButton(onClick = { vm.goToChapter(-1) }) {
-                    Icon(Icons.Filled.ChevronLeft, contentDescription = "Previous chapter", tint = ReaderPalette.Text)
-                }
-                Box(modifier = Modifier.weight(1f)) {
-                    // Right-to-left paged reading mirrors the scrubber, as on the web.
-                    CompositionLocalProvider(
-                        LocalLayoutDirection provides
-                            if (mode.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
-                    ) {
-                        Slider(
-                            value = scrubbing ?: current.toFloat(),
-                            onValueChange = { raw ->
-                                scrubbing = raw
-                                seekTarget = raw.roundToInt().coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                            },
-                            onValueChangeFinished = { scrubbing = null },
-                            valueRange = 0f..(pageCount - 1).coerceAtLeast(1).toFloat(),
-                            colors = SliderDefaults.colors(
-                                thumbColor = RenzoColors.Primary,
-                                activeTrackColor = RenzoColors.Primary,
-                                inactiveTrackColor = Color(0x33FFFFFF),
-                            ),
-                            modifier = Modifier.fillMaxWidth(),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    ChromeIconButton(
+                        icon = Icons.Filled.ChevronLeft,
+                        contentDescription = "Previous chapter",
+                        tint = ReaderPalette.Text,
+                        isTv = isTv,
+                        onClick = { vm.goToChapter(-1) },
+                    )
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (isTv) {
+                            // Material's Slider only understands drag, so on a
+                            // remote it would be a focus stop that cannot be
+                            // moved. Left/right step a page here.
+                            ReaderTvScrubber(
+                                page = current,
+                                pageCount = pageCount,
+                                showPageNumber = settings.showPageNumber,
+                                onSeek = { seekTarget = it },
+                            )
+                        } else {
+                            // Right-to-left paged reading mirrors the scrubber, as on the web.
+                            CompositionLocalProvider(
+                                LocalLayoutDirection provides
+                                    if (mode.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
+                            ) {
+                                Slider(
+                                    value = scrubbing ?: current.toFloat(),
+                                    onValueChange = { raw ->
+                                        scrubbing = raw
+                                        seekTarget = raw.roundToInt().coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                    },
+                                    onValueChangeFinished = { scrubbing = null },
+                                    valueRange = 0f..(pageCount - 1).coerceAtLeast(1).toFloat(),
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = RenzoColors.Primary,
+                                        activeTrackColor = RenzoColors.Primary,
+                                        inactiveTrackColor = Color(0x33FFFFFF),
+                                    ),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+                    }
+                    if (settings.showPageNumber && !isTv) {
+                        val shown = (scrubbing?.roundToInt() ?: current).coerceIn(0, pageCount - 1)
+                        Text(
+                            "${(shown + 1).coerceAtMost(pageCount)} / $pageCount",
+                            fontSize = 12.sp,
+                            color = ReaderPalette.Text70,
                         )
                     }
-                }
-                if (settings.showPageNumber) {
-                    val shown = (scrubbing?.roundToInt() ?: current).coerceIn(0, pageCount - 1)
-                    Text(
-                        "${(shown + 1).coerceAtMost(pageCount)} / $pageCount",
-                        fontSize = 12.sp,
-                        color = ReaderPalette.Text70,
+                    ChromeIconButton(
+                        icon = Icons.Filled.ChevronRight,
+                        contentDescription = "Next chapter",
+                        tint = ReaderPalette.Text,
+                        isTv = isTv,
+                        onClick = { vm.goToChapter(1) },
                     )
                 }
-                IconButton(onClick = { vm.goToChapter(1) }) {
-                    Icon(Icons.Filled.ChevronRight, contentDescription = "Next chapter", tint = ReaderPalette.Text)
+                if (isTv) {
+                    // The one thing that isn't discoverable by looking: the
+                    // arrows read the chapter once these controls are out of
+                    // the way.
+                    Text(
+                        "OK shows these controls · BACK hides them · arrows turn the page",
+                        fontSize = 11.sp,
+                        color = ReaderPalette.Text40,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 2.dp),
+                    )
                 }
             }
         }
@@ -358,6 +492,7 @@ fun ReaderScreen(
         ReaderSettingsSheet(
             state = state,
             mode = mode,
+            isTv = isTv,
             onDismiss = { settingsOpen = false },
             onModeChange = vm::setMode,
             onSettingsChange = vm::updateSettings,
@@ -368,12 +503,52 @@ fun ReaderScreen(
     if (chaptersOpen) {
         ReaderChapterListSheet(
             state = state,
+            isTv = isTv,
             onDismiss = { chaptersOpen = false },
             onPick = { number ->
                 chaptersOpen = false
                 vm.jumpToChapter(number)
             },
         )
+    }
+}
+
+/**
+ * A chrome button that can be seen from the sofa.
+ *
+ * Material's ripple is a focus indicator you can read at arm's length and not
+ * at three metres, so on a TV the button carries the 3dp accent ring instead.
+ * The tint is passed through untouched: on the bookmark button colour already
+ * means "bookmarked", and focus must not borrow that channel.
+ */
+@Composable
+private fun ChromeIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    isTv: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    if (!isTv) {
+        IconButton(onClick = onClick, modifier = modifier) {
+            Icon(icon, contentDescription = contentDescription, tint = tint)
+        }
+        return
+    }
+    val focus = rememberFocusState()
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(46.dp)
+            .tvFocusable(
+                focused = focus.focused,
+                onFocused = focus::set,
+                radius = 23.dp,
+                onClick = onClick,
+            ),
+    ) {
+        Icon(icon, contentDescription = contentDescription, tint = tint)
     }
 }
 
@@ -422,6 +597,7 @@ private data class StripItem(val segIndex: Int, val pageIndex: Int, val kind: In
 private fun ContinuousReader(
     state: ReaderUiState,
     mode: ResolvedMode,
+    nav: ReaderNavHandle,
     seekTarget: Int?,
     onSeekHandled: () -> Unit,
     onPosition: (Int, Int) -> Unit,
@@ -553,12 +729,45 @@ private fun ContinuousReader(
     }
 
     val widthFraction = (settings.maxWidthPct / 100f).coerceIn(0.2f, 1f)
+    // Page width is a fraction of the viewport, so on its own it can never make
+    // the strip bigger than the screen. Scale multiplies on top and is allowed
+    // to overflow — past 100% of the viewport the strip pans sideways instead
+    // of being clipped, which is what reading at a distance actually needs.
+    val scale = (settings.scalePct / 100f).coerceIn(0.5f, 3f)
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val contentWidth = screenWidth * (widthFraction * scale)
+    val overflowing = widthFraction * scale > 1.001f
+    val hScroll = rememberScrollState()
+    val panStepPx = with(LocalDensity.current) { (screenWidth * 0.35f).toPx() }
 
-    LazyColumn(
-        state = listState,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement =
-            if (mode == ResolvedMode.VERTICAL) Arrangement.spacedBy(settings.gapPx.dp) else Arrangement.Top,
+    // D-pad: up/down are the scroll step (the same `tapAdvancePct` a tap uses),
+    // left/right pan when the strip is wider than the screen and otherwise do
+    // the same thing as up/down — on a remote every arrow should move you
+    // forward through the chapter rather than doing nothing.
+    SideEffect {
+        nav.onDpad = { dir ->
+            val viewport = listState.layoutInfo.viewportSize.height
+            val amount = (viewport * (settings.tapAdvancePct / 100f)).coerceAtLeast(1f)
+            when (dir) {
+                DpadDir.DOWN -> scope.launch { listState.animateScrollBy(amount) }
+                DpadDir.UP -> scope.launch { listState.animateScrollBy(-amount) }
+                DpadDir.RIGHT ->
+                    if (overflowing && hScroll.canScrollForward) scope.launch { hScroll.animateScrollBy(panStepPx) }
+                    else scope.launch { listState.animateScrollBy(amount) }
+                DpadDir.LEFT ->
+                    if (overflowing && hScroll.canScrollBackward) scope.launch { hScroll.animateScrollBy(-panStepPx) }
+                    else scope.launch { listState.animateScrollBy(-amount) }
+            }
+            Unit
+        }
+    }
+    DisposableEffect(nav) { onDispose { nav.onDpad = null } }
+
+    // The tap zones move up to this wrapper: the strip itself is now only as
+    // wide as the content, and a tap in the margin beside it has to keep
+    // working exactly as it did when the list filled the screen.
+    Box(
+        contentAlignment = Alignment.TopCenter,
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(settings.tapNavigation, settings.tapAdvancePct) {
@@ -576,117 +785,128 @@ private fun ContinuousReader(
                         else -> onToggleChrome()
                     }
                 }
-            },
+            }
+            .then(if (overflowing) Modifier.horizontalScroll(hScroll) else Modifier),
     ) {
-        items(
-            count = strip.size,
-            key = { index ->
+        LazyColumn(
+            state = listState,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement =
+                if (mode == ResolvedMode.VERTICAL) Arrangement.spacedBy(settings.gapPx.dp) else Arrangement.Top,
+            modifier = Modifier.fillMaxHeight().width(contentWidth),
+        ) {
+            items(
+                count = strip.size,
+                key = { index ->
+                    val item = strip[index]
+                    "${segments.getOrNull(item.segIndex)?.key ?: item.segIndex}:${item.kind}:${item.pageIndex}"
+                },
+            ) { index ->
                 val item = strip[index]
-                "${segments.getOrNull(item.segIndex)?.key ?: item.segIndex}:${item.kind}:${item.pageIndex}"
-            },
-        ) { index ->
-            val item = strip[index]
-            val seg = segments.getOrNull(item.segIndex)
-            when {
-                item.kind == KIND_PAGE && seg != null -> {
-                    val cacheKey = "${seg.key}:${item.pageIndex}"
-                    val serverAspect = seg.dims.getOrNull(item.pageIndex)?.let { dims ->
-                        dims.first.toFloat() / dims.second.toFloat()
-                    }
-                    val aspect = loadedAspect[cacheKey] ?: serverAspect
-                    val attempt = retryTick[cacheKey] ?: 0
-                    val failed = loadFailed[cacheKey] == true
-                    var settled by remember(cacheKey, attempt) { mutableStateOf(false) }
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .fillMaxWidth(widthFraction)
-                            .then(
-                                if (aspect != null && aspect > 0f) Modifier.aspectRatio(aspect)
-                                else Modifier.height(placeholderHeight),
-                            ),
-                    ) {
-                        val rawModel = seg.pages.getOrNull(item.pageIndex)
-                        AsyncImage(
-                            model = if (attempt > 0 && rawModel is String) {
-                                rawModel + (if (rawModel.contains('?')) "&" else "?") + "retry=" + attempt
-                            } else {
-                                rawModel
-                            },
-                            contentDescription = "Page ${item.pageIndex + 1}",
-                            contentScale = ContentScale.FillWidth,
-                            onSuccess = { success ->
-                                settled = true
-                                loadFailed[cacheKey] = false
-                                val w = success.result.image.width
-                                val h = success.result.image.height
-                                if (w > 0 && h > 0) {
-                                    loadedAspect[cacheKey] = w.toFloat() / h.toFloat()
-                                    onImageLoaded(w, h)
-                                }
-                            },
-                            onError = {
-                                settled = true
-                                loadFailed[cacheKey] = true
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        if (failed) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.clickable {
-                                    loadFailed[cacheKey] = false
-                                    retryTick[cacheKey] = attempt + 1
+                val seg = segments.getOrNull(item.segIndex)
+                when {
+                    item.kind == KIND_PAGE && seg != null -> {
+                        val cacheKey = "${seg.key}:${item.pageIndex}"
+                        val serverAspect = seg.dims.getOrNull(item.pageIndex)?.let { dims ->
+                            dims.first.toFloat() / dims.second.toFloat()
+                        }
+                        val aspect = loadedAspect[cacheKey] ?: serverAspect
+                        val attempt = retryTick[cacheKey] ?: 0
+                        val failed = loadFailed[cacheKey] == true
+                        var settled by remember(cacheKey, attempt) { mutableStateOf(false) }
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            // The strip itself is already sized to page width ×
+                            // scale, so a page just fills it.
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(
+                                    if (aspect != null && aspect > 0f) Modifier.aspectRatio(aspect)
+                                    else Modifier.height(placeholderHeight),
+                                ),
+                        ) {
+                            val rawModel = seg.pages.getOrNull(item.pageIndex)
+                            AsyncImage(
+                                model = if (attempt > 0 && rawModel is String) {
+                                    rawModel + (if (rawModel.contains('?')) "&" else "?") + "retry=" + attempt
+                                } else {
+                                    rawModel
                                 },
-                            ) {
-                                Text(
-                                    "Page ${item.pageIndex + 1} didn't load",
-                                    fontSize = 13.sp,
-                                    color = ReaderPalette.Text70,
-                                )
-                                Text(
-                                    "Tap to retry",
-                                    fontSize = 12.sp,
-                                    color = RenzoColors.Primary,
-                                    modifier = Modifier.padding(top = 4.dp),
+                                contentDescription = "Page ${item.pageIndex + 1}",
+                                contentScale = ContentScale.FillWidth,
+                                onSuccess = { success ->
+                                    settled = true
+                                    loadFailed[cacheKey] = false
+                                    val w = success.result.image.width
+                                    val h = success.result.image.height
+                                    if (w > 0 && h > 0) {
+                                        loadedAspect[cacheKey] = w.toFloat() / h.toFloat()
+                                        onImageLoaded(w, h)
+                                    }
+                                },
+                                onError = {
+                                    settled = true
+                                    loadFailed[cacheKey] = true
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            if (failed) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable {
+                                        loadFailed[cacheKey] = false
+                                        retryTick[cacheKey] = attempt + 1
+                                    },
+                                ) {
+                                    Text(
+                                        "Page ${item.pageIndex + 1} didn't load",
+                                        fontSize = 13.sp,
+                                        color = ReaderPalette.Text70,
+                                    )
+                                    Text(
+                                        "Tap to retry",
+                                        fontSize = 12.sp,
+                                        color = RenzoColors.Primary,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                }
+                            } else if (!settled) {
+                                CircularProgressIndicator(
+                                    color = ReaderPalette.Text35,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(20.dp),
                                 )
                             }
-                        } else if (!settled) {
-                            CircularProgressIndicator(
-                                color = ReaderPalette.Text35,
-                                strokeWidth = 2.dp,
-                                modifier = Modifier.size(20.dp),
-                            )
                         }
                     }
-                }
 
-                item.kind == KIND_DIVIDER && seg != null -> ChapterDivider(
-                    finishedLabel = segments.getOrNull(item.segIndex - 1)?.name ?: "",
-                    nextLabel = seg.name,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                    item.kind == KIND_DIVIDER && seg != null -> ChapterDivider(
+                        finishedLabel = segments.getOrNull(item.segIndex - 1)?.name ?: "",
+                        nextLabel = seg.name,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
 
-                else -> {
-                    val last = segments.lastOrNull()
-                    // Full-screen like the web's sentinel page: guaranteed scroll
-                    // distance below the final image is what lets the tracker
-                    // register the last page and mark the chapter read.
-                    Box(modifier = Modifier.fillMaxWidth().fillParentMaxHeight()) {
-                        EndOfChapter(
-                            chapterLabel = last?.name ?: "",
-                            nextLabel = state.nextChapterName,
-                            hasNext = state.hasNext,
-                            hasPrev = state.hasPrev,
-                            infinite = settings.infiniteScroll,
-                            onNext = onNextChapter,
-                            onPrev = onPrevChapter,
-                            onExit = onExit,
-                            appendError = state.appendError,
-                            appending = state.appending,
-                            onRetryAppend = onRetryAppend,
-                            modifier = Modifier.align(Alignment.Center),
-                        )
+                    else -> {
+                        val last = segments.lastOrNull()
+                        // Full-screen like the web's sentinel page: guaranteed scroll
+                        // distance below the final image is what lets the tracker
+                        // register the last page and mark the chapter read.
+                        Box(modifier = Modifier.fillMaxWidth().fillParentMaxHeight()) {
+                            EndOfChapter(
+                                chapterLabel = last?.name ?: "",
+                                nextLabel = state.nextChapterName,
+                                hasNext = state.hasNext,
+                                hasPrev = state.hasPrev,
+                                infinite = settings.infiniteScroll,
+                                onNext = onNextChapter,
+                                onPrev = onPrevChapter,
+                                onExit = onExit,
+                                appendError = state.appendError,
+                                appending = state.appending,
+                                onRetryAppend = onRetryAppend,
+                                modifier = Modifier.align(Alignment.Center),
+                            )
+                        }
                     }
                 }
             }
@@ -700,6 +920,8 @@ private fun ContinuousReader(
 private fun PagedReader(
     state: ReaderUiState,
     mode: ResolvedMode,
+    isTv: Boolean,
+    nav: ReaderNavHandle,
     seekTarget: Int?,
     onSeekHandled: () -> Unit,
     onPosition: (Int, Int) -> Unit,
@@ -773,6 +995,67 @@ private fun PagedReader(
         }
     }
 
+    // Scale can make a page larger than the screen, so each slot's panning has
+    // to be reachable from outside the pager — the D-pad drives it. Hoisted per
+    // slot rather than remembered inside the page: the arrows act on the page
+    // that is on screen, and the next page must start at its own top-left.
+    // Deliberately a plain map, not a snapshot map: it is written to during
+    // composition, and an observable write there invalidates the scope that
+    // just read it — which is a recomposition loop, not a cache.
+    val pageScrolls = remember(seg.key) { mutableMapOf<String, ScrollState>() }
+    fun scrollFor(id: String): ScrollState = pageScrolls.getOrPut(id) { ScrollState(0) }
+    val scale = (settings.scalePct / 100f).coerceIn(0.5f, 3f)
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val vStepPx = with(density) {
+        (configuration.screenHeightDp.dp * (settings.tapAdvancePct / 100f)).toPx()
+    }
+    val hStepPx = with(density) { (configuration.screenWidthDp.dp * 0.35f).toPx() }
+
+    // Whether the page on screen actually has a scroller in each axis — see
+    // PageImage for which fit attaches what. This has to be decided from the
+    // settings rather than from the state: a ScrollState that was never
+    // attached to a layout still reports maxValue = Int.MAX_VALUE, so asking
+    // it "can you scroll?" answers yes and the page would never turn.
+    val vScrollable = !doubled && when (settings.fit) {
+        FitMode.HEIGHT -> scale > 1.001f || scale < 0.999f
+        FitMode.WIDTH, FitMode.ORIGINAL -> true
+    }
+    val hScrollable = !doubled && when (settings.fit) {
+        FitMode.HEIGHT -> scale > 1.001f || scale < 0.999f
+        FitMode.WIDTH -> scale > 1.001f
+        FitMode.ORIGINAL -> true
+    }
+
+    // D-pad: pan the enlarged page to its edge first, then turn. Anything else
+    // makes half of a scaled page unreachable, and "the page moved" is a much
+    // better answer to an arrow press than nothing happening.
+    SideEffect {
+        nav.onDpad = { dir ->
+            val slot = pagerState.currentPage
+            val v = scrollFor("$slot:v")
+            val h = scrollFor("$slot:h")
+            // The chapter-transition slot holds no page, so nothing there pans.
+            val onPage = slot < contentSlots
+            when (dir) {
+                DpadDir.DOWN ->
+                    if (onPage && vScrollable && v.canScrollForward) scope.launch { v.animateScrollBy(vStepPx) }
+                    else advance(1)
+                DpadDir.UP ->
+                    if (onPage && vScrollable && v.canScrollBackward) scope.launch { v.animateScrollBy(-vStepPx) }
+                    else advance(-1)
+                DpadDir.RIGHT ->
+                    if (onPage && hScrollable && h.canScrollForward) scope.launch { h.animateScrollBy(hStepPx) }
+                    else advance(if (mode.rtl) -1 else 1)
+                DpadDir.LEFT ->
+                    if (onPage && hScrollable && h.canScrollBackward) scope.launch { h.animateScrollBy(-hStepPx) }
+                    else advance(if (mode.rtl) 1 else -1)
+            }
+            Unit
+        }
+    }
+    DisposableEffect(nav) { onDispose { nav.onDpad = null } }
+
     CompositionLocalProvider(
         LocalLayoutDirection provides if (mode.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
     ) {
@@ -816,20 +1099,42 @@ private fun PagedReader(
                     }
                 } else if (doubled) {
                     // Desktop shows the pair side by side; on a phone it stacks.
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        for (p in slot * 2..(slot * 2 + 1)) {
-                            if (p >= pageCount) continue
-                            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                                PageImage(
-                                    model = seg.pages.getOrNull(p),
-                                    index = p,
-                                    fit = settings.fit,
-                                    onImageLoaded = onImageLoaded,
-                                )
+                    // A television is a desktop-shaped screen — stacking two
+                    // pages down a 16:9 panel is the worst of both.
+                    if (isTv) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            for (p in slot * 2..(slot * 2 + 1)) {
+                                if (p >= pageCount) continue
+                                Box(modifier = Modifier.fillMaxHeight().weight(1f)) {
+                                    PageImage(
+                                        model = seg.pages.getOrNull(p),
+                                        index = p,
+                                        fit = settings.fit,
+                                        onImageLoaded = onImageLoaded,
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            for (p in slot * 2..(slot * 2 + 1)) {
+                                if (p >= pageCount) continue
+                                Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                                    PageImage(
+                                        model = seg.pages.getOrNull(p),
+                                        index = p,
+                                        fit = settings.fit,
+                                        onImageLoaded = onImageLoaded,
+                                    )
+                                }
                             }
                         }
                     }
@@ -838,6 +1143,9 @@ private fun PagedReader(
                         model = seg.pages.getOrNull(slot),
                         index = slot,
                         fit = settings.fit,
+                        scale = scale,
+                        vScroll = scrollFor("$slot:v"),
+                        hScroll = scrollFor("$slot:h"),
                         onImageLoaded = onImageLoaded,
                     )
                 }
@@ -846,30 +1154,87 @@ private fun PagedReader(
     }
 }
 
-/** One page honoring the Page fit setting (fit width / fit height / original size). */
+/**
+ * One page honouring the Page fit setting (fit width / fit height / original
+ * size) and the page scale.
+ *
+ * Scale is applied by making the page's LAYOUT bigger rather than by drawing it
+ * transformed: a `graphicsLayer` scale would clip at the viewport with no way
+ * to reach what fell outside it, where a larger layout inside a scroller pans.
+ * At 100% every branch collapses to exactly what it was before scale existed,
+ * which is what keeps touch untouched.
+ *
+ * [vScroll] / [hScroll] are hoisted so the D-pad can pan from outside; passing
+ * nothing keeps the page's panning private, which is what the double-page
+ * layout wants (two pages per slot, each scrolling on its own).
+ */
 @Composable
 private fun PageImage(
     model: Any?,
     index: Int,
     fit: FitMode,
+    scale: Float = 1f,
+    vScroll: ScrollState? = null,
+    hScroll: ScrollState? = null,
     onImageLoaded: (Int, Int) -> Unit,
 ) {
+    // Always remembered, never conditionally: a composable call that appears
+    // and disappears with a parameter corrupts the slot table.
+    val ownV = rememberScrollState()
+    val ownH = rememberScrollState()
+    val v = vScroll ?: ownV
+    val h = hScroll ?: ownH
+    val enlarged = scale > 1.001f
+    val resized = enlarged || scale < 0.999f
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val screenHeight = configuration.screenHeightDp.dp
+
+    var natural by remember(model) { mutableStateOf<Pair<Int, Int>?>(null) }
     val onSuccess: (AsyncImagePainter.State.Success) -> Unit = { success ->
         val w = success.result.image.width
-        val h = success.result.image.height
-        if (w > 0 && h > 0) onImageLoaded(w, h)
+        val h2 = success.result.image.height
+        if (w > 0 && h2 > 0) {
+            // Captured once, deliberately. Coil sizes its request from the
+            // layout bounds, so a second capture would report the size we just
+            // asked for and scale would compound on itself every load.
+            if (natural == null) natural = w to h2
+            onImageLoaded(w, h2)
+        }
     }
     when (fit) {
-        FitMode.HEIGHT -> AsyncImage(
-            model = model,
-            contentDescription = "Page ${index + 1}",
-            contentScale = ContentScale.Fit,
-            onSuccess = onSuccess,
-            modifier = Modifier.fillMaxSize(),
-        )
+        FitMode.HEIGHT -> if (!resized) {
+            AsyncImage(
+                model = model,
+                contentDescription = "Page ${index + 1}",
+                contentScale = ContentScale.Fit,
+                onSuccess = onSuccess,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(v)
+                    .horizontalScroll(h),
+                contentAlignment = Alignment.Center,
+            ) {
+                AsyncImage(
+                    model = model,
+                    contentDescription = "Page ${index + 1}",
+                    contentScale = ContentScale.Fit,
+                    onSuccess = onSuccess,
+                    modifier = Modifier.size(screenWidth * scale, screenHeight * scale),
+                )
+            }
+        }
 
         FitMode.WIDTH -> Box(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(v)
+                .then(if (enlarged) Modifier.horizontalScroll(h) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
             AsyncImage(
@@ -877,24 +1242,34 @@ private fun PageImage(
                 contentDescription = "Page ${index + 1}",
                 contentScale = ContentScale.FillWidth,
                 onSuccess = onSuccess,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = if (resized) Modifier.width(screenWidth * scale) else Modifier.fillMaxWidth(),
             )
         }
 
         FitMode.ORIGINAL -> Box(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .horizontalScroll(rememberScrollState()),
+                .verticalScroll(v)
+                .horizontalScroll(h),
             contentAlignment = Alignment.Center,
         ) {
-            // No size modifier: inside a two-way scroller the image lays out at
-            // its intrinsic pixel size, which is what "Original size" means.
+            // "Original size" means intrinsic pixels, so there is no viewport
+            // fraction to scale — the size has to come from the decoded image,
+            // which is only known once it has loaded.
+            val dims = natural
+            val sized = resized && dims != null
             AsyncImage(
                 model = model,
                 contentDescription = "Page ${index + 1}",
-                contentScale = ContentScale.None,
+                contentScale = if (sized) ContentScale.Fit else ContentScale.None,
                 onSuccess = onSuccess,
+                modifier = if (sized && dims != null) {
+                    with(density) {
+                        Modifier.size((dims.first * scale).toDp(), (dims.second * scale).toDp())
+                    }
+                } else {
+                    Modifier
+                },
             )
         }
     }

@@ -24,10 +24,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -38,6 +41,11 @@ import androidx.compose.ui.unit.sp
 import app.renzoshiori.client.R
 import app.renzoshiori.client.data.model.UserDto
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
+import app.renzoshiori.client.ui.tv.tvContentColor
 
 /**
  * RenzoFrontend/src/app/user-select/page.tsx — the profile picker the web app
@@ -84,8 +92,14 @@ fun UserSelectScreen(
                     )
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        users.forEach { user ->
-                            UserSelectRow(user = user, onClick = { onSelectUser(user.username) })
+                        users.forEachIndexed { index, user ->
+                            UserSelectRow(
+                                user = user,
+                                // The one sign-in path that needs no typing at
+                                // all, so the cursor starts on it.
+                                autoFocus = index == 0,
+                                onClick = { onSelectUser(user.username) },
+                            )
                         }
                     }
                 }
@@ -96,8 +110,14 @@ fun UserSelectScreen(
 
 /** `variant="outline" className="w-full justify-start gap-3 h-14"` */
 @Composable
-private fun UserSelectRow(user: UserDto, onClick: () -> Unit) {
+private fun UserSelectRow(user: UserDto, autoFocus: Boolean = false, onClick: () -> Unit) {
     val shape = RoundedCornerShape(6.dp)
+    val isTv = LocalIsTv.current
+    val focus = rememberFocusState()
+    val requester = remember { FocusRequester() }
+    LaunchedEffect(isTv, autoFocus) {
+        if (isTv && autoFocus) runCatching { requester.requestFocus() }
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -105,15 +125,22 @@ private fun UserSelectRow(user: UserDto, onClick: () -> Unit) {
             .fillMaxWidth()
             .height(56.dp)
             .clip(shape)
-            .background(RenzoColors.Background)
+            .background(if (isTv && focus.focused) RenzoColors.Card else RenzoColors.Background)
             .border(1.dp, RenzoColors.Border, shape)
-            .clickable { onClick() }
+            .focusRing(isTv && focus.focused, 6.dp)
+            .then(
+                if (isTv) {
+                    Modifier.focusRequester(requester).tvClickable(onFocused = focus::set) { onClick() }
+                } else {
+                    Modifier.clickable { onClick() }
+                },
+            )
             .padding(horizontal = 16.dp),
     ) {
         UserAvatar(user)
         Text(
             user.username,
-            color = RenzoColors.Foreground,
+            color = if (isTv) tvContentColor(false, focus.focused) else RenzoColors.Foreground,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
             style = MaterialTheme.typography.bodyMedium,

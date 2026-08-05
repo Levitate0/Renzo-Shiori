@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +39,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
 
 // ──────────────────────────────────────────────────────────────────────────
 // Tailwind colours the web series page uses that aren't in RenzoColors.
@@ -109,6 +115,9 @@ fun RenzoChip(
         else -> ForegroundFaint
     }
     val borderColor = if (accent != null || active) tint.copy(alpha = 0.4f) else Border40
+    // TV: the ring says where the cursor is; `active` keeps saying what's on.
+    // Both have to be readable at once, so they use different channels.
+    val focus = rememberFocusState()
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -116,7 +125,8 @@ fun RenzoChip(
             .clip(PillShape)
             .background(bg)
             .border(1.dp, borderColor, PillShape)
-            .clickable(enabled = enabled, onClick = onClick)
+            .focusRing(focus.focused, 999.dp)
+            .tvClickable(onFocused = focus::set, enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 5.dp)
             .then(if (enabled) Modifier else Modifier.alphaHalf()),
     ) {
@@ -154,6 +164,7 @@ fun PillToggle(
     onChange: (Boolean) -> Unit,
 ) {
     val primary = MaterialTheme.colorScheme.primary
+    val focus = rememberFocusState()
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -161,10 +172,21 @@ fun PillToggle(
             .clip(PillShape)
             .background(if (checked) primary.copy(alpha = 0.15f) else ForegroundFaint)
             .border(1.dp, if (checked) primary.copy(alpha = 0.4f) else Border40, PillShape)
-            .clickable(enabled = enabled) { onChange(!checked) }
+            .focusRing(focus.focused, 999.dp)
+            .tvClickable(onFocused = focus::set, enabled = enabled) { onChange(!checked) }
             .padding(horizontal = 10.dp, vertical = 4.dp)
             .then(if (enabled) Modifier else Modifier.alphaHalf()),
     ) {
+        // On a TV the dot alone is too small to read across a room, and colour
+        // alone fails for colour-blind viewers — so an on toggle also gets a tick.
+        if (LocalIsTv.current && checked) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = null,
+                tint = primary,
+                modifier = Modifier.size(12.dp),
+            )
+        }
         Box(
             Modifier
                 .size(6.dp)
@@ -192,6 +214,7 @@ fun SquareIconButton(
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
+    val focus = rememberFocusState()
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -199,7 +222,8 @@ fun SquareIconButton(
             .clip(MaterialTheme.shapes.extraSmall)
             .background(background)
             .border(1.dp, borderColor, MaterialTheme.shapes.extraSmall)
-            .clickable(enabled = enabled, onClick = onClick)
+            .focusRing(focus.focused, 6.dp)
+            .tvClickable(onFocused = focus::set, enabled = enabled, onClick = onClick)
             .then(if (enabled) Modifier else Modifier.alphaHalf()),
     ) {
         Icon(icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(16.dp))

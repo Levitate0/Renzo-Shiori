@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
@@ -82,10 +83,17 @@ import app.renzoshiori.client.data.network.BrowseApi
 import app.renzoshiori.client.data.network.absoluteUrl
 import app.renzoshiori.client.ui.components.RibbonSelect
 import app.renzoshiori.client.ui.components.SelectOption
+import app.renzoshiori.client.ui.components.TvSearchBar
+import app.renzoshiori.client.ui.components.tvFocusTarget
 import app.renzoshiori.client.ui.library.LibraryViewModel
 import app.renzoshiori.client.ui.library.formatChapter
 import app.renzoshiori.client.ui.library.getStatusDisplay
 import app.renzoshiori.client.ui.theme.RenzoColors
+import app.renzoshiori.client.ui.tv.LocalIsTv
+import app.renzoshiori.client.ui.tv.focusRing
+import app.renzoshiori.client.ui.tv.rememberFocusState
+import app.renzoshiori.client.ui.tv.tvClickable
+import app.renzoshiori.client.ui.tv.tvContentColor
 import app.renzoshiori.client.ui.util.AdultFilter
 import app.renzoshiori.client.ui.util.rememberHideAdult
 import coil3.compose.AsyncImage
@@ -142,9 +150,17 @@ fun BrowseScreen() {
     val adultFilter = rememberHideAdult(context)
     val hideAdult by adultFilter.hidden
 
+    val isTv = LocalIsTv.current
+
     var selectedSourceId by remember { mutableStateOf("__ALL__") }
-    var cardWidth by remember { mutableStateOf("w-32") }
+    // Couch distance: a television opens on L, a phone on S. Same ribbon
+    // control either way, so it stays changeable.
+    var cardWidth by remember { mutableStateOf(if (isTv) "w-58" else "w-32") }
     val selectedGenres = remember { mutableStateListOf<String>() }
+    // TV search draft — committed on the IME Search action (or a voice result)
+    // rather than per keystroke, because every keystroke here is a live query
+    // against every enabled source.
+    var searchDraft by remember { mutableStateOf(searchTerm) }
 
     var sources by remember { mutableStateOf<List<SearchSourceDto>>(emptyList()) }
     var genresData by remember { mutableStateOf<List<LatestGenreDto>?>(null) }
@@ -258,6 +274,25 @@ fun BrowseScreen() {
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // ── TV search ────────────────────────────────────────────────────
+        // The shell's command-bar field is a 176dp target behind the chrome —
+        // fine with a thumb, hopeless with a D-pad — so discovery carries its
+        // own full-width field, plus voice where the set has a recogniser.
+        if (isTv) {
+            // The shell's command bar writes the same term; follow it so the two
+            // fields never disagree about what's being searched.
+            LaunchedEffect(searchTerm) {
+                if (searchTerm != searchDraft.trim()) searchDraft = searchTerm
+            }
+            TvSearchBar(
+                value = searchDraft,
+                onValueChange = { searchDraft = it },
+                onSubmit = { libraryVm.setSearch(it.trim()) },
+                placeholder = "Search every source…",
+                voicePrompt = "Say a series title",
+            )
+        }
+
         // ── Ribbon ───────────────────────────────────────────────────────
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -279,14 +314,26 @@ fun BrowseScreen() {
             )
 
             // Tag popover trigger.
+            val tagFocus = rememberFocusState()
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .height(32.dp)
+                    .height(if (isTv) 40.dp else 32.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .border(1.dp, RenzoColors.Border, RoundedCornerShape(8.dp))
                     .background(RenzoColors.Card)
-                    .clickable { tagPopoverOpen = !tagPopoverOpen }
+                    .then(
+                        if (isTv) {
+                            Modifier
+                                .focusRing(tagFocus.focused, 8.dp)
+                                .tvClickable(
+                                    onFocused = tagFocus::set,
+                                    onClick = { tagPopoverOpen = !tagPopoverOpen },
+                                )
+                        } else {
+                            Modifier.clickable { tagPopoverOpen = !tagPopoverOpen }
+                        },
+                    )
                     .padding(horizontal = 10.dp),
             ) {
                 Icon(
@@ -331,10 +378,13 @@ fun BrowseScreen() {
             Spacer(Modifier.width(4.dp))
 
             // 18+ visibility — mirrors the account menu's "Adult (18+)" item.
+            // The amber fill/border is the *state* (18+ shown) and stays put
+            // while the cursor moves; the ring is only ever focus.
+            val adultFocus = rememberFocusState()
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .height(32.dp)
+                    .height(if (isTv) 40.dp else 32.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .border(
                         1.dp,
@@ -342,7 +392,15 @@ fun BrowseScreen() {
                         RoundedCornerShape(8.dp),
                     )
                     .background(if (hideAdult) RenzoColors.Card else RenzoColors.Amber.copy(alpha = 0.12f))
-                    .clickable { adultFilter.toggle() }
+                    .then(
+                        if (isTv) {
+                            Modifier
+                                .focusRing(adultFocus.focused, 8.dp)
+                                .tvClickable(onFocused = adultFocus::set, onClick = { adultFilter.toggle() })
+                        } else {
+                            Modifier.clickable { adultFilter.toggle() }
+                        },
+                    )
                     .padding(horizontal = 10.dp),
             ) {
                 Icon(
@@ -381,17 +439,32 @@ fun BrowseScreen() {
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 selectedGenres.toList().forEach { name ->
+                    // On TV the whole chip is one target that removes the tag —
+                    // a 14dp close glyph is not something a D-pad can aim at.
+                    val chipFocus = rememberFocusState()
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .background(RenzoColors.Secondary.copy(alpha = 0.7f))
+                            .then(
+                                if (isTv) {
+                                    Modifier
+                                        .focusRing(chipFocus.focused, 50.dp)
+                                        .tvClickable(
+                                            onFocused = chipFocus::set,
+                                            onClick = { selectedGenres.remove(name) },
+                                        )
+                                } else {
+                                    Modifier
+                                },
+                            )
                             .padding(start = 10.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
                     ) {
                         Text(
                             name,
                             style = MaterialTheme.typography.labelMedium,
-                            color = RenzoColors.Foreground,
+                            color = if (isTv && chipFocus.focused) RenzoColors.Primary else RenzoColors.Foreground,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -402,17 +475,31 @@ fun BrowseScreen() {
                             modifier = Modifier
                                 .padding(start = 4.dp)
                                 .size(14.dp)
-                                .clickable { selectedGenres.remove(name) },
+                                .then(
+                                    if (isTv) Modifier else Modifier.clickable { selectedGenres.remove(name) },
+                                ),
                         )
                     }
                 }
+                val clearFocus = rememberFocusState()
                 Text(
                     "Clear",
                     style = MaterialTheme.typography.labelMedium,
-                    color = RenzoColors.MutedForeground,
+                    color = if (isTv && clearFocus.focused) RenzoColors.Primary else RenzoColors.MutedForeground,
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
-                        .clickable { selectedGenres.clear() }
+                        .then(
+                            if (isTv) {
+                                Modifier
+                                    .focusRing(clearFocus.focused, 4.dp)
+                                    .tvClickable(
+                                        onFocused = clearFocus::set,
+                                        onClick = { selectedGenres.clear() },
+                                    )
+                            } else {
+                                Modifier.clickable { selectedGenres.clear() }
+                            },
+                        )
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
             }
@@ -570,13 +657,16 @@ private fun CloudLatestCard(
     onClick: () -> Unit,
 ) {
     val statusColor = getStatusDisplay(item.status).color
+    val isTv = LocalIsTv.current
+    TvFocusTile(onClick = onClick) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(2f / 3f)
             .clip(RoundedCornerShape(6.dp))
             .background(RenzoColors.Muted)
-            .clickable(onClick = onClick),
+            // On TV the wrapper owns the click, so the ring isn't clipped away.
+            .then(if (isTv) Modifier else Modifier.clickable(onClick = onClick)),
     ) {
         if (!item.thumbnailUrl.isNullOrBlank()) {
             AsyncImage(
@@ -657,6 +747,33 @@ private fun CloudLatestCard(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
         )
     }
+    }
+}
+
+/**
+ * Focus wrapper for a catalogue tile — same reasoning as the library's: a ring
+ * drawn on the card itself would be painted over by the full-bleed cover, and
+ * the 3dp gutter is reserved so focus never reflows the row. `focusable()` inside
+ * `tvClickable` handles bring-into-view, so the cursor can't strand itself
+ * below the fold of the lazy grid. Pass-through on touch.
+ */
+@Composable
+private fun TvFocusTile(onClick: () -> Unit, content: @Composable () -> Unit) {
+    val isTv = LocalIsTv.current
+    val focus = rememberFocusState()
+    if (!isTv) {
+        content()
+        return
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRing(focus.focused, 9.dp)
+            .tvClickable(onFocused = focus::set, onClick = onClick)
+            .padding(3.dp),
+    ) {
+        content()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +788,7 @@ private fun TagFilterDialog(
     onDismiss: () -> Unit,
 ) {
     var tagSearch by remember { mutableStateOf("") }
+    val isTv = LocalIsTv.current
 
     val filtered = remember(genres, tagSearch, hideAdult) {
         var list = genres.orEmpty()
@@ -690,9 +808,14 @@ private fun TagFilterDialog(
                 .border(1.dp, RenzoColors.Border, RoundedCornerShape(8.dp))
                 .background(RenzoColors.Popover),
         ) {
+            val tagFieldFocus = rememberFocusState()
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 10.dp)
+                    .focusRing(isTv && tagFieldFocus.focused, 8.dp)
+                    .padding(if (isTv) 6.dp else 0.dp),
             ) {
                 Icon(
                     Icons.Filled.Search,
@@ -718,7 +841,9 @@ private fun TagFilterDialog(
                             inner()
                         }
                     },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { tagFieldFocus.set(it.isFocused) },
                 )
             }
             HorizontalDivider(color = RenzoColors.Border.copy(alpha = 0.6f))
@@ -742,14 +867,36 @@ private fun TagFilterDialog(
                     else -> LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
                         items(filtered, key = { it.name }) { g ->
                             val isChecked = selected.contains(g.name)
+                            val rowFocus = rememberFocusState()
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        if (isChecked) selected.remove(g.name) else selected.add(g.name)
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    .then(
+                                        if (isTv) {
+                                            // Ticked stays ticked (and coloured)
+                                            // wherever the cursor goes; the ring
+                                            // is only ever "you are here".
+                                            Modifier.tvFocusTarget(
+                                                focused = rowFocus.focused,
+                                                onFocused = rowFocus::set,
+                                                radius = 8.dp,
+                                                fill = RenzoColors.Card,
+                                                onClick = {
+                                                    if (isChecked) {
+                                                        selected.remove(g.name)
+                                                    } else {
+                                                        selected.add(g.name)
+                                                    }
+                                                },
+                                            )
+                                        } else {
+                                            Modifier.clickable {
+                                                if (isChecked) selected.remove(g.name) else selected.add(g.name)
+                                            }
+                                        },
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = if (isTv) 12.dp else 8.dp),
                             ) {
                                 Box(
                                     contentAlignment = Alignment.Center,
@@ -775,7 +922,11 @@ private fun TagFilterDialog(
                                 Text(
                                     g.name,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = RenzoColors.Foreground,
+                                    color = if (isTv) {
+                                        tvContentColor(isChecked, rowFocus.focused)
+                                    } else {
+                                        RenzoColors.Foreground
+                                    },
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.padding(start = 8.dp).weight(1f),
@@ -803,13 +954,29 @@ private fun TagFilterDialog(
                         color = RenzoColors.MutedForeground,
                         modifier = Modifier.weight(1f),
                     )
+                    val clearAllFocus = rememberFocusState()
                     Text(
                         "Clear all",
                         style = MaterialTheme.typography.labelMedium,
-                        color = RenzoColors.MutedForeground,
+                        color = if (isTv && clearAllFocus.focused) {
+                            RenzoColors.Primary
+                        } else {
+                            RenzoColors.MutedForeground
+                        },
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .clickable { selected.clear() }
+                            .then(
+                                if (isTv) {
+                                    Modifier
+                                        .focusRing(clearAllFocus.focused, 6.dp)
+                                        .tvClickable(
+                                            onFocused = clearAllFocus::set,
+                                            onClick = { selected.clear() },
+                                        )
+                                } else {
+                                    Modifier.clickable { selected.clear() }
+                                },
+                            )
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                     )
                 }
@@ -832,6 +999,8 @@ private fun CloudLatestDetailsSheet(
     onAddSeries: () -> Unit,
 ) {
     val statusDisplay = getStatusDisplay(item.status)
+    val isTv = LocalIsTv.current
+    val sourceUrl = item.url?.takeIf { it.isNotBlank() }
     val byline = listOfNotNull(
         item.author?.takeIf { it.isNotBlank() }?.let { "by $it" },
         item.artist?.takeIf { it.isNotBlank() && it != item.author }?.let { "art by $it" },
@@ -954,6 +1123,7 @@ private fun CloudLatestDetailsSheet(
                 HorizontalDivider(color = RenzoColors.Border)
 
                 // Source badge section.
+                val sourceFocus = rememberFocusState()
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
@@ -965,10 +1135,15 @@ private fun CloudLatestDetailsSheet(
                             .border(1.dp, RenzoColors.Border, RoundedCornerShape(4.dp))
                             .background(RenzoColors.Secondary)
                             .then(
-                                if (!item.url.isNullOrBlank()) {
-                                    Modifier.clickable { onViewSource(item.url) }
-                                } else {
-                                    Modifier
+                                when {
+                                    sourceUrl == null -> Modifier
+                                    isTv -> Modifier
+                                        .focusRing(sourceFocus.focused, 4.dp)
+                                        .tvClickable(
+                                            onFocused = sourceFocus::set,
+                                            onClick = { onViewSource(sourceUrl) },
+                                        )
+                                    else -> Modifier.clickable { onViewSource(sourceUrl) }
                                 },
                             )
                             .padding(horizontal = 8.dp, vertical = 2.dp),
@@ -1037,12 +1212,14 @@ private fun SheetButton(
     primary: Boolean,
     onClick: () -> Unit,
 ) {
+    val isTv = LocalIsTv.current
+    val focus = rememberFocusState()
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
         modifier = Modifier
             .fillMaxWidth()
-            .height(40.dp)
+            .height(if (isTv) 48.dp else 40.dp)
             .clip(RoundedCornerShape(8.dp))
             .then(
                 if (primary) {
@@ -1051,7 +1228,15 @@ private fun SheetButton(
                     Modifier.border(1.dp, RenzoColors.Border, RoundedCornerShape(8.dp))
                 },
             )
-            .clickable(onClick = onClick),
+            .then(
+                if (isTv) {
+                    Modifier
+                        .focusRing(focus.focused, 8.dp)
+                        .tvClickable(onFocused = focus::set, onClick = onClick)
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                },
+            ),
     ) {
         Icon(
             icon,

@@ -2,7 +2,6 @@ package app.renzoshiori.client.ui.updates
 
 import android.app.Application
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -53,7 +52,8 @@ import app.renzoshiori.client.RenzoApp
 import app.renzoshiori.client.data.model.UpdateFeedItemDto
 import app.renzoshiori.client.data.network.UpdatesApi
 import app.renzoshiori.client.data.network.absoluteUrl
-import app.renzoshiori.client.ui.components.RibbonToggleChip
+import app.renzoshiori.client.ui.home.DpadToggleChip
+import app.renzoshiori.client.ui.home.dpadClickable
 import app.renzoshiori.client.ui.library.LibraryViewModel
 import app.renzoshiori.client.ui.library.formatChapter
 import app.renzoshiori.client.ui.queue.DateBucket
@@ -200,7 +200,9 @@ fun UpdatesScreen(onOpenSeries: (String) -> Unit) {
                     modifier = Modifier.padding(start = 12.dp).weight(1f),
                 )
                 if (libraryState.canOwner) {
-                    RibbonToggleChip(
+                    // The scope is a *selection*: it stays marked while the
+                    // D-pad moves on (see ui/tv/TvFocus.kt).
+                    DpadToggleChip(
                         label = if (viewAllLibraries) "All libraries" else "My library",
                         active = viewAllLibraries,
                         onClick = { viewAllLibraries = !viewAllLibraries },
@@ -214,7 +216,7 @@ fun UpdatesScreen(onOpenSeries: (String) -> Unit) {
                         .height(32.dp)
                         .clip(RoundedCornerShape(50))
                         .background(RenzoColors.Primary.copy(alpha = 0.10f))
-                        .clickable(enabled = !scanning) {
+                        .dpadClickable(radius = 50.dp, enabled = !scanning, fill = null) {
                             scanning = true
                             scope.launch {
                                 runCatching { api?.scanAll() }
@@ -417,7 +419,7 @@ private fun UpdateRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onOpen(item.seriesId) }
+            .dpadClickable(radius = 8.dp) { onOpen(item.seriesId) }
             .padding(start = if (indentStart) 36.dp else 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp)
             .alpha(if (isRead) 0.45f else 1f),
     ) {
@@ -487,7 +489,7 @@ private fun UpdateStack(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { isOpen = !isOpen }
+                .dpadClickable(radius = 8.dp) { isOpen = !isOpen }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             FeedCover(group.thumbnailUrl, baseUrl, group.seriesTitle)
