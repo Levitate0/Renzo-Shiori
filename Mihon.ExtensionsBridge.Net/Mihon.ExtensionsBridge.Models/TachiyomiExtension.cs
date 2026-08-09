@@ -22,4 +22,17 @@ public record TachiyomiExtension
     public int Nsfw { get; set; }
     [JsonPropertyName("sources")]
     public List<TachiyomiSource> Sources { get; set; } = [];
+
+    /// <summary>
+    /// Absolute APK URL, when the index supplies one (v2 does; v1 did not).
+    /// v2 repos serve artifacts from a CDN that is NOT the repo host, so the
+    /// old "{repo}/apk/{filename}" convention does not hold and this must win
+    /// where present. Null for v1 repos, which keep the composed URL.
+    /// </summary>
+    [JsonPropertyName("apkUrl")]
+    public string? ApkUrl { get; set; }
+
+    /// <summary>Absolute icon URL from a v2 index; null for v1.</summary>
+    [JsonPropertyName("iconUrl")]
+    public string? IconUrl { get; set; }
 }

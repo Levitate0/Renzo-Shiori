@@ -107,21 +107,47 @@ namespace Mihon.ExtensionsBridge.Core.Services
                 throw new InvalidOperationException("RepositoryManager is not initialized. Call InitializeAsync() before using this method.");
             if (repository == null)
                 throw new ArgumentNullException(nameof(repository));
-            repository.Url = MiscExtensions.RepoFromUrl(repository.Url);
-            repository.Id = HashingExtensions.SHA256FromUrl(repository.Url);
+            // The URL is stored EXACTLY as entered — pointing a repo at ".../index.pb"
+            // is meaningful (it selects the v2 index) and silently rewriting it to the
+            // bare root made the setting look like it never saved. Sub-paths are
+            // composed from the stripped base at the point of use instead.
+            //
+            // The identity hash still uses the stripped base, so the same repo entered
+            // with or without an index filename resolves to one entry rather than two.
+            repository.Id = HashingExtensions.SHA256FromUrl(MiscExtensions.RepoFromUrl(repository.Url));
+            TachiyomiRepository? needsSave = null;
             await _onlineReposLock.WaitAsync(token).ConfigureAwait(false);
             try
             {
-                TachiyomiRepository? existingRepo = OnlineRepositories.FirstOrDefault(r => r.Url.Equals(repository.Url, StringComparison.OrdinalIgnoreCase));
+                // Match on identity, not the literal string: the same repo added once as
+                // ".../repo" and once as ".../repo/index.pb" is one repo.
+                TachiyomiRepository? existingRepo = OnlineRepositories.FirstOrDefault(r =>
+                    r.Url.Equals(repository.Url, StringComparison.OrdinalIgnoreCase) ||
+                    MiscExtensions.RepoFromUrl(r.Url).Equals(MiscExtensions.RepoFromUrl(repository.Url), StringComparison.OrdinalIgnoreCase));
                 if (existingRepo!=null)
                 {
-                    _logger.LogInformation("Repository with URL {Url} already exists in online repositories.", repository.Url);
+                    // Re-adding the same repo under a different spelling is how a user
+                    // re-points it at an explicit index (".../repo" -> ".../repo/index.pb").
+                    // Returning the old URL unchanged is what made that edit appear to
+                    // revert the moment it was saved, so adopt the new one.
+                    if (!existingRepo.Url.Equals(repository.Url, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogInformation("Repository {OldUrl} re-pointed at {NewUrl}.", existingRepo.Url, repository.Url);
+                        existingRepo.Url = repository.Url;
+                        needsSave = existingRepo;
+                    }
+                    else
+                    {
+                        _logger.LogInformation("Repository with URL {Url} already exists in online repositories.", repository.Url);
+                    }
                     return existingRepo;
                 }
             }
             finally
             {
                 _onlineReposLock.Release();
+                if (needsSave != null)
+                    await _workingStructure.SaveOnlineRepositoryAsync(needsSave, token).ConfigureAwait(false);
             }
 
             try

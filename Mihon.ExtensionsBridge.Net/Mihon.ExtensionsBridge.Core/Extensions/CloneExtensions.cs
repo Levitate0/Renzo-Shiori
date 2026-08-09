@@ -64,7 +64,8 @@ namespace Mihon.ExtensionsBridge.Core.Extensions
                 DownloadUrl = entry.DownloadUrl,
                 DownloadUTC = entry.DownloadUTC,
                 Apk = entry.Apk.Clone(),
-                Jar = entry.Jar.Clone(),
+                // Null for anything installed under the sidecar, which produces no JAR.
+                Jar = entry.Jar?.Clone()!,
                 //Dll = entry.Dll.Clone(),
                 Icon = entry.Icon.Clone(),
                 ClassName = entry.ClassName,

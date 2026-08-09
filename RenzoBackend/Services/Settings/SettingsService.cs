@@ -9,6 +9,7 @@ using RenzoBackend.Services.Jobs.Models;
 using RenzoBackend.Services.Jobs.Settings;
 using RenzoBackend.Services.Providers;
 using Microsoft.EntityFrameworkCore;
+using Mihon.ExtensionsBridge.Core.Extensions;
 using Mihon.ExtensionsBridge.Models;
 using Mihon.ExtensionsBridge.Models.Abstractions;
 using System.ComponentModel;
@@ -290,13 +291,18 @@ namespace RenzoBackend.Services.Settings
                 // without this a removed repo stayed registered in the bridge (which is
                 // what the source/extension listing reads) and the change appeared not
                 // to persist.
-                var desired = new HashSet<string>(set.MihonRepositories, StringComparer.OrdinalIgnoreCase);
+                // Compared on the stripped base, so re-pointing a repo at an explicit
+                // index (".../repo" -> ".../repo/index.pb") reads as an edit rather than
+                // "the old one is gone, delete it".
+                var desired = new HashSet<string>(
+                    set.MihonRepositories.Select(MiscExtensions.RepoFromUrl),
+                    StringComparer.OrdinalIgnoreCase);
                 // Guard: never mass-remove every repo from an unexpectedly-empty list
                 // (a malformed save). Removing the last repo intentionally still works
                 // by leaving at least the replacement in the submitted list.
                 foreach (var stale in desired.Count > 0 ? onlineRepos : new List<TachiyomiRepository>())
                 {
-                    if (desired.Contains(stale.Url))
+                    if (desired.Contains(MiscExtensions.RepoFromUrl(stale.Url)))
                         continue;
                     try
                     {

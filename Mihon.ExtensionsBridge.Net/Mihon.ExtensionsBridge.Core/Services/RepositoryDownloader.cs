@@ -60,9 +60,27 @@ namespace Mihon.ExtensionsBridge.Core.Services
         }
 
 
-        private static string[] index = ["index.min.json", "index.json"];
+        // index.json (the v2 index in JSON form) is tried FIRST and index.min.json
+        // last, which is the reverse of the obvious order. Keiyoushi turned
+        // index.min.json into a two-entry "your client is outdated" tombstone, so a
+        // downloader that prefers it fetches 200 OK, parses cleanly, and installs a
+        // catalogue of two — a silent downgrade from ~1370 extensions. Preferring the
+        // fuller index means v2 repos work and genuine v1 repos (which have no
+        // index.json quirk) still resolve.
+        private static string[] index = ["index.json", "index.min.json"];
 
         private static string[] repos = ["repo.json"];
+
+        /// <summary>
+        /// Index filenames a user may paste as the repository URL. The URL is kept
+        /// exactly as entered — see <see cref="MiscExtensions.RepoFromUrl"/> — so
+        /// sub-paths are composed from the stripped base while the stored URL stays
+        /// whatever the user typed.
+        /// </summary>
+        private static readonly string[] IndexFileNames = ["index.pb", "index.min.json", "index.json"];
+
+        private static bool PointsAtIndexFile(string url) =>
+            IndexFileNames.Any(f => url.TrimEnd('/').EndsWith(f, StringComparison.InvariantCultureIgnoreCase));
 
         /// <summary>
         /// Downloads, deserializes, and persists Tachiyomi extensions for the provided repository.
@@ -96,9 +114,15 @@ namespace Mihon.ExtensionsBridge.Core.Services
             {
                 var client = CreateHttpClient();
 
+                // The stored URL is left exactly as the user entered it (it may point
+                // straight at an index file); everything below it is composed from the
+                // stripped base instead, so "…/repo/index.pb" does not turn into
+                // "…/repo/index.pb/repo.json".
+                var baseUrl = MiscExtensions.RepoFromUrl(repository.Url);
+
                 foreach (var fileName in repos)
                 {
-                    var candidateUrl = repository.Url.CombineUrl(fileName);
+                    var candidateUrl = baseUrl.CombineUrl(fileName);
                     using var request = new HttpRequestMessage(HttpMethod.Get, candidateUrl);
                     var tempResponse = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
@@ -125,12 +149,32 @@ namespace Mihon.ExtensionsBridge.Core.Services
                         repository.Name = reposMeta.meta.name;
                         repository.Fingerprint = reposMeta.meta.signingKeyFingerprint;
                     }
+                    response.Dispose();
+                    response = null;
                 }
 
-                // Try index candidates first
-                foreach (var fileName in index)
+                // Honour a URL that points straight at an index file, then fall back to
+                // the usual candidates. index.pb is the canonical v2 index but it is
+                // protobuf; the same data is published as index.json, so that is what
+                // gets fetched — the URL the user entered is still what we store.
+                var candidates = new List<string>();
+                if (PointsAtIndexFile(repository.Url))
                 {
-                    var candidateUrl = repository.Url.CombineUrl(fileName);
+                    if (repository.Url.TrimEnd('/').EndsWith("index.pb", StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        _logger.LogInformation(
+                            "{RepositoryUrl} is a protobuf index; reading the JSON twin at {JsonUrl} (same data, no .proto needed).",
+                            repository.Url, baseUrl.CombineUrl("index.json"));
+                    }
+                    else
+                    {
+                        candidates.Add(repository.Url);
+                    }
+                }
+                candidates.AddRange(index.Select(f => baseUrl.CombineUrl(f)));
+
+                foreach (var candidateUrl in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
                     using var request = new HttpRequestMessage(HttpMethod.Get, candidateUrl);
                     var tempResponse = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
@@ -155,12 +199,32 @@ namespace Mihon.ExtensionsBridge.Core.Services
                 _logger.LogInformation("Resolved repository index at: {ResolvedUrl}", usedUrl);
 
                 await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                var extensions = await JsonSerializer.DeserializeAsync<List<TachiyomiExtension>>(stream, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                }, cancellationToken).ConfigureAwait(false);
+                var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                repository.Extensions = extensions ?? new List<TachiyomiExtension>();
+                // v1 is a bare array of extensions; v2 is an object wrapping
+                // extensionList.extensions. Both are still served, so branch on the
+                // shape rather than on the filename we happened to resolve.
+                List<TachiyomiExtension> extensions;
+                if (document.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    extensions = document.RootElement.Deserialize<List<TachiyomiExtension>>(jsonOptions)
+                        ?? new List<TachiyomiExtension>();
+                    WarnIfTombstoneIndex(extensions, usedUrl);
+                }
+                else
+                {
+                    var v2 = document.RootElement.Deserialize<RepositoryIndexV2>(jsonOptions);
+                    extensions = MapV2Extensions(v2);
+                    if (!string.IsNullOrWhiteSpace(v2?.Name))
+                        repository.Name = v2!.Name!;
+                    if (!string.IsNullOrWhiteSpace(v2?.SigningKey))
+                        repository.Fingerprint = v2!.SigningKey!;
+                    if (!string.IsNullOrWhiteSpace(v2?.Contact?.Website))
+                        repository.WebSite = v2!.Contact!.Website!;
+                }
+
+                repository.Extensions = extensions;
                 repository.LastUpdatedUTC = DateTimeOffset.UtcNow;
 
                 _logger.LogInformation("Downloaded {ExtensionCount} extensions from {ResolvedUrl}. Saving to working folder...", repository.Extensions.Count, usedUrl);
@@ -186,6 +250,102 @@ namespace Mihon.ExtensionsBridge.Core.Services
         }
 
         /// <summary>
+        /// Flattens a v2 index into the v1-shaped <see cref="TachiyomiExtension"/> the
+        /// rest of the bridge already understands, so nothing downstream has to know
+        /// which index version a repo served.
+        /// </summary>
+        private static List<TachiyomiExtension> MapV2Extensions(RepositoryIndexV2? index)
+        {
+            var source = index?.ExtensionList?.Extensions;
+            if (source == null || source.Count == 0)
+                return new List<TachiyomiExtension>();
+
+            var mapped = new List<TachiyomiExtension>(source.Count);
+            foreach (var entry in source)
+            {
+                if (string.IsNullOrWhiteSpace(entry.PackageName))
+                    continue;
+
+                string apkUrl = entry.Resources?.ApkUrl ?? string.Empty;
+
+                // v1 carried a bare filename and composed the URL; v2 carries the URL.
+                // Keep the filename too — it is what the APK is saved as on disk.
+                string apkFile = string.Empty;
+                if (!string.IsNullOrWhiteSpace(apkUrl))
+                {
+                    var lastSegment = apkUrl.Split('?')[0].TrimEnd('/');
+                    int slash = lastSegment.LastIndexOf('/');
+                    apkFile = slash >= 0 ? lastSegment[(slash + 1)..] : lastSegment;
+                }
+
+                // v1 put a single language on the extension; v2 only has per-source
+                // languages. Collapse to the shared one, or "all" when they differ —
+                // which is the same convention the v1 indexes used.
+                var languages = entry.Sources
+                    .Select(s => s.Language)
+                    .Where(l => !string.IsNullOrWhiteSpace(l))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                string language = languages.Count == 1 ? languages[0]! : "all";
+
+                // "extensionLib" is major.minor and versionCode the patch, which is how
+                // versionName is built; parse the patch for the numeric VersionCode the
+                // update check compares on, and fall back to the trailing component of
+                // versionName if the field is missing.
+                if (!int.TryParse(entry.VersionCode, out int versionCode))
+                {
+                    var tail = entry.VersionName?.Split('.').LastOrDefault();
+                    int.TryParse(tail, out versionCode);
+                }
+
+                mapped.Add(new TachiyomiExtension
+                {
+                    Name = entry.Name ?? entry.PackageName!,
+                    Package = entry.PackageName!,
+                    Apk = apkFile,
+                    ApkUrl = string.IsNullOrWhiteSpace(apkUrl) ? null : apkUrl,
+                    IconUrl = string.IsNullOrWhiteSpace(entry.Resources?.IconUrl) ? null : entry.Resources!.IconUrl,
+                    Language = language,
+                    VersionCode = versionCode,
+                    Version = entry.VersionName ?? string.Empty,
+                    Nsfw = string.Equals(entry.ContentWarning, "CONTENT_WARNING_NSFW", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
+                    Sources = entry.Sources.Select(s => new TachiyomiSource
+                    {
+                        Id = s.Id ?? string.Empty,
+                        Name = s.Name ?? entry.Name ?? string.Empty,
+                        Language = s.Language ?? language,
+                        BaseUrl = s.HomeUrl ?? string.Empty,
+                    }).ToList(),
+                });
+            }
+
+            return mapped;
+        }
+
+        /// <summary>
+        /// A v1 index that contains nothing but the upgrade-nag placeholders is a
+        /// deprecation notice, not a catalogue. Installing it would replace every
+        /// extension with two stubs, so say so loudly rather than reporting success.
+        /// </summary>
+        private void WarnIfTombstoneIndex(List<TachiyomiExtension> extensions, string? usedUrl)
+        {
+            if (extensions.Count == 0 || extensions.Count > 2)
+                return;
+
+            bool allPlaceholders = extensions.All(e =>
+                e.Package?.EndsWith(".keiyoushi", StringComparison.OrdinalIgnoreCase) == true ||
+                e.Package?.EndsWith(".mihon", StringComparison.OrdinalIgnoreCase) == true);
+
+            if (allPlaceholders)
+            {
+                _logger.LogWarning(
+                    "{ResolvedUrl} returned only upgrade-notice placeholders ({Count}). This repo has moved to the v2 index; " +
+                    "point it at the repo root or index.pb so index.json is used instead.",
+                    usedUrl, extensions.Count);
+            }
+        }
+
+        /// <summary>
         /// Downloads the APK and icon for a specific extension into the working folder structure.
         /// </summary>
         /// <param name="repository">The repository that hosts the extension artifacts.</param>
@@ -203,8 +363,12 @@ namespace Mihon.ExtensionsBridge.Core.Services
             if (string.IsNullOrWhiteSpace(workUnit.Entry.Extension.Version)) throw new ArgumentException("Extension Version cannot be null or whitespace.", nameof(workUnit));
             if (string.IsNullOrWhiteSpace(workUnit.Entry.Extension.Package)) throw new ArgumentException("Extension Package cannot be null or whitespace.", nameof(workUnit));
 
-            var apkUrl = repository.Url.CombineUrl("apk", workUnit.Entry.Extension.Apk);
-           
+            // GetApkUrl uses the absolute URL a v2 index supplies (often a CDN host)
+            // and otherwise composes "{base}/apk/{file}" from the STRIPPED base — the
+            // stored URL may point straight at an index file, and concatenating onto
+            // that produced "…/index.pb/apk/….apk".
+            var apkUrl = workUnit.Entry.Extension.GetApkUrl(repository);
+
             var apkDestination = Path.Combine(workUnit.WorkingFolder.Path, workUnit.Entry.Extension.Apk);
             var client = CreateHttpClient();
             try

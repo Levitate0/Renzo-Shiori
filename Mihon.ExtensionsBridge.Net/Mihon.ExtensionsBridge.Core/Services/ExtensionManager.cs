@@ -710,8 +710,13 @@ namespace Mihon.ExtensionsBridge.Core.Services
             string expectedFolder = _workingStructure.GetExtensionVersionFolder(workUnit.Entry);
             string srcApkFile = Path.Combine(workUnit.WorkingFolder.Path, workUnit.Entry.Apk.FileName);
             string destApkFile = Path.Combine(expectedFolder, workUnit.Entry.Apk.FileName);
-            string srcJarFile = Path.Combine(workUnit.WorkingFolder.Path, workUnit.Entry.Jar.FileName);
-            string destJarFile = Path.Combine(expectedFolder, workUnit.Entry.Jar.FileName);
+            // Entry.Jar is only produced by the in-process DEX->JAR step, which CompileAsync
+            // skips entirely while the sidecar is the engine (it converts the APK itself).
+            // So on every sidecar install this is null, and dereferencing it threw an NRE
+            // that failed the install after the APK had already downloaded.
+            bool hasJar = workUnit.Entry.Jar != null;
+            string? srcJarFile = hasJar ? Path.Combine(workUnit.WorkingFolder.Path, workUnit.Entry.Jar.FileName) : null;
+            string? destJarFile = hasJar ? Path.Combine(expectedFolder, workUnit.Entry.Jar.FileName) : null;
             //string srcDllFile = Path.Combine(workUnit.WorkingFolder.Path, workUnit.Entry.Dll.FileName);
             //string destDllFile = Path.Combine(expectedFolder, workUnit.Entry.Dll.FileName);
             //string srcpdbFile = Path.ChangeExtension(Path.Combine(workUnit.WorkingFolder.Path, workUnit.Entry.Dll.FileName), "pdb");
@@ -722,9 +727,12 @@ namespace Mihon.ExtensionsBridge.Core.Services
             await MoveFileSafeAsync(srcApkFile, destApkFile,
                 $"Failed to move APK file for extension {workUnit.Entry.Extension.Name} version {workUnit.Entry.Extension.Version} after multiple attempts. (File Copied)",
                 5, token).ConfigureAwait(false);
-            await MoveFileSafeAsync(srcJarFile, destJarFile,
-                $"Failed to move JAR file for extension {workUnit.Entry.Extension.Name} version {workUnit.Entry.Extension.Version} after multiple attempts. (File Copied)",
-                5, token).ConfigureAwait(false);
+            if (hasJar)
+            {
+                await MoveFileSafeAsync(srcJarFile!, destJarFile!,
+                    $"Failed to move JAR file for extension {workUnit.Entry.Extension.Name} version {workUnit.Entry.Extension.Version} after multiple attempts. (File Copied)",
+                    5, token).ConfigureAwait(false);
+            }
             await MoveFileSafeAsync(srcIconFile, destIconFile,
                 $"Failed to move Icon file for extension {workUnit.Entry.Extension.Name} version {workUnit.Entry.Extension.Version} after multiple attempts. (File Copied)",
                 5, token).ConfigureAwait(false);
@@ -996,8 +1004,10 @@ namespace Mihon.ExtensionsBridge.Core.Services
                             {
                                 string expectedFolder = _workingStructure.GetExtensionVersionFolder(entry);
 
+                                // A sidecar-installed entry has no JAR, so require one only
+                                // when the entry claims to have it.
                                 if (File.Exists(Path.Combine(expectedFolder, entry.Apk.FileName)) &&
-                                    File.Exists(Path.Combine(expectedFolder, entry.Jar.FileName)) &&
+                                    (entry.Jar == null || File.Exists(Path.Combine(expectedFolder, entry.Jar.FileName))) &&
                                     File.Exists(Path.Combine(expectedFolder, entry.Icon.FileName)) /*&&
                                     File.Exists(Path.Combine(expectedFolder, entry.Dll.FileName))*/)
                                 {
@@ -1041,6 +1051,12 @@ namespace Mihon.ExtensionsBridge.Core.Services
 
                 // Determine current stored versions on the artifacts
                 string expectedFolder = _workingStructure.GetExtensionVersionFolder(entry);
+
+                // No JAR means the entry was installed under the sidecar, which converts the
+                // APK itself — there is no in-process artifact whose converter version could
+                // drift, so there is nothing here to re-verify.
+                if (entry.Jar == null)
+                    continue;
 
                 string jarPath = Path.Combine(expectedFolder, entry.Jar.FileName);
                 //string dllPath = Path.Combine(expectedFolder, entry.Dll.FileName);

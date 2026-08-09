@@ -82,10 +82,16 @@ public static class MiscExtensions
 
     public static string GetApkUrl(this TachiyomiExtension ext, TachiyomiRepository repository)
     {
+        // A v2 index names the artifact outright, and usually on a CDN rather than
+        // the repo host — composing "{repo}/apk/{file}" for those 404s.
+        if (!string.IsNullOrWhiteSpace(ext.ApkUrl))
+            return ext.ApkUrl!;
         return $"{RepoFromUrl(repository.Url)}/apk/{ext.Apk}";
     }
     public static string GetIconUrl(this TachiyomiExtension ext, TachiyomiRepository repository)
     {
+        if (!string.IsNullOrWhiteSpace(ext.IconUrl))
+            return ext.IconUrl!;
         string iconName = ext.Package+"."+"png";
         return $"{RepoFromUrl(repository.Url)}/icon/{iconName}";
     }
