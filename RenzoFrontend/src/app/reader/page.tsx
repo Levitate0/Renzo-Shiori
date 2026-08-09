@@ -181,6 +181,42 @@ const APPEND_COOLDOWN_MS = 400;
  * a single crossing.
  */
 const PREFETCH_PAGES = 2;
+
+/**
+ * Cap on a single append/prepend attempt.
+ *
+ * A chapter that isn't downloaded has its page list fetched from the source on
+ * demand, and that call can stall for minutes when the source is slow, rate
+ * -limited or wedged (the server's own source calls only give up at 120s). The
+ * API client has no timeout, so without a cap here the in-flight promise never
+ * settles, the append lock is never released, and "Loading next chapter…" spins
+ * forever — indistinguishable from a hang, and it blocks every later append too.
+ *
+ * On timeout the attempt is abandoned rather than failed: the request is a plain
+ * GET that can finish harmlessly in the background, appending is NOT stopped, and
+ * the next scroll retries against a by-then-warm cache.
+ */
+const APPEND_TIMEOUT_MS = 45_000;
+
+/**
+ * How many consecutive failed attempts before infinite scroll gives up, and how
+ * long to wait between them (multiplied by the failure count). A source that is
+ * briefly rate-limited recovers on its own; one that is genuinely down shouldn't
+ * be hammered on every scroll frame.
+ */
+const APPEND_MAX_FAILURES = 4;
+const APPEND_BACKOFF_MS = 2_000;
+
+type Attempt<T> = { timedOut: true } | { timedOut: false; value: T };
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<Attempt<T>> {
+  return Promise.race([
+    work.then((value) => ({ timedOut: false as const, value })),
+    new Promise<Attempt<T>>((resolve) =>
+      setTimeout(() => resolve({ timedOut: true as const }), ms),
+    ),
+  ]);
+}
 const seriesModeKey = (id: string) => `renzo_reader_mode_${id}`;
 
 function loadSettings(): ReaderSettings {
@@ -247,6 +283,8 @@ function ReaderInner() {
   // Segments owning the pages at the bottom / top of the viewport — see the
   // scroll handler. null until the first measurement.
   const boundarySegRef = useRef<{ bottom: number | null; top: number | null }>({ bottom: null, top: null });
+  // The scroll measurement, exposed so it can be re-run without a scroll event.
+  const measureRef = useRef<() => void>(() => {});
   // Pages left below / above what's on screen, maintained by the scroll
   // handler and used by the append/prepend triggers.
   const pagesRemainingRef = useRef(Number.MAX_SAFE_INTEGER);
@@ -315,13 +353,29 @@ function ReaderInner() {
   const appendLockRef = useRef(false);
   // Set once infinite scroll can't append further (end of series, or the next
   // chapter is locked) so it stops retrying on every scroll frame.
+  //
+  // Reserved for "there is nothing to load". A FAILED load is a different thing
+  // and must not land here: this used to be set by the blanket catch below, so a
+  // single transient source error — which this stack throws routinely — silently
+  // disabled infinite scroll for the rest of the session. The reader then sat on
+  // the chapter-boundary block forever, with no spinner and no message, and no
+  // amount of scrolling could recover it.
   const appendStoppedRef = useRef(false);
   const prependLockRef = useRef(false);
   const prependStoppedRef = useRef(false);
+  // Transient-failure backoff: consecutive failures, and the time before which
+  // no retry is attempted. Cleared on the first success.
+  const appendFailuresRef = useRef(0);
+  const prependFailuresRef = useRef(0);
+  const appendRetryAtRef = useRef(0);
+  const prependRetryAtRef = useRef(0);
   // Drives the visible "Loading next/previous chapter…" boundary indicators so an
   // adjacent chapter is only pulled deliberately (near the boundary) and shown —
   // not eagerly/silently, which was hammering the source.
   const [appending, setAppending] = useState(false);
+  // Shown once appending has given up, so "the next chapter won't load" reads as
+  // a failure with a retry rather than as an spinner that never resolves.
+  const [appendFailed, setAppendFailed] = useState(false);
   const [prepending, setPrepending] = useState(false);
   // scrollHeight captured just before a prepend, so the layout effect can add the
   // inserted height back to scrollTop and keep the viewport visually anchored.
@@ -412,6 +466,11 @@ function ReaderInner() {
       activeSegIndexRef.current = 0;
       appendStoppedRef.current = false;
       prependStoppedRef.current = false;
+      appendFailuresRef.current = 0;
+      prependFailuresRef.current = 0;
+      appendRetryAtRef.current = 0;
+      prependRetryAtRef.current = 0;
+      setAppendFailed(false);
       prependAdjustRef.current = null;
       progressArmedAtRef.current = Date.now() + 1200;
       loadedDimsRef.current.clear();
@@ -894,27 +953,50 @@ function ReaderInner() {
     const bottomSeg = boundarySegRef.current.bottom ?? activeSegIndexRef.current;
     if (bottomSeg < segments.length - 1) return;
     if (Date.now() - lastAppendAtRef.current < APPEND_COOLDOWN_MS) return;
+    if (Date.now() < appendRetryAtRef.current) return;      // backing off after a failure
     const last = segments[segments.length - 1];
     if (!last || !chapterExistsFrom(last, 1)) return;
     appendLockRef.current = true;
     setAppending(true);
+    // Distinguishes "the source failed us" from "there is no next chapter" — only
+    // the latter is allowed to stop infinite scroll.
+    const failed = () => {
+      appendFailuresRef.current += 1;
+      if (appendFailuresRef.current >= APPEND_MAX_FAILURES) {
+        appendStoppedRef.current = true;
+        setAppendFailed(true);
+      } else {
+        appendRetryAtRef.current = Date.now() + APPEND_BACKOFF_MS * appendFailuresRef.current;
+      }
+    };
     (async () => {
       try {
-        let next: Segment | null = null;
+        let attempt: Attempt<Segment | null> = { timedOut: false, value: null };
+        let hasCandidate = false;
         if (isPreview) {
           const pos = previewOrder?.findIndex((c) => c.index === last.previewIndex) ?? -1;
           const nx = pos >= 0 ? previewOrder?.[pos + 1] : undefined;
-          if (nx) next = await buildPreviewSeg(nx.index);
+          if (nx) { hasCandidate = true; attempt = await withTimeout(buildPreviewSeg(nx.index), APPEND_TIMEOUT_MS); }
         } else {
           const idx = readableChapters.findIndex((c) => c.number === last.chapterNumber);
           const nx = idx >= 0 ? readableChapters[idx + 1] : undefined;
-          if (nx?.number != null) next = await buildLibrarySeg(nx.number);
+          if (nx?.number != null) { hasCandidate = true; attempt = await withTimeout(buildLibrarySeg(nx.number), APPEND_TIMEOUT_MS); }
         }
-        if (next && next.pageCount > 0) setAppended((prev) => [...prev, next!]);
-        // Nothing to append (locked/empty next) — stop retrying every frame; the
-        // next chapter is still reachable via the nav buttons.
+        // A timeout is "not yet", not "never" — back off and let a later scroll
+        // retry, rather than killing infinite scroll for the whole session.
+        if (attempt.timedOut) failed();
+        else if (attempt.value && attempt.value.pageCount > 0) {
+          const next = attempt.value;
+          appendFailuresRef.current = 0;
+          appendRetryAtRef.current = 0;
+          setAppendFailed(false);
+          setAppended((prev) => [...prev, next]);
+        }
+        // A candidate chapter that yielded nothing usable is a failed fetch;
+        // no candidate at all is the genuine end of the line.
+        else if (hasCandidate) failed();
         else appendStoppedRef.current = true;
-      } catch { appendStoppedRef.current = true; }
+      } catch { failed(); }
       finally {
         lastAppendAtRef.current = Date.now();
         appendLockRef.current = false;
@@ -942,27 +1024,39 @@ function ReaderInner() {
     const topSeg = boundarySegRef.current.top ?? activeSegIndexRef.current;
     if (topSeg > 0) return;
     if (Date.now() - lastPrependAtRef.current < APPEND_COOLDOWN_MS) return;
+    if (Date.now() < prependRetryAtRef.current) return;
     const first = segments[0];
     if (!first || !chapterExistsFrom(first, -1)) return;
     prependLockRef.current = true;
     setPrepending(true);
+    const failed = () => {
+      prependFailuresRef.current += 1;
+      if (prependFailuresRef.current >= APPEND_MAX_FAILURES) prependStoppedRef.current = true;
+      else prependRetryAtRef.current = Date.now() + APPEND_BACKOFF_MS * prependFailuresRef.current;
+    };
     (async () => {
       try {
-        let prev: Segment | null = null;
+        let attempt: Attempt<Segment | null> = { timedOut: false, value: null };
+        let hasCandidate = false;
         if (isPreview) {
           const pos = previewOrder?.findIndex((c) => c.index === first.previewIndex) ?? -1;
           const px = pos > 0 ? previewOrder?.[pos - 1] : undefined;
-          if (px) prev = await buildPreviewSeg(px.index);
+          if (px) { hasCandidate = true; attempt = await withTimeout(buildPreviewSeg(px.index), APPEND_TIMEOUT_MS); }
         } else {
           const idx = readableChapters.findIndex((c) => c.number === first.chapterNumber);
           const px = idx > 0 ? readableChapters[idx - 1] : undefined;
-          if (px?.number != null) prev = await buildLibrarySeg(px.number);
+          if (px?.number != null) { hasCandidate = true; attempt = await withTimeout(buildLibrarySeg(px.number), APPEND_TIMEOUT_MS); }
         }
-        if (prev && prev.pageCount > 0) {
+        if (attempt.timedOut) failed();
+        else if (attempt.value && attempt.value.pageCount > 0) {
+          const prev = attempt.value;
+          prependFailuresRef.current = 0;
+          prependRetryAtRef.current = 0;
           prependAdjustRef.current = scrollRef.current?.scrollHeight ?? null;
-          setPrepended((p) => [prev!, ...p]);
-        } else prependStoppedRef.current = true;
-      } catch { prependStoppedRef.current = true; }
+          setPrepended((p) => [prev, ...p]);
+        } else if (hasCandidate) failed();
+        else prependStoppedRef.current = true;
+      } catch { failed(); }
       finally {
         lastPrependAtRef.current = Date.now();
         prependLockRef.current = false;
@@ -1098,13 +1192,30 @@ function ReaderInner() {
       // by an insert shifting content under a stationary viewport.
       let lastVisibleGi: number | null = null;
       let firstVisibleGi: number | null = null;
+      // The pages bracketing the viewport when none is actually inside it.
+      let lastAboveGi: number | null = null;
+      let firstBelowGi: number | null = null;
       for (const [gi, node] of entries) {
         const rect = node.getBoundingClientRect();
         if (rect.bottom > box.top && rect.top < box.bottom) {
           if (firstVisibleGi == null) firstVisibleGi = gi;
           lastVisibleGi = gi;
+        } else if (rect.bottom <= box.top) {
+          lastAboveGi = gi;                                  // entirely above
+        } else if (firstBelowGi == null) {
+          firstBelowGi = gi;                                 // entirely below
         }
       }
+      // A grown inter-chapter divider is a full screen tall (min-h-dvh), so the
+      // viewport can come to rest inside one with NO page intersecting it at
+      // all. Treating that as "infinitely far from both ends" froze the reader
+      // exactly there: append and prepend each bail on their first guard, so
+      // the next chapter never arrived and the spinner sat forever — until a
+      // scroll happened to bring a page edge back into view. Anchor to the
+      // pages on either side of the gap instead, which is the same position
+      // measured from its edges rather than from nothing.
+      const bottomAnchorGi = lastVisibleGi ?? lastAboveGi;
+      const topAnchorGi = firstVisibleGi ?? firstBelowGi;
       const segOfGi = (gi: number | null) => {
         if (gi == null) return null;
         let k2 = 0;
@@ -1115,12 +1226,12 @@ function ReaderInner() {
         return k2;
       };
       boundarySegRef.current = {
-        bottom: segOfGi(lastVisibleGi),
-        top: segOfGi(firstVisibleGi),
+        bottom: segOfGi(bottomAnchorGi),
+        top: segOfGi(topAnchorGi),
       };
       pagesRemainingRef.current =
-        lastVisibleGi == null ? Number.MAX_SAFE_INTEGER : totalPages - 1 - lastVisibleGi;
-      pagesBehindRef.current = firstVisibleGi ?? Number.MAX_SAFE_INTEGER;
+        bottomAnchorGi == null ? Number.MAX_SAFE_INTEGER : totalPages - 1 - bottomAnchorGi;
+      pagesBehindRef.current = topAnchorGi ?? Number.MAX_SAFE_INTEGER;
       // Map the global page index back to (segment, page-in-segment).
       let si = 0;
       for (let k = 0; k < segOffsets.length; k++) {
@@ -1160,6 +1271,7 @@ function ReaderInner() {
       frame = requestAnimationFrame(update);
     };
 
+    measureRef.current = update;
     scroller.addEventListener("scroll", onScroll, { passive: true });
     update();
     return () => {
@@ -1167,6 +1279,29 @@ function ReaderInner() {
       if (frame) cancelAnimationFrame(frame);
     };
   }, [isContinuous, totalPages, loading, segOffsets]);
+
+  // The append/prepend checks only run from the scroll measurement, so a reader
+  // that has come to REST on a chapter boundary gets no further chances: an
+  // attempt blocked by the cooldown, or abandoned on timeout, is simply never
+  // retried and the boundary sits there until the user scrolls again. Re-measure
+  // once after each attempt settles. This can't chain-load, because the guard in
+  // maybeAppend still requires the viewport's bottom to be inside the last
+  // loaded chapter before another append is allowed.
+  useEffect(() => {
+    if (!isContinuous || !settings.infiniteScroll || loading) return;
+    if (appending || prepending) return;
+    // Wait out whichever gate is longest — the plain cooldown, or a failure
+    // backoff — so the retry actually lands after the guard has opened rather
+    // than bouncing off it and never being scheduled again.
+    const now = Date.now();
+    const wait = Math.max(
+      APPEND_COOLDOWN_MS + 50,
+      appendRetryAtRef.current - now + 50,
+      prependRetryAtRef.current - now + 50,
+    );
+    const t = setTimeout(() => measureRef.current(), wait);
+    return () => clearTimeout(t);
+  }, [appending, prepending, isContinuous, settings.infiniteScroll, loading, segments.length]);
 
   // Continuous mode: jump to the resume position once the pages are laid out.
   const restoredRef = useRef<string | null>(null);
@@ -1415,6 +1550,27 @@ function ReaderInner() {
               <div className="flex items-center gap-2 rounded-full border border-white/15 bg-black/70 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Loading next chapter…
+              </div>
+            </div>
+          )}
+          {settings.infiniteScroll && !appending && appendFailed && (
+            <div className="fixed bottom-16 left-1/2 z-20 -translate-x-1/2">
+              <div className="flex items-center gap-2 rounded-full border border-red-400/30 bg-black/80 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur">
+                Couldn&apos;t load the next chapter
+                <button
+                  type="button"
+                  className="rounded-full bg-white/10 px-2 py-0.5 font-semibold text-white hover:bg-white/20"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    appendStoppedRef.current = false;
+                    appendFailuresRef.current = 0;
+                    appendRetryAtRef.current = 0;
+                    setAppendFailed(false);
+                    measureRef.current();
+                  }}
+                >
+                  Retry
+                </button>
               </div>
             </div>
           )}
