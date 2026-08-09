@@ -669,6 +669,11 @@ namespace RenzoBackend.Controllers
             {
                 if (series == null || series.Series == null || series.Series.Count == 0)
                 {
+                    // Logged, not silent: to the user this looks exactly like "Add did
+                    // nothing", and without a line here there is no way to tell it apart
+                    // from a request that never arrived.
+                    _logger.LogWarning("Add series rejected: payload had no sources ({State}).",
+                        series == null ? "body did not bind" : "series list empty");
                     return BadRequest("No series provided to add");
                 }
 

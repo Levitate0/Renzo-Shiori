@@ -74,6 +74,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import retrofit2.HttpException
 import app.renzoshiori.client.ui.theme.RenzoColors
 
 private val looseJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -364,12 +365,22 @@ fun AddSeriesSheet(
                                         }
                                     } else {
                                         val payload = augmented?.let { buildSubmitPayload(it, confirmRows) }
+                                        val client = api
                                         if (payload == null) {
                                             error = "Original augmented response not found"
+                                        } else if (client == null) {
+                                            error = "Not connected to a server."
                                         } else {
-                                            runCatching { api?.addSeries(payload) }
+                                            // Deliberately NOT `api?.addSeries(...)`: with the
+                                            // safe call, a null client made runCatching succeed
+                                            // with null, so onAdded() closed the sheet and
+                                            // refreshed the library as though the series had
+                                            // been added. Nothing was sent and nothing failed
+                                            // — the exact shape of a bug that can't be found
+                                            // from either side.
+                                            runCatching { client.addSeries(payload) }
                                                 .onSuccess { onAdded() }
-                                                .onFailure { error = it.message ?: "Failed to add series." }
+                                                .onFailure { error = describeAddFailure(it) }
                                         }
                                     }
                                     pending = false
@@ -1065,6 +1076,44 @@ private fun buildSubmitPayload(original: JsonObject, rows: List<ConfirmRow>): Js
             put("series", JsonArray(updated))
         },
     )
+}
+
+/**
+ * Retrofit's own message for a failed call is just "HTTP 400 Bad Request", which
+ * tells the user nothing and tells us less. The server explains itself in the
+ * response body — a plain string for the hand-written rejections, or a
+ * ValidationProblemDetails naming the field that failed to bind — so show that.
+ */
+private fun describeAddFailure(cause: Throwable): String {
+    if (cause !is HttpException) {
+        return cause.message ?: "Failed to add series."
+    }
+    val body = runCatching { cause.response()?.errorBody()?.string() }.getOrNull().orEmpty().trim()
+    val detail = when {
+        body.isEmpty() -> null
+        // ValidationProblemDetails / ProblemDetails — surface the useful half.
+        body.startsWith("{") -> runCatching {
+            val obj = looseJson.parseToJsonElement(body).jsonObject
+            val errors = obj["errors"]?.jsonObject
+                ?.entries
+                ?.joinToString("; ") { (field, messages) ->
+                    val text = runCatching {
+                        messages.jsonArray.mapNotNull { it.jsonPrimitive.content }.joinToString(" ")
+                    }.getOrNull().orEmpty()
+                    if (field.isBlank()) text else "$field: $text"
+                }
+                ?.takeIf { it.isNotBlank() }
+            errors
+                ?: obj["title"]?.jsonPrimitive?.content
+                ?: obj["error"]?.jsonPrimitive?.content
+        }.getOrNull()
+        else -> body.take(300)
+    }
+    return if (detail.isNullOrBlank()) {
+        "Failed to add series (HTTP ${cause.code()})."
+    } else {
+        "Failed to add series (HTTP ${cause.code()}): $detail"
+    }
 }
 
 /**

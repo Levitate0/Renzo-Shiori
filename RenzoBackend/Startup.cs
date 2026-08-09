@@ -8,6 +8,7 @@ using RenzoBackend.Services.Settings;
 using RenzoBackend.Utils;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.StaticFiles;
@@ -58,6 +59,36 @@ namespace RenzoBackend
             services.AddControllers().AddJsonOptions(options =>
             {
                 options.JsonSerializerOptions.PropertyNamingPolicy = null;
+            })
+            // [ApiController] rejects a request whose body fails model binding BEFORE
+            // the action runs, and the built-in 400 is written without a single log
+            // line. That makes a malformed payload indistinguishable from "the button
+            // did nothing" — the client sees a bare 400, the server records nothing,
+            // and there is no way to tell the two apart after the fact. Log which
+            // field failed and why, then return the standard response unchanged.
+            .ConfigureApiBehaviorOptions(options =>
+            {
+                options.InvalidModelStateResponseFactory = context =>
+                {
+                    ILogger logger = context.HttpContext.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("ModelBinding");
+
+                    string errors = string.Join("; ", context.ModelState
+                        .Where(kv => kv.Value?.Errors.Count > 0)
+                        .Select(kv => $"{(string.IsNullOrEmpty(kv.Key) ? "(body)" : kv.Key)}: " +
+                            string.Join(" | ", kv.Value!.Errors.Select(e =>
+                                string.IsNullOrEmpty(e.ErrorMessage)
+                                    ? e.Exception?.Message ?? "invalid"
+                                    : e.ErrorMessage))));
+
+                    logger.LogWarning("Rejected {Method} {Path} — request body failed validation: {Errors}",
+                        context.HttpContext.Request.Method,
+                        context.HttpContext.Request.Path,
+                        errors);
+
+                    return new BadRequestObjectResult(new ValidationProblemDetails(context.ModelState));
+                };
             });
             services.AddEndpointsApiExplorer();
             services.AddSwaggerGen();
