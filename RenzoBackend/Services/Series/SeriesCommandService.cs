@@ -735,13 +735,78 @@ namespace RenzoBackend.Services.Series
                         .FirstOrDefault(u => !string.IsNullOrEmpty(u) && u!.Contains("chapter", StringComparison.OrdinalIgnoreCase));
                     if (sampleUrl != null)
                     {
-                        var existingNums = serie.Chapters.Where(c => c.Number != null).Select(c => c.Number!.Value).ToList();
-                        List<Models.Chapter> locked = await _lockedSupplement
-                            .FetchLockedChaptersAsync(sampleUrl, existingNums, token).ConfigureAwait(false);
-                        foreach (Models.Chapter lc in locked)
+                        // Platforms that report lock state as data (rather than as a
+                        // marker in the title) can be re-read authoritatively on every
+                        // scan. That matters because these sites publish a chapter paid
+                        // and flip it free once the next one lands: discovering it once
+                        // isn't enough, its state has to be refreshed or it stays
+                        // "locked" forever and is never downloaded.
+                        List<LockedChapterSupplementService.ChapterState> states = await _lockedSupplement
+                            .FetchChapterStatesAsync(sampleUrl, token).ConfigureAwait(false);
+                        if (states.Count > 0)
                         {
-                            serie.Chapters.Add(lc);
-                            chaptersChanged = true;
+                            foreach (LockedChapterSupplementService.ChapterState st in states)
+                            {
+                                Models.Chapter? existing = serie.Chapters.FirstOrDefault(c => c.Number == st.Number);
+                                if (existing == null)
+                                {
+                                    serie.Chapters.Add(new Models.Chapter
+                                    {
+                                        Number = st.Number,
+                                        Name = st.Name,
+                                        Url = st.Url,
+                                        ProviderUploadDate = st.Uploaded,
+                                        DateFetched = DateTime.UtcNow,
+                                        IsLocked = st.IsLocked,
+                                        // A chapter that is already free is a normal new
+                                        // chapter and should download like any other.
+                                        ShouldDownload = !st.IsLocked,
+                                        IsDeleted = false,
+                                    });
+                                    chaptersChanged = true;
+                                }
+                                else
+                                {
+                                    bool changed = false;
+                                    if (existing.IsLocked != st.IsLocked)
+                                    {
+                                        existing.IsLocked = st.IsLocked;
+                                        changed = true;
+                                    }
+                                    // The title captured at discovery keeps whatever lock
+                                    // marker the source used ("🔒 Chapter 35") even after
+                                    // the chapter goes free. That marker is not cosmetic:
+                                    // both the download filter and the UI's lock badge read
+                                    // the NAME, so a stale one keeps a long-since-free
+                                    // chapter looking and behaving as paid forever. Note
+                                    // this is checked independently of IsLocked — the two
+                                    // drift apart precisely in this case.
+                                    if (!st.IsLocked &&
+                                        RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(existing.Name))
+                                    {
+                                        existing.Name = st.Name;
+                                        changed = true;
+                                    }
+                                    if (!st.IsLocked && string.IsNullOrEmpty(existing.Filename) && !existing.ShouldDownload)
+                                    {
+                                        existing.ShouldDownload = true;
+                                        changed = true;
+                                    }
+                                    if (changed)
+                                        chaptersChanged = true;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            var existingNums = serie.Chapters.Where(c => c.Number != null).Select(c => c.Number!.Value).ToList();
+                            List<Models.Chapter> locked = await _lockedSupplement
+                                .FetchLockedChaptersAsync(sampleUrl, existingNums, token).ConfigureAwait(false);
+                            foreach (Models.Chapter lc in locked)
+                            {
+                                serie.Chapters.Add(lc);
+                                chaptersChanged = true;
+                            }
                         }
                     }
                 }

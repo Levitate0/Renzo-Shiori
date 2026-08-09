@@ -307,6 +307,114 @@ public class LockedChapterSupplementService
     private static string OriginOf(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out Uri? u) ? $"{u.Scheme}://{u.Authority}" : "";
 
+    // --- "vapi" platform (e.g. EZmanga) -------------------------------------------
+    //
+    // A separate JSON API host alongside the site ("ezmanga.org" -> "vapi.ezmanga.org")
+    // serving /api/v1/series/{slug}/chapters. Unlike the two platforms above it
+    // reports lock state as DATA rather than as a marker in the chapter title:
+    //
+    //   { "number": 38, "price": 100, "isFree": false, "requiresPurchase": true,
+    //     "becameFreeAt": null, "createdAt": "..." }
+    //
+    // which is what makes proper unlock-tracking possible — these sites release a
+    // chapter paid and flip it free once the next one lands (becameFreeAt), so a
+    // chapter's lock state has to be re-read on every scan, not just at discovery.
+    //
+    // The list is PAGINATED (20/page). Reading only the first page is not merely
+    // incomplete, it silently hides the newest chapters on a long series.
+
+    /// <summary>A chapter as the source currently reports it, lock state included.</summary>
+    public sealed record ChapterState(decimal Number, string Name, string Url, DateTime? Uploaded, bool IsLocked);
+
+    /// <summary>
+    /// Every chapter the source reports for this series, with its CURRENT lock
+    /// state — including ones already known, so a caller can unlock what has since
+    /// become free. Empty when the site isn't on this platform.
+    /// </summary>
+    public async Task<List<ChapterState>> FetchChapterStatesAsync(string sampleChapterUrl, CancellationToken token = default)
+    {
+        var result = new List<ChapterState>();
+        try
+        {
+            if (!Uri.TryCreate(sampleChapterUrl, UriKind.Absolute, out Uri? uri))
+                return result;
+
+            // /series/{slug}/chapter-N  ->  slug
+            string[] parts = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            int si = Array.FindIndex(parts, p => p.Equals("series", StringComparison.OrdinalIgnoreCase));
+            if (si < 0 || si + 1 >= parts.Length)
+                return result;
+            string slug = parts[si + 1];
+
+            string apiBase = $"{uri.Scheme}://vapi.{uri.Host}/api/v1";
+            using HttpClient http = _httpFactory.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(25);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            http.DefaultRequestHeaders.Referrer = new Uri($"{uri.Scheme}://{uri.Host}/");
+
+            for (int page = 1; page <= 50; page++)   // hard stop; a series is never 1000 pages
+            {
+                string url = $"{apiBase}/series/{Uri.EscapeDataString(slug)}/chapters?page={page}";
+                using HttpResponseMessage resp = await http.GetAsync(url, token).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                    break;
+
+                using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(token).ConfigureAwait(false));
+                if (!doc.RootElement.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+                    break;
+
+                foreach (JsonElement row in data.EnumerateArray())
+                {
+                    // Platform fingerprint: this pair of fields is what distinguishes
+                    // the API from any other /chapters endpoint that might answer.
+                    if (!row.TryGetProperty("requiresPurchase", out JsonElement rp) ||
+                        !row.TryGetProperty("isFree", out JsonElement free))
+                        return result;
+                    if (!TryGetDecimal(row, "number", out decimal num))
+                        continue;
+
+                    bool locked = rp.ValueKind == JsonValueKind.True && free.ValueKind != JsonValueKind.True;
+
+                    string chapterSlug = row.TryGetProperty("slug", out JsonElement sl) && sl.ValueKind == JsonValueKind.String
+                        ? sl.GetString()! : $"chapter-{TrimNum(num)}";
+                    string name = row.TryGetProperty("title", out JsonElement t) && t.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(t.GetString())
+                        ? t.GetString()!.Trim() : $"Chapter {TrimNum(num)}";
+
+                    DateTime? uploaded = null;
+                    if (row.TryGetProperty("createdAt", out JsonElement ca) && ca.ValueKind == JsonValueKind.String &&
+                        DateTime.TryParse(ca.GetString(), System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                            out DateTime dt))
+                        uploaded = dt;
+
+                    result.Add(new ChapterState(num, name,
+                        $"{uri.Scheme}://{uri.Host}/series/{slug}/{chapterSlug}", uploaded, locked));
+                }
+
+                // Stop at the last page: "next" is null once there are no more.
+                if (!doc.RootElement.TryGetProperty("next", out JsonElement next) || next.ValueKind == JsonValueKind.Null)
+                    break;
+            }
+
+            if (result.Count > 0)
+                _logger.LogInformation(
+                    "Locked-chapter supplement (vapi): {Total} chapter(s) for {Slug}, {Locked} still paid.",
+                    result.Count, slug, result.Count(c => c.IsLocked));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "vapi chapter-state supplement failed for {Url}", sampleChapterUrl);
+            return [];
+        }
+        return result;
+    }
+
     private static bool TryGetDecimal(JsonElement obj, string name, out decimal value)
     {
         value = 0;

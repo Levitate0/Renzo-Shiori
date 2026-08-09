@@ -187,6 +187,9 @@ namespace RenzoBackend
             // Register AppDbContext with SQLite provider, using the connection string from configuration (now points to runtime/renzo.db)
             services.AddDbContext<AppDbContext>(options => options.UseSqlite(Configuration.GetConnectionString("DefaultConnection")));
             services.AddHostedService<StartupHostedService>();
+            // Keeps coin/paid-site logins from silently lapsing — an expired session
+            // reads as "no new chapters", not as an error.
+            services.AddHostedService<Services.Background.SiteSessionRefreshService>();
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
