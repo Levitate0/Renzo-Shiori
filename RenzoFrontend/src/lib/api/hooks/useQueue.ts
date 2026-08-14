@@ -1,39 +1,13 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { queueService } from '../services/queueService';
 import { getProgressHub } from '../signalr/progressHub';
 import { JobType, ProgressStatus } from '../types';
 import type { ProgressState, DownloadCardInfo } from '../types';
 
-export function useQueue() {
-  return useQuery({
-    queryKey: ['queue'],
-    queryFn: () => queueService.getQueueItems(),
-    refetchInterval: 5000, // Refetch every 5 seconds to show progress updates
-  });
-}
-
-export function useRemoveFromQueue() {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (id: string) => queueService.removeFromQueue(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queue'] });
-    },
-  });
-}
-
-export function useClearQueue() {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: () => queueService.clearQueue(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queue'] });
-    },
-  });
-}
+// useQueue / useRemoveFromQueue / useClearQueue lived here and were backed by a
+// MockQueueService that only ever mutated an empty in-memory array — no HTTP
+// call at all. They are gone rather than reimplemented: the queue page reads its
+// lists from the downloads API and removes entries through
+// useManageErrorDownload, which is the same endpoint Retry already used.
 
 interface DownloadProgress {
   id: string;

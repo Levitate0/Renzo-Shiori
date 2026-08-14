@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, memo, useCallback, useState } from 'react';
-import { useDownloadProgress, useRemoveFromQueue } from '@/lib/api/hooks/useQueue';
+import { useDownloadProgress } from '@/lib/api/hooks/useQueue';
 import {
   useCompletedDownloadsWithCount,
   useWaitingDownloadsWithCount,
@@ -155,7 +155,6 @@ export default function QueuePage() {
   const isLoading = waitingLoading || completedLoading || failedLoading;
 
   // --- Mutations ---
-  const removeFromQueue = useRemoveFromQueue();
   const manageErrorDownload = useManageErrorDownload();
 
   // --- Dialog state ---
@@ -170,9 +169,13 @@ export default function QueuePage() {
     [manageErrorDownload],
   );
 
+  // Remove (history) and Cancel (queued) are the same server operation: drop the
+  // queue row. Both used to go through a mock service that never made a request,
+  // so the X and the bin silently did nothing while Retry — on the real endpoint
+  // right next to them — worked.
   const handleRemove = useCallback(
-    (id: string) => { removeFromQueue.mutate(id); },
-    [removeFromQueue],
+    (id: string) => { manageErrorDownload.mutate({ id, action: ErrorDownloadAction.Delete }); },
+    [manageErrorDownload],
   );
 
   const handleOpen = useCallback((url: string) => {
@@ -180,8 +183,8 @@ export default function QueuePage() {
   }, []);
 
   const handleCancelQueued = useCallback(
-    (id: string) => { removeFromQueue.mutate(id); },
-    [removeFromQueue],
+    (id: string) => { manageErrorDownload.mutate({ id, action: ErrorDownloadAction.Delete }); },
+    [manageErrorDownload],
   );
 
   const callbacks: QueueRowCallbacks = useMemo(

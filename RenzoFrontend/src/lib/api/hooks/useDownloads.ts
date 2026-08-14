@@ -279,10 +279,12 @@ export const useManageErrorDownload = () => {
     mutationFn: ({ id, action }: { id: string; action: ErrorDownloadAction }) =>
       downloadsService.manageErrorDownload(id, action),
     onSuccess: () => {
-      // Invalidate and refetch failed downloads to get updated list
-      queryClient.invalidateQueries({ queryKey: ['downloads', 'failed'] });
-      queryClient.invalidateQueries({ queryKey: ['downloads', 'failed-with-count'] });
-      queryClient.invalidateQueries({ queryKey: ['downloads', 'metrics'] });
+      // Every downloads list, not just the failed ones. Neither action stays
+      // inside that list: Delete removes a row that may be waiting or completed,
+      // and Retry moves a row OUT of failed and into waiting. Invalidating only
+      // 'failed' left the row on screen until the next poll (5s for completed,
+      // 30s for failed), which reads as the button having done nothing.
+      queryClient.invalidateQueries({ queryKey: ['downloads'] });
     },
   });
 };
