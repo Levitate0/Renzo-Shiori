@@ -66,7 +66,102 @@ public static class InviteUrlResolver
         if (request != null && request.Host.HasValue)
             return $"{request.Scheme}://{request.Host}";
 
+        // Nothing configured and no request to learn from: detect this machine's
+        // own LAN address rather than emitting localhost, which is wrong for
+        // every recipient of the link by definition — an invite or OPDS URL is
+        // only useful from another device.
+        string? detected = DetectLanOrigin(request);
+        if (detected != null)
+            return detected;
+
         return Fallback;
+    }
+
+    /// <summary>
+    /// This host's LAN IPv4, as an origin. Any private range counts — 10/8 and
+    /// 172.16/12 are as common on real networks as 192.168/16, so nothing here
+    /// assumes a particular one.
+    ///
+    /// Interfaces are ranked rather than "first wins". A server host routinely
+    /// has many up interfaces — Docker bridges, libvirt's virbr0, LXC, ZeroTier,
+    /// VPN tunnels — and most are reachable by nothing outside the box, so
+    /// picking the wrong one yields a link that silently goes nowhere.
+    ///
+    /// The deciding signal is the DEFAULT ROUTE: the interface carrying a
+    /// gateway is the one that actually talks to the rest of the network. That
+    /// beats matching interface names, which is guesswork that fails on exactly
+    /// the machines this matters for (here, name-matching would have ranked an
+    /// LXC bridge and a ZeroTier link alongside the real LAN, and the only
+    /// 192.168 address present belongs to libvirt).
+    /// </summary>
+    private static string? DetectLanOrigin(HttpRequest? request)
+    {
+        try
+        {
+            int port = request?.Host.Port ?? 9833;
+            string scheme = request?.Scheme ?? Uri.UriSchemeHttp;
+
+            var candidates = new List<(int rank, string ip)>();
+            foreach (System.Net.NetworkInformation.NetworkInterface nic in
+                     System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up)
+                    continue;
+                if (nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                    continue;
+
+                System.Net.NetworkInformation.IPInterfaceProperties props = nic.GetIPProperties();
+
+                // Carries a real gateway => this is the way off the machine.
+                bool routes = props.GatewayAddresses.Any(g =>
+                    g.Address != null &&
+                    g.Address.AddressFamily == AddressFamily.InterNetwork &&
+                    !g.Address.Equals(IPAddress.Any));
+
+                bool virtualish =
+                    nic.Name.StartsWith("docker", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("br-", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("veth", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("virbr", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("lxcbr", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("vmnet", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("vboxnet", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("zt", StringComparison.OrdinalIgnoreCase)      // ZeroTier
+                    || nic.Name.StartsWith("wg", StringComparison.OrdinalIgnoreCase)      // WireGuard
+                    || nic.Name.StartsWith("tun", StringComparison.OrdinalIgnoreCase)
+                    || nic.Name.StartsWith("tap", StringComparison.OrdinalIgnoreCase);
+
+                foreach (System.Net.NetworkInformation.UnicastIPAddressInformation addr in
+                         props.UnicastAddresses)
+                {
+                    if (addr.Address.AddressFamily != AddressFamily.InterNetwork)
+                        continue;
+                    if (IPAddress.IsLoopback(addr.Address))
+                        continue;
+                    if (ClassifyHost(addr.Address.ToString()) != HostKind.PrivateIp)
+                        continue;
+
+                    byte[] b = addr.Address.GetAddressBytes();
+                    bool linkLocal = b[0] == 169 && b[1] == 254;      // no DHCP; last resort
+                    // A virtual interface never wins on the gateway signal: VPN and
+                    // overlay links (ZeroTier, WireGuard) legitimately carry routes
+                    // of their own, and an address only that overlay can reach is
+                    // no better than localhost for someone opening the link.
+                    int rank = linkLocal ? 4
+                             : virtualish ? 3
+                             : routes ? 0                              // owns the default route
+                             : 1;
+                    candidates.Add((rank, addr.Address.ToString()));
+                }
+            }
+
+            (int rank, string ip) best = candidates.OrderBy(c => c.rank).FirstOrDefault();
+            return best.ip == null ? null : $"{scheme}://{best.ip}:{port}";
+        }
+        catch
+        {
+            return null;   // detection is best-effort; the caller still has Fallback
+        }
     }
 
     private enum HostKind { Public, PrivateIp, Localhost }
