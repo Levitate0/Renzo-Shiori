@@ -45,22 +45,57 @@ namespace RenzoBackend.Services.Daily
                     return;
                 }
             }
+            // Weekly, not daily. Each backup is a full VACUUM copy of the whole
+            // database — this one grew 2.1GB -> 4.3GB in three weeks — so a daily
+            // cadence multiplied by the old 31-file retention trended toward ~130GB
+            // of backups for a library that is itself a fraction of that.
+            //
+            // The gate lives here rather than on the job because the daily run also
+            // does queue cleanup, which should keep running every day.
+            var existing = Directory.GetFiles(backupDirectory, "backup-*.db")
+                .Select(f => new FileInfo(f))
+                .OrderByDescending(f => f.LastWriteTimeUtc)
+                .ToList();
+
+            FileInfo? newest = existing.FirstOrDefault();
+            if (newest != null && DateTime.UtcNow - newest.LastWriteTimeUtc < TimeSpan.FromDays(7))
+            {
+                _logger.LogInformation(
+                    "Skipping backup: the most recent one ({Name}) is {Age:F1} day(s) old; backups run weekly.",
+                    newest.Name, (DateTime.UtcNow - newest.LastWriteTimeUtc).TotalDays);
+                return;
+            }
+
             var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
             var backupPath = Path.Combine(backupDirectory, $"backup-{timestamp}.db");
             string sqlCommand = $"VACUUM INTO '{backupPath.Replace("'", "''")}'";
             await _db.Database.ExecuteSqlRawAsync(sqlCommand, token).ConfigureAwait(false);
             _logger.LogInformation("SQLite backup created at {backupPath}", backupPath);
 
-            // Cleanup: keep only the 31 most recent backups
+            // Keep only the newest backup — the previous week's is purged once this
+            // week's exists.
+            //
+            // Deliberately AFTER the VACUUM above has completed: purging first would
+            // leave a window with no backup at all, and if the new one then failed
+            // there would be nothing to fall back on. The write is verified below
+            // before anything is deleted, for the same reason.
             try
             {
+                var written = new FileInfo(backupPath);
+                if (!written.Exists || written.Length == 0)
+                {
+                    _logger.LogWarning(
+                        "Backup at {Path} is missing or empty — keeping older backups rather than purging.", backupPath);
+                    return;
+                }
+
                 var backupFiles = Directory.GetFiles(backupDirectory, "backup-*.db")
-                    .OrderByDescending(f => f)
+                    .OrderByDescending(f => new FileInfo(f).LastWriteTimeUtc)
                     .ToList();
 
-                if (backupFiles.Count > 31)
+                if (backupFiles.Count > 1)
                 {
-                    var toDelete = backupFiles.Skip(31);
+                    var toDelete = backupFiles.Skip(1);
                     foreach (var file in toDelete)
                     {
                         try
