@@ -40,6 +40,13 @@ public sealed class StreamImageCache : IDisposable
         });
     }
 
+    /// <summary>
+    /// Drops one cached image. Used to force a genuine re-pull of a chapter: the
+    /// keys for a chapter are dense (…:0, …:1, …), so the caller sweeps a range
+    /// rather than needing this cache to be enumerable.
+    /// </summary>
+    public void Remove(string key) => _cache.Remove(key);
+
     /// <summary>Drops every cached streamed image, freeing the whole budget immediately.</summary>
     public long Clear()
     {

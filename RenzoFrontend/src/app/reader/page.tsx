@@ -322,6 +322,12 @@ function ReaderInner() {
   // without re-running.
   const autoClearCacheRef = useRef(true);
   const usedStreamRef = useRef(false);
+  // "seriesId:chapter" whose pages were force-refreshed moments ago by the unlock
+  // poll. That poll refreshes and THEN triggers a reload, so without this the
+  // reload would immediately re-pull the same chapter a second time — an extra
+  // source round-trip exactly when the user is waiting on a chapter they just
+  // bought. Consumed (cleared) by the load it applies to.
+  const freshStreamRef = useRef<string | null>(null);
   // Name of the chapter being switched to — drives the "opening…" overlay so a
   // chapter change is never a silent blank screen, and the toast shown once it lands.
   const [openingLabel, setOpeningLabel] = useState<string | null>(null);
@@ -517,8 +523,23 @@ function ReaderInner() {
           if (!target.filename) {
             // Not downloaded yet — stream it live from the source so it can be
             // read right away (e.g. while its download is still in the queue).
+            //
+            // Re-pull it from the source on every open rather than accepting the
+            // server's 30-minute page-list cache. An undownloaded chapter is not a
+            // fixed object: the source adds pages to a chapter posted early, swaps
+            // in a better scan, or fixes a broken upload, and a source that was
+            // failing when it was first opened may be serving properly now. Re-
+            // opening is the user asking for it again, so it should be the live
+            // chapter — a downloaded one is immutable and keeps reading from disk.
+            //
+            // Only the page list is refetched here; the images are still served
+            // from the browser's own cache, so a reopen doesn't re-download pages
+            // that genuinely didn't change.
             setStreaming(true);
-            const sp = await readerService.streamPages(seriesId, chapterNumber);
+            const streamKey = `${seriesId}:${chapterNumber}`;
+            const alreadyFresh = freshStreamRef.current === streamKey;
+            freshStreamRef.current = null;
+            const sp = await readerService.streamPages(seriesId, chapterNumber, !alreadyFresh);
             if (cancelled) return;
             if (sp.locked || sp.pageCount <= 0) {
               // Source withheld the pages — a paid/locked chapter. Show the buy
@@ -590,6 +611,9 @@ function ReaderInner() {
         const sp = await readerService.streamPages(seriesId, chapterNumber, true);
         if (cancelled) return;
         if (!sp.locked && sp.pageCount > 0) {
+          // This call already pulled fresh pages; tell the reload it's about to
+          // trigger not to pull them again.
+          freshStreamRef.current = `${seriesId}:${chapterNumber}`;
           setLoading(true);
           setStreamLocked(false);
           setChapters((prev) => prev && {

@@ -48,6 +48,12 @@ public class ReaderPreviewService
     // one quickly instead of stalling the chapter open.
     private static readonly TimeSpan StreamProbeTimeout = TimeSpan.FromSeconds(15);
 
+    // How many page-image keys a forced refresh sweeps when the previous page list
+    // is gone and there is no count to bound it. Comfortably past the longest real
+    // chapter; see the sweep in GetLibraryPageListAsync for why over-reaching here
+    // is free.
+    private const int StreamImageSweepFloor = 512;
+
     /// <summary>
     /// EnsureLoggedInAsync performs a REAL login POST every call. The locked-chapter
     /// poll retries page fetches repeatedly, and a chapter that stays locked would
@@ -551,7 +557,29 @@ public class ReaderPreviewService
         // Force refresh skips the cached (often empty) page list so a chapter that
         // just got purchased / turned free is actually re-fetched from the source.
         if (forceRefresh)
+        {
+            List<Page>? stale = _cache.Get<List<Page>>(key);
             _cache.Remove(key);
+            // Drop this chapter's cached page IMAGES too, otherwise the refresh is
+            // only half real: the list is re-fetched while the pixels still come
+            // from RAM, keyed by page index. If the new list differs — a source
+            // added pages, or a different source wins — index N now means a
+            // different image and the cache would serve the old one.
+            //
+            // It also un-breaks the source probe below. That probe returns early
+            // when page 0 is already cached, so with images left in place it would
+            // rubber-stamp whichever source is tried first instead of verifying
+            // that source can actually serve images.
+            //
+            // Swept by index rather than enumerated: the keys are dense from 0, and
+            // the floor covers the case where the page list expired (30m absolute)
+            // while images survived on their sliding 20m window, leaving no count
+            // to work from. Removing absent keys is a dictionary miss, so a
+            // generous bound costs nothing.
+            int sweep = Math.Max(stale?.Count ?? 0, StreamImageSweepFloor);
+            for (int i = 0; i < sweep; i++)
+                _imageCache.Remove($"lib:img:{seriesId}:{chapterNumber}:{i}");
+        }
         else
         {
             List<Page>? cached = _cache.Get<List<Page>>(key);
