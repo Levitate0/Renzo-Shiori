@@ -24,6 +24,25 @@ public class RefreshSessionEntity
     /// <summary>Hash of the raw refresh token — never store the token itself.</summary>
     public string TokenHash { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Hash of the token this session's current one replaced, still accepted
+    /// until <see cref="PreviousTokenValidUntil"/>.
+    ///
+    /// Rotation assumes the client receives the replacement, and on mobile it
+    /// often does not: a phone handing off between towers, or waking up on a
+    /// network that is still associating, loses the response to a refresh the
+    /// server has already committed. The device is then holding a token the
+    /// server discarded, through no fault of its own, and its next refresh is a
+    /// hard sign-out.
+    ///
+    /// Persisted rather than held in memory because the retry is not prompt —
+    /// the device may not come back until the user next opens the app, hours
+    /// later, and a server restart in between must not cost them the session.
+    /// </summary>
+    public string? PreviousTokenHash { get; set; }
+
+    public DateTime? PreviousTokenValidUntil { get; set; }
+
     public DateTime ExpiresAt { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

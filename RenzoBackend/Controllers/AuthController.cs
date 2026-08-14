@@ -205,7 +205,15 @@ public class AuthController : ControllerBase
     {
         string? rawRefreshToken = Request.Cookies["refresh_token"];
         if (string.IsNullOrWhiteSpace(rawRefreshToken))
+        {
+            // Logged so an unexpected sign-out can be told apart afterwards: no
+            // cookie at all means the CLIENT lost it (a wiped keystore, a cookie
+            // jar that didn't persist), which no server-side grace can rescue.
+            // A cookie the server rejects is the opposite problem and logs below.
+            _logger.LogInformation(
+                "Refresh rejected from {Ip}: the request carried no refresh cookie.", ClientIp());
             return Unauthorized(new { error = "No refresh token" });
+        }
 
         // Rotation happens in place on the device's own session row, so the
         // device keeps its identity (name, paired-at) and other devices are
@@ -213,6 +221,12 @@ public class AuthController : ControllerBase
         var rotated = await _refreshSessions.RotateAsync(rawRefreshToken, token).ConfigureAwait(false);
         if (rotated == null)
         {
+            // Reached only after the replaced-token grace has also failed, so
+            // this is a genuine sign-out: an unknown, revoked, or long-expired
+            // token. Worth a line — it is the moment a device loses its session.
+            _logger.LogWarning(
+                "Refresh rejected from {Ip}: the token is unknown, revoked, or past the replaced-token grace. Signing this device out.",
+                ClientIp());
             Response.Cookies.Delete("refresh_token");
             return Unauthorized(new { error = "Invalid or expired refresh token" });
         }
