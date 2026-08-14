@@ -68,6 +68,11 @@ function SeriesPageContent() {
   
   // Provider switch state management
   const [providerSwitches, setProviderSwitches] = useState<Record<string, { useTitle: boolean; useCover: boolean; useStorage: boolean; useStatus: boolean }>>({});
+  // Id of the series whose providers have been seeded into the local switch
+  // state. A ref, not derived from the state itself: "the state is empty" is
+  // indistinguishable from "this series has no sources", and conflating the two
+  // is what looped the seeding effect forever.
+  const seededSeriesRef = useRef<string | null>(null);
 
   // Provider priority order — a local buffer of provider IDs, highest priority
   // first. Reordering (click, drag, or Revert to Default) only ever edits this
@@ -693,11 +698,19 @@ function SeriesPageContent() {
     }
     
     if (series && series.providers) {
-      // Only initialize if local state is empty (first load or series change)
-      const hasLocalState = Object.keys(providerSwitches).length > 0;
-      const seriesIdChanged = series.id !== searchParams.get('id');
-      
-      if (!hasLocalState || seriesIdChanged) {
+      // Seed once per series, tracked by id.
+      //
+      // This used to ask "is the local state still empty?" and treat that as
+      // "not seeded yet". For a series with NO sources the seeded state IS
+      // empty, so the answer stayed "not seeded" forever — and because each pass
+      // wrote fresh object/array identities into state that the effect depends
+      // on, it re-ran immediately and looped without end. That is React error
+      // #185 (maximum update depth), which takes the whole page down as a
+      // client-side exception, and it could only ever happen to a sourceless
+      // series: one with providers seeds a non-empty map and settles on the
+      // second pass.
+      if (seededSeriesRef.current !== series.id) {
+        seededSeriesRef.current = series.id;
         const initialSwitches: Record<string, { useTitle: boolean; useCover: boolean; useStorage: boolean; useStatus: boolean }> = {};
         const initialDisabledStates: Record<string, boolean> = {};
         const initialFromChapters: Record<string, string> = {};
@@ -726,7 +739,9 @@ function SeriesPageContent() {
         );
       }
     }
-  }, [series, providerSwitches, searchParams, isDeleting]);
+    // providerSwitches is deliberately NOT a dependency: this effect writes it,
+    // and reading it back here is what made the write re-trigger the effect.
+  }, [series, isDeleting]);
   // Compute derived values (only when series is available)
   const activeProviderForTitle = series?.providers.find(p =>
     !providerDeletedStates[p.id] && providerSwitches[p.id]?.useTitle
