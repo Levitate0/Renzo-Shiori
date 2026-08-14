@@ -677,7 +677,13 @@ namespace RenzoBackend.Controllers
                     return BadRequest("No series provided to add");
                 }
 
+                bool askedToMerge = series.ExistingSeriesId.HasValue;
                 var seriesId = await _commandService.AddSeriesAsync(series, CurrentUserId, token).ConfigureAwait(false);
+                // True when the server matched this add onto a series that already
+                // existed WITHOUT being asked to. Additive in the response, so
+                // clients that ignore it are unaffected, but one that shows it can
+                // tell the user their add edited something else.
+                bool mergedUnasked = !askedToMerge && series.ExistingSeries && series.ExistingSeriesId.HasValue;
 
                 // Import Series Wizard: sync ExternalMappings from renzo.json into SeriesMappings
                 // with the logged-in user's level for role-based overwrite protection
@@ -688,7 +694,7 @@ namespace RenzoBackend.Controllers
                         seriesId, series.LocalInfo, user.Id, user.Level, token).ConfigureAwait(false);
                 }
 
-                return Ok(new { id = seriesId });
+                return Ok(new { id = seriesId, merged = mergedUnasked });
             }
             catch (UnauthorizedAccessException ex)
             {

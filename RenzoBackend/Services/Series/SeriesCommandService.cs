@@ -122,7 +122,24 @@ namespace RenzoBackend.Services.Series
                     dbSeries = await FindExistingSeriesAsync(ProviderSeriesDetails, settings, paths, ownerId, ownerUsername, token);
                     isNewSeries = dbSeries == null;
                     if (dbSeries != null)
+                    {
                         existingThumb = dbSeries.ThumbnailUrl;
+                        // The caller asked to ADD and is instead about to have an
+                        // existing record rewritten. That is the step that turns a
+                        // bad title match into data loss — foreign sources written
+                        // onto a real series, with nothing created and no error —
+                        // so it is never allowed to pass silently.
+                        _logger.LogWarning(
+                            "Add series resolved to an EXISTING series '{Existing}' ({Id}); its sources will be updated rather than a new series created. Incoming: {Incoming}.",
+                            dbSeries.Title, dbSeries.Id,
+                            string.Join(", ", ProviderSeriesDetails.Series.Select(s => s.Title).Distinct()));
+                        // Report the outcome back through the fields that already
+                        // carry this meaning, so the caller can tell the user their
+                        // "add" was actually a merge instead of finding out from
+                        // the database later.
+                        ProviderSeriesDetails.ExistingSeries = true;
+                        ProviderSeriesDetails.ExistingSeriesId = dbSeries.Id;
+                    }
                 }
 
                 if (dbSeries != null)
@@ -1546,7 +1563,42 @@ namespace RenzoBackend.Services.Series
             ProviderSeriesDetails.StorageFolderPath = settings.StorageFolder.GetActualDirectoryPathCaseInsensitive(
                 ProviderSeriesDetails.StorageFolderPath);
 
-            if (paths.TryGetValue(ProviderSeriesDetails.StorageFolderPath, out Guid id))
+            // A path that collapses to the owner's root folder is not an identity.
+            // When the incoming StorageFolderPath is empty, the prepend above turns
+            // it into bare "{ownerUsername}" — which matches ANY series stored at
+            // the root, making the lookup below a catch-all that hands back an
+            // unrelated series. That is not hypothetical: a series registered at
+            // the root swallowed every subsequent add, and the add then rewrote its
+            // title and appended the incoming sources, consuming the record.
+            //
+            // Give it a real folder derived from the title instead, and never match
+            // on a root-equivalent path.
+            string ownerRoot = ownerUsername ?? string.Empty;
+            bool pathIsRoot =
+                string.IsNullOrWhiteSpace(ProviderSeriesDetails.StorageFolderPath) ||
+                ProviderSeriesDetails.StorageFolderPath.Trim('/', '\\')
+                    .Equals(ownerRoot, StringComparison.OrdinalIgnoreCase);
+
+            if (pathIsRoot)
+            {
+                string? folder = ProviderSeriesDetails.Series
+                    .Where(s => s.UseTitle || s.IsStorage)
+                    .Select(s => s.Title)
+                    .Concat(ProviderSeriesDetails.Series.Select(s => s.Title))
+                    .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t))
+                    ?.SanitizeDirectory();
+
+                if (!string.IsNullOrWhiteSpace(folder))
+                {
+                    ProviderSeriesDetails.StorageFolderPath = string.IsNullOrEmpty(ownerRoot)
+                        ? folder!
+                        : $"{ownerRoot}/{folder}";
+                    _logger.LogWarning(
+                        "Add series arrived with no storage folder; using '{Path}' derived from the title instead of the library root.",
+                        ProviderSeriesDetails.StorageFolderPath);
+                }
+            }
+            else if (paths.TryGetValue(ProviderSeriesDetails.StorageFolderPath, out Guid id))
             {
                 Models.Database.SeriesEntity? byPath = await _db.Series.FirstOrDefaultAsync(s => s.Id == id, token).ConfigureAwait(false);
                 if (byPath != null && SeriesQueryService.CanAccessSeries(byPath.OwnerId, ownerId, false))
@@ -1564,9 +1616,28 @@ namespace RenzoBackend.Services.Series
                 select new { sp.Title, sp.SeriesId }
             ).ToListAsync(token).ConfigureAwait(false);
 
+            // Match on the series' IDENTITY — the source the user designated as the
+            // title/storage owner — not on "any member of the incoming group".
+            //
+            // This loop is what converts a bad group into data loss. It returned the
+            // first library series resembling ANY incoming title, so a single foreign
+            // row that got grouped in (a source returning one work's title with
+            // another's cover and chapters) resolved the whole add onto that other
+            // series: "add" silently became "update", the foreign sources were
+            // written onto an existing record, and nothing was created.
+            //
+            // The designated title owner is the one entry that genuinely names what
+            // is being added, so a stowaway can no longer hijack the match. Falling
+            // back to every entry keeps callers that don't set the flags (the import
+            // wizard, MCP) working exactly as before.
+            List<ProviderSeriesDetails> identity = ProviderSeriesDetails.Series
+                .Where(s => s.UseTitle || s.IsStorage).ToList();
+            if (identity.Count == 0)
+                identity = ProviderSeriesDetails.Series.ToList();
+
             foreach (var n in allProvs)
             {
-                foreach (var ser in ProviderSeriesDetails.Series)
+                foreach (ProviderSeriesDetails ser in identity)
                 {
                     if (n.Title.AreStringSimilar(ser.Title, 0))
                     {

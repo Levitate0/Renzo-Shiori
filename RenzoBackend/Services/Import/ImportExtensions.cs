@@ -89,67 +89,66 @@ public static class ImportExtensions
         {
             return;
         }
-        var similarityGroups = new Dictionary<string, HashSet<string>>();
-        for (int i = 0; i < linkedSeries.Count; i++)
+        // Grouping is MUTUAL, not chained: a row joins a group only if it
+        // resembles every member already in it.
+        //
+        // This used to be a similarity CHAIN, in two places that compounded each
+        // other — the pairwise pass below unioned both rows' whole groups on a
+        // single match, and a second pass then took the transitive closure of the
+        // result without re-checking anything. Together they meant "A resembles B
+        // and B resembles C" merged A with C even when A and C share nothing, and
+        // the chain could keep growing.
+        //
+        // That is not a theoretical edge: sources routinely return a row whose
+        // title belongs to one work while its cover and chapter count belong to
+        // another. One such row bridges two unrelated series, and because the
+        // resulting group contained a series already in the library, ADDING a new
+        // series silently rewrote the existing one instead of creating anything.
+        // Requiring mutual similarity confines the damage to the bad row itself.
+        var groups = new List<List<LinkedSeriesDto>>();
+        foreach (LinkedSeriesDto candidate in linkedSeries)
         {
-            for (int j = i + 1; j < linkedSeries.Count; j++)
+            List<LinkedSeriesDto>? home = groups.FirstOrDefault(
+                g => g.All(member => AreLinkable(member, candidate, threshold)));
+            if (home == null)
+                groups.Add([candidate]);
+            else
+                home.Add(candidate);
+        }
+
+        foreach (List<LinkedSeriesDto> group in groups)
+        {
+            // The group's identity is every id its members already carry plus
+            // their own — same output shape as before, minus the chaining.
+            var ids = new HashSet<string>();
+            foreach (LinkedSeriesDto member in group)
             {
-                var series1 = linkedSeries[i];
-                var series2 = linkedSeries[j];
-                if (series1.LinkedIds.Any(id => series2.LinkedIds.Contains(id)))
-                {
-                    continue;
-                }
-                if (series1.Title.AreStringSimilar(series2.Title, threshold))
-                {
-                    string id1 = series1.MihonId!;
-                    string id2 = series2.MihonId!;
-                    if (!similarityGroups.TryGetValue(id1, out var group1))
-                    {
-                        group1 = new HashSet<string>(series1.LinkedIds);
-                        similarityGroups[id1] = group1;
-                    }
-                    if (!similarityGroups.TryGetValue(id2, out var group2))
-                    {
-                        group2 = new HashSet<string>(series2.LinkedIds);
-                        similarityGroups[id2] = group2;
-                    }
-                    foreach (var id in group2)
-                    {
-                        group1.Add(id);
-                    }
-                    foreach (var id in group1)
-                    {
-                        group2.Add(id);
-                    }
-                }
+                ids.Add(member.MihonId!);
+                foreach (string id in member.LinkedIds)
+                    ids.Add(id);
+            }
+            foreach (LinkedSeriesDto member in group)
+            {
+                var own = new HashSet<string>(ids);
+                own.Remove(member.MihonId!);
+                member.LinkedIds = own.ToList();
             }
         }
-        foreach (var series in linkedSeries)
-        {
-            string seriesId = series.MihonId!;
-            if (similarityGroups.TryGetValue(seriesId, out var group))
-            {
-                series.LinkedIds = group.ToList();
-            }
-        }
-        var idToSeriesMap = linkedSeries.ToDictionary(s => s.MihonId!, s => s);
-        foreach (var series in linkedSeries)
-        {
-            var consolidatedLinks = new HashSet<string>(series.LinkedIds);
-            foreach (var linkedId in series.LinkedIds.ToList())
-            {
-                if (idToSeriesMap.TryGetValue(linkedId, out var linkedSeries2))
-                {
-                    foreach (var transitiveId in linkedSeries2.LinkedIds)
-                    {
-                        consolidatedLinks.Add(transitiveId);
-                    }
-                }
-            }
-            series.LinkedIds = consolidatedLinks.ToList();
-            series.LinkedIds.Remove(series.MihonId!);
-        }
+    }
+
+    /// <summary>
+    /// Whether two candidate rows may sit in the same series group: an existing
+    /// explicit link is honoured as-is, otherwise the titles must actually pass
+    /// the similarity test. Called for EVERY pair in a group, so membership is a
+    /// genuine similarity relation rather than a path through one bad row.
+    /// </summary>
+    private static bool AreLinkable(LinkedSeriesDto a, LinkedSeriesDto b, double threshold)
+    {
+        if (a.LinkedIds.Contains(b.MihonId!) || b.LinkedIds.Contains(a.MihonId!))
+            return true;
+        if (a.LinkedIds.Any(id => b.LinkedIds.Contains(id)))
+            return true;
+        return a.Title.AreStringSimilar(b.Title, threshold);
     }
 
     public static void FillMissingChapterNumbers(this IEnumerable<IChapterIndex> chapters)

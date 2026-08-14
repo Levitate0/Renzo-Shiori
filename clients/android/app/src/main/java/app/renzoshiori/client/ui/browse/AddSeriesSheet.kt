@@ -147,6 +147,14 @@ fun AddSeriesSheet(
     }
 
     LaunchedEffect(debounced, selectedSources.size) {
+        // Stage-2 state belongs to the PREVIOUS search and must not outlive it.
+        // Left standing, "Add" submitted the earlier series' augmented payload —
+        // so the add appeared to do nothing (it added, or silently updated,
+        // something the user was no longer looking at) and it masked the
+        // server-side mis-grouping entirely.
+        augmented = null
+        confirmRows = emptyList()
+        stage = 0
         if (debounced.trim().length < 3 || selectedSources.isEmpty()) {
             results = emptyList()
             rawResults = null
@@ -379,7 +387,29 @@ fun AddSeriesSheet(
                                             // — the exact shape of a bug that can't be found
                                             // from either side.
                                             runCatching { client.addSeries(payload) }
-                                                .onSuccess { onAdded() }
+                                                .onSuccess { resp ->
+                                                    // A 2xx with no id is not a success. The
+                                                    // sheet used to close on it regardless,
+                                                    // which is indistinguishable from a real
+                                                    // add that produced nothing.
+                                                    val id = runCatching {
+                                                        resp["id"]?.jsonPrimitive?.content
+                                                    }.getOrNull()
+                                                    val merged = runCatching {
+                                                        resp["merged"]?.jsonPrimitive?.content == "true"
+                                                    }.getOrNull() ?: false
+                                                    when {
+                                                        id.isNullOrBlank() ->
+                                                            error = "The server accepted the request but didn't create a series."
+                                                        // The server matched this onto a series
+                                                        // that already existed and updated it
+                                                        // instead. Say so — silently editing a
+                                                        // different series is the damage here.
+                                                        merged ->
+                                                            error = "That matched a series already in your library, so its sources were updated instead of a new series being added."
+                                                        else -> onAdded()
+                                                    }
+                                                }
                                                 .onFailure { error = describeAddFailure(it) }
                                         }
                                     }
