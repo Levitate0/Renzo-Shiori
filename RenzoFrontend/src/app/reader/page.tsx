@@ -607,8 +607,11 @@ function ReaderInner() {
       st.last = now;
       setUnlockChecking(true);
       try {
-        // Force a fresh source fetch (bypass the cached empty page list).
-        const sp = await readerService.streamPages(seriesId, chapterNumber, true);
+        // Force a fresh source fetch, chapter list included: a coin-gated chapter
+        // is absent from the source's listing until it is owned, so the listing
+        // is exactly what has to be re-read. This is the only caller that pays
+        // for that — see readerService.streamPages.
+        const sp = await readerService.streamPages(seriesId, chapterNumber, true, true);
         if (cancelled) return;
         if (!sp.locked && sp.pageCount > 0) {
           // This call already pulled fresh pages; tell the reload it's about to

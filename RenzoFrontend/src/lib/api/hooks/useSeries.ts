@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { seriesService } from '@/lib/api/services/seriesService';
-import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail, type UpdateFeedItem } from '@/lib/api/types';
+import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail, type UpdateFeedItem, type HistoryFeedItem } from '@/lib/api/types';
 
 /**
  * Hook to get available search sources (for search and filtering)
@@ -134,6 +134,19 @@ export const useLatestGenres = () => {
 /**
  * Hook to get the "Updates" feed (recently downloaded chapters / added series)
  */
+/**
+ * Reading history. Longer staleTime than Updates: history only changes when the
+ * user themselves reads something, so there is nothing to poll for.
+ */
+export const useHistoryFeed = (start: number, count: number, viewAll = false) => {
+  return useQuery<HistoryFeedItem[]>({
+    queryKey: ['series', 'history', start, count, viewAll],
+    queryFn: () => seriesService.getHistory(start, count, viewAll),
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: true,
+  });
+};
+
 export const useUpdatesFeed = (start: number, count: number, viewAll = false) => {
   return useQuery<UpdateFeedItem[]>({
     queryKey: ['series', 'updates', start, count, viewAll],

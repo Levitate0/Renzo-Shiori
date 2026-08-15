@@ -561,6 +561,29 @@ namespace RenzoBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// GET /api/serie/history — the caller's reading history, newest first, with
+        /// runs of chapters read back-to-back from one series collapsed into a single
+        /// stacked entry. Capped at 500 entries, counting a stack as one.
+        /// </summary>
+        [HttpGet("history")]
+        [ProducesResponseType(typeof(List<HistoryFeedItemDto>), 200)]
+        [ProducesResponseType(500)]
+        public async Task<ActionResult<List<HistoryFeedItemDto>>> GetHistoryAsync([FromQuery] int start = 0, [FromQuery] int count = 500, [FromQuery] bool viewAll = false, CancellationToken token = default)
+        {
+            try
+            {
+                var result = await _queryService.GetHistoryFeedAsync(start, count, CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
+                await _thumb.PopulateThumbsAsync(result, "/api/image/", token).ConfigureAwait(false);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting history feed: {Message}", ex.Message);
+                return StatusCode(500, $"Error getting history feed.");
+            }
+        }
+
         [HttpGet("latest")]
         [ProducesResponseType(typeof(List<LatestSeriesDto>), 200)]
         [ProducesResponseType(500)]

@@ -48,12 +48,6 @@ public class ReaderPreviewService
     // one quickly instead of stalling the chapter open.
     private static readonly TimeSpan StreamProbeTimeout = TimeSpan.FromSeconds(15);
 
-    // How many page-image keys a forced refresh sweeps when the previous page list
-    // is gone and there is no count to bound it. Comfortably past the longest real
-    // chapter; see the sweep in GetLibraryPageListAsync for why over-reaching here
-    // is free.
-    private const int StreamImageSweepFloor = 512;
-
     /// <summary>
     /// EnsureLoggedInAsync performs a REAL login POST every call. The locked-chapter
     /// poll retries page fetches repeatedly, and a chapter that stays locked would
@@ -105,16 +99,55 @@ public class ReaderPreviewService
         return (entity, src);
     }
 
+    /// <summary>
+    /// The source manga for a browse row. Prefers the stored bridge payload, which
+    /// carries everything the extension parsed; falls back to rebuilding one from
+    /// the row's own columns.
+    ///
+    /// The fallback matters because rows persisted by the live catalog/search paths
+    /// were stored WITHOUT that payload, and <c>ToManga()</c> reads nothing else —
+    /// so those rows were browsable but returned a bare 404 the moment they were
+    /// opened. An extension only needs the URL to fetch a chapter list, so a row
+    /// with a URL is readable whether or not the richer payload survived.
+    /// </summary>
+    private static Manga? ToSourceManga(LatestSerieEntity entity)
+    {
+        Manga? manga = entity.ToManga();
+        if (manga != null)
+            return manga;
+        if (string.IsNullOrEmpty(entity.Url))
+            return null;
+        return new Manga
+        {
+            Url = entity.Url,
+            Title = entity.Title,
+            Artist = entity.Artist,
+            Author = entity.Author,
+            Description = entity.Description,
+            Genre = entity.Genre.Count > 0 ? string.Join(", ", entity.Genre) : null,
+            ThumbnailUrl = entity.ThumbnailUrl,
+        };
+    }
+
     public async Task<PreviewChaptersDto?> GetChaptersAsync(string mihonId, CancellationToken token = default)
     {
         var resolved = await ResolveAsync(mihonId, token).ConfigureAwait(false);
         if (resolved == null)
+        {
+            _logger.LogWarning(
+                "Preview chapters: no browse row stored for {MihonId} — it can't be opened. "
+                + "Rows only reachable through a live search were never persisted.", mihonId);
             return null;
+        }
         (LatestSerieEntity entity, ISourceInterop src) = resolved.Value;
 
-        Manga? manga = entity.ToManga();
+        Manga? manga = ToSourceManga(entity);
         if (manga == null)
+        {
+            _logger.LogWarning("Preview chapters: browse row {MihonId} ({Provider}) has no URL to fetch from.",
+                mihonId, entity.Provider);
             return null;
+        }
 
         List<ParsedChapter>? chapters = _cache.Get<List<ParsedChapter>>($"pv:ch:{mihonId}");
         if (chapters == null)
@@ -187,24 +220,65 @@ public class ReaderPreviewService
         if (pages != null)
             return pages;
 
+        // Every `return null` below surfaces to the caller as a bare 404 with no
+        // body, which is indistinguishable from "that chapter doesn't exist" and
+        // told us nothing when preview reading failed in the wild. Each one now
+        // says which of them it was.
         var resolved = await ResolveAsync(mihonId, token).ConfigureAwait(false);
         if (resolved == null)
+        {
+            _logger.LogWarning("Preview: no usable source for {MihonId} — it may be uninstalled or disabled.", mihonId);
             return null;
+        }
         (LatestSerieEntity entity, ISourceInterop src) = resolved.Value;
 
-        List<ParsedChapter>? chapters = _cache.Get<List<ParsedChapter>>($"pv:ch:{mihonId}");
+        string chapterKey = $"pv:ch:{mihonId}";
+        List<ParsedChapter>? chapters = _cache.Get<List<ParsedChapter>>(chapterKey);
+        bool fromCache = chapters != null;
         if (chapters == null)
         {
-            Manga? manga = entity.ToManga();
+            Manga? manga = ToSourceManga(entity);
             if (manga == null)
+            {
+                _logger.LogWarning("Preview: browse row {MihonId} ({Provider}) has no URL to fetch from.", mihonId, entity.Provider);
                 return null;
+            }
             chapters = await src.GetChaptersAsync(manga, token).ConfigureAwait(false);
             if (chapters == null)
+            {
+                _logger.LogWarning("Preview: {Provider} returned no chapter list for {Title}.", entity.Provider, entity.Title);
                 return null;
-            _cache.Set($"pv:ch:{mihonId}", chapters, CacheTtl);
+            }
+            _cache.Set(chapterKey, chapters, CacheTtl);
         }
+
+        // An index past the end of a CACHED list usually means the listing moved
+        // under us — the source published or withdrew chapters after this list was
+        // taken, and every index shifted. Re-ask once before giving up, rather
+        // than 404ing until the 30-minute cache happens to expire.
+        if (chapterIndex >= chapters.Count && fromCache)
+        {
+            Manga? manga = ToSourceManga(entity);
+            List<ParsedChapter>? fresh = manga == null
+                ? null
+                : await src.GetChaptersAsync(manga, token).ConfigureAwait(false);
+            if (fresh != null)
+            {
+                _logger.LogInformation(
+                    "Preview: chapter index {Index} was past the cached list for {Provider} ({Old} chapters); re-fetched and got {New}.",
+                    chapterIndex, entity.Provider, chapters.Count, fresh.Count);
+                chapters = fresh;
+                _cache.Set(chapterKey, chapters, CacheTtl);
+            }
+        }
+
         if (chapterIndex < 0 || chapterIndex >= chapters.Count)
+        {
+            _logger.LogWarning(
+                "Preview: chapter index {Index} is out of range for {Provider} '{Title}', which lists {Count} chapter(s).",
+                chapterIndex, entity.Provider, entity.Title, chapters.Count);
             return null;
+        }
 
         pages = await src.GetPagesAsync(chapters[chapterIndex], token).ConfigureAwait(false);
 
@@ -244,9 +318,9 @@ public class ReaderPreviewService
         return false;
     }
 
-    public async Task<PreviewPagesDto?> GetLibraryStreamPagesAsync(Guid seriesId, decimal chapterNumber, Guid? userId = null, bool forceRefresh = false, CancellationToken token = default)
+    public async Task<PreviewPagesDto?> GetLibraryStreamPagesAsync(Guid seriesId, decimal chapterNumber, Guid? userId = null, bool forceRefresh = false, bool refreshChapterList = false, CancellationToken token = default)
     {
-        List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, forceRefresh, token).ConfigureAwait(false);
+        List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, forceRefresh, refreshChapterList, token).ConfigureAwait(false);
         if (pages == null)
             return null;
         // Zero pages means the source withheld them — a paid/locked chapter.
@@ -260,7 +334,7 @@ public class ReaderPreviewService
         if (_imageCache.TryGet(imgKey, out StreamImageCache.Entry cached))
             return (new MemoryStream(cached.Bytes, writable: false), cached.ContentType);
 
-        List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, false, token).ConfigureAwait(false);
+        List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, false, false, token).ConfigureAwait(false);
         if (pages == null || pageIndex < 0 || pageIndex >= pages.Count)
             return (null, "");
 
@@ -324,9 +398,9 @@ public class ReaderPreviewService
     }
 
     /// <summary>
-    /// Every capable, permanent source that carries this chapter, storage source
-    /// first. Streaming tries them in order so a failing/locked/slow source falls
-    /// through to the next instead of failing the whole read.
+    /// Every capable, permanent source that carries this chapter, ENABLED ones first
+    /// and in the user's priority order. Streaming tries them in order so a
+    /// failing/locked/slow source falls through to the next instead of failing the read.
     /// </summary>
     private async Task<List<SeriesProviderEntity>> GetCapableProvidersAsync(Guid seriesId, decimal chapterNumber, CancellationToken token)
     {
@@ -343,15 +417,24 @@ public class ReaderPreviewService
             !p.IsUnknown && !p.IsLocal && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId);
         bool HasChapter(SeriesProviderEntity p) => p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber);
 
-        // Order by the user's per-series provider Priority (0 = highest), then storage, then active
-        // (enabled) before disabled. Streaming walks this order and pulls from the first source that
-        // actually serves the pages AND their images — so a higher-priority source that times out or
-        // whose image host is dead steps down to the next priority automatically.
+        // ENABLED first, then the user's per-series Priority (0 = highest), then storage.
+        //
+        // Enabled-ness is the primary key, not a tie-breaker. It used to sort third, behind
+        // Priority, which meant a DISABLED source sitting at priority 0 was tried before every
+        // enabled source below it — so the reader streamed from a source the user had switched
+        // off, and only fell through to the green ones once it failed. Turning a source off in
+        // the UI has to mean the reader stops reaching for it first.
+        //
+        // Disabled sources stay in the list, ranked last: they are the final fallback when no
+        // enabled source can serve the chapter, which beats failing the read outright.
+        //
+        // Streaming walks this order and commits to the first source that serves the pages AND
+        // their images, so one that times out or whose image host is dead steps down on its own.
         return series.Sources
             .Where(p => Capable(p) && HasChapter(p))
-            .OrderBy(p => p.Priority)
+            .OrderByDescending(p => !p.IsDisabled)
+            .ThenBy(p => p.Priority)
             .ThenByDescending(p => p.IsStorage)
-            .ThenByDescending(p => !p.IsDisabled)
             .ToList();
     }
 
@@ -365,8 +448,21 @@ public class ReaderPreviewService
         if (src == null)
             return null;
 
-        // Force refresh (e.g. polling a locked chapter after purchase) drops the
-        // cached source chapter list so we re-ask the source.
+        // Re-asking the source for its whole CHAPTER LIST is a separate, far more
+        // expensive thing than re-fetching one chapter's pages, and the two must
+        // not share a flag.
+        //
+        // This call is bounded at StreamSourceTimeout (20s) and runs once per
+        // candidate source, so a slow or wedged source costs 20s of the reader's
+        // open before it steps down to the next one. Tying it to the ordinary
+        // page refresh meant every open of an undownloaded chapter paid that —
+        // and bought nothing, because the listing is only used to map a chapter
+        // number to its URL, which does not change, and a chapter missing from
+        // the listing already falls through to the DB reconstruction below.
+        //
+        // The one case that genuinely needs a fresh listing is the locked-chapter
+        // poll: a coin-gated chapter is absent from the listing until it is
+        // owned, so "has it appeared yet" is exactly a question about the list.
         string cacheKey = $"lib:ch:{target.Id}";
         if (forceRefresh)
             _cache.Remove(cacheKey);
@@ -551,34 +647,23 @@ public class ReaderPreviewService
         }
     }
 
-    private async Task<List<Page>?> GetLibraryPageListAsync(Guid seriesId, decimal chapterNumber, Guid? userId, bool forceRefresh, CancellationToken token)
+    private async Task<List<Page>?> GetLibraryPageListAsync(Guid seriesId, decimal chapterNumber, Guid? userId, bool forceRefresh, bool refreshChapterList, CancellationToken token)
     {
         string key = $"lib:pg:{seriesId}:{chapterNumber}";
         // Force refresh skips the cached (often empty) page list so a chapter that
         // just got purchased / turned free is actually re-fetched from the source.
+        List<Page>? stale = null;
+        Guid staleWinner = Guid.Empty;
         if (forceRefresh)
         {
-            List<Page>? stale = _cache.Get<List<Page>>(key);
+            // Keep the old list in hand rather than only deleting it: the cached
+            // page IMAGES are keyed by page index, so whether they are still
+            // correct is a question about how the NEW list compares to this one.
+            // That comparison happens after the fetch, below.
+            stale = _cache.Get<List<Page>>(key);
+            if (_cache.TryGetValue($"lib:win:{seriesId}:{chapterNumber}", out Guid sw))
+                staleWinner = sw;
             _cache.Remove(key);
-            // Drop this chapter's cached page IMAGES too, otherwise the refresh is
-            // only half real: the list is re-fetched while the pixels still come
-            // from RAM, keyed by page index. If the new list differs — a source
-            // added pages, or a different source wins — index N now means a
-            // different image and the cache would serve the old one.
-            //
-            // It also un-breaks the source probe below. That probe returns early
-            // when page 0 is already cached, so with images left in place it would
-            // rubber-stamp whichever source is tried first instead of verifying
-            // that source can actually serve images.
-            //
-            // Swept by index rather than enumerated: the keys are dense from 0, and
-            // the floor covers the case where the page list expired (30m absolute)
-            // while images survived on their sliding 20m window, leaving no count
-            // to work from. Removing absent keys is a dictionary miss, so a
-            // generous bound costs nothing.
-            int sweep = Math.Max(stale?.Count ?? 0, StreamImageSweepFloor);
-            for (int i = 0; i < sweep; i++)
-                _imageCache.Remove($"lib:img:{seriesId}:{chapterNumber}:{i}");
         }
         else
         {
@@ -605,7 +690,7 @@ public class ReaderPreviewService
         foreach (SeriesProviderEntity provider in providers)
         {
             token.ThrowIfCancellationRequested();
-            var resolved = await ResolveProviderChapterAsync(provider, chapterNumber, forceRefresh, token).ConfigureAwait(false);
+            var resolved = await ResolveProviderChapterAsync(provider, chapterNumber, refreshChapterList, token).ConfigureAwait(false);
             if (resolved == null)
                 continue;
             anyResolved = true;
@@ -654,6 +739,39 @@ public class ReaderPreviewService
         // Remember which source served the pages so image fetches use the same one.
         if (winner != null)
             _cache.Set($"lib:win:{seriesId}:{chapterNumber}", winner.Value, CacheTtl);
+
+        // Drop the cached page images ONLY if this refresh actually changed
+        // something. They are keyed by page index, so they go stale exactly when
+        // the list they were indexed against changes — a source adding pages, or
+        // a different source winning, makes index N mean a different image.
+        //
+        // Evicting unconditionally is what made a reopen unusable: every page had
+        // to come back from the source, and a slow one (Arena Scans) simply timed
+        // out, so the reader served NotFound for page after page. An unchanged
+        // chapter must reopen from RAM, which is also what makes the force-refresh
+        // cheap enough to do on every open.
+        //
+        // Nothing is dropped when there was no previous list to compare against:
+        // guessing "maybe stale" there costs a full re-fetch to protect a mismatch
+        // that needs the page count to have changed to occur at all.
+        if (forceRefresh && stale != null)
+        {
+            static string Identity(Page p) => p.ImageUrl ?? p.Url ?? string.Empty;
+            bool changed =
+                stale.Count != pages.Count
+                || (winner != null && staleWinner != Guid.Empty && winner.Value != staleWinner)
+                || !stale.Select(Identity).SequenceEqual(pages.Select(Identity));
+
+            if (changed)
+            {
+                int sweep = Math.Max(stale.Count, pages.Count);
+                for (int i = 0; i < sweep; i++)
+                    _imageCache.Remove($"lib:img:{seriesId}:{chapterNumber}:{i}");
+                _logger.LogInformation(
+                    "Stream: chapter {Chapter} of series {SeriesId} changed on refresh ({Old} pages -> {New}); dropped its cached images.",
+                    chapterNumber, seriesId, stale.Count, pages.Count);
+            }
+        }
 
         // Cache real results; never poison the cache with an empty list during a
         // forced poll, so the next 3s tick re-checks instead of returning 0.

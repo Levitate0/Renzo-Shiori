@@ -1015,6 +1015,39 @@ export interface FavoriteList {
  * One row of the "Updates" feed: a series added to the library or a chapter
  * that finished downloading.
  */
+/** One chapter inside a stacked history entry. */
+export interface HistoryChapter {
+  chapterNumber?: number;
+  chapterName?: string;
+  /** Archive filename, so a row can open the reader directly. */
+  filename?: string;
+  readAt: string;
+  /** 0..1. Below 1 means the chapter was left part-read. */
+  progress: number;
+  completed: boolean;
+}
+
+/**
+ * One entry in the reading-history feed. A run of chapters read back-to-back
+ * from the same series arrives as a single `stack` carrying its chapters, not
+ * as one entry each — the server stacks before applying the 500-entry cap.
+ */
+export interface HistoryFeedItem {
+  seriesId: string;
+  seriesTitle: string;
+  thumbnailUrl?: string;
+  kind: 'chapter' | 'stack';
+  /** For a stack, the most recent read in it — what the feed sorts on. */
+  readAt: string;
+  chapterNumber?: number;
+  chapterName?: string;
+  filename?: string;
+  progress: number;
+  completed: boolean;
+  /** Present only when kind === 'stack'; highest chapter number first. */
+  chapters?: HistoryChapter[];
+}
+
 export interface UpdateFeedItem {
   seriesId: string;
   seriesTitle: string;

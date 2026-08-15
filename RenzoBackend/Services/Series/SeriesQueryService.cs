@@ -263,6 +263,153 @@ namespace RenzoBackend.Services.Series
         }
 
         /// <summary>
+        /// A run of this many chapters read consecutively from the same series
+        /// collapses into one stacked entry. Matches the Updates feed's threshold,
+        /// so a batch behaves the same way in both feeds.
+        /// </summary>
+        private const int HistoryStackThreshold = 5;
+
+        /// <summary>
+        /// Hard cap on the history feed, counted in ENTRIES — a stack is one.
+        /// Applied after stacking on purpose: capping the raw chapter list first
+        /// would let a single binge consume the whole feed and push every other
+        /// series out, which is the opposite of what a history is for.
+        /// </summary>
+        private const int HistoryMaxEntries = 500;
+
+        /// <summary>
+        /// The user's reading history, newest first: every chapter they have opened,
+        /// with runs from the same series collapsed into stacks.
+        ///
+        /// Built from read state rather than a dedicated log. Read state already
+        /// records LastReadAt per chapter per user, so there is nothing to migrate
+        /// and history works retroactively for everything already read. The cost is
+        /// that it holds one entry per chapter, not one per re-read — reopening a
+        /// chapter moves it up the feed instead of adding a second row.
+        /// </summary>
+        /// <param name="requesterId">The requesting user — only their own reads.</param>
+        /// <param name="allowAll">True for an Owner-level requester viewing every library.</param>
+        public async Task<List<HistoryFeedItemDto>> GetHistoryFeedAsync(int start, int count, Guid requesterId, bool allowAll, CancellationToken token = default)
+        {
+            string? username = await _db.Users
+                .Where(u => u.Id == requesterId)
+                .Select(u => u.Username)
+                .FirstOrDefaultAsync(token).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(username))
+                return [];
+
+            IQueryable<Models.Database.SeriesEntity> seriesQuery = _db.Series.Include(s => s.Sources).AsNoTracking();
+            if (!allowAll)
+                seriesQuery = seriesQuery.Where(s => s.OwnerId == requesterId || s.OwnerId == Guid.Empty);
+            List<Models.Database.SeriesEntity> series = await seriesQuery.ToListAsync(token).ConfigureAwait(false);
+
+            // Flat list of "you read this chapter then" events.
+            var events = new List<(Models.Database.SeriesEntity Series, HistoryChapterDto Chapter)>();
+            foreach (Models.Database.SeriesEntity s in series)
+            {
+                if (string.IsNullOrWhiteSpace(s.StoragePath))
+                    continue;
+
+                List<Models.ReadState.ChapterReadState> states;
+                try { states = _readState.GetSeriesReadStates(username, s.StoragePath); }
+                catch (Exception ex)
+                {
+                    // One unreadable renzo.json must not take the whole feed down.
+                    _logger.LogWarning(ex, "History: couldn't read state for '{Title}'; skipping it.", s.Title);
+                    continue;
+                }
+                if (states.Count == 0)
+                    continue;
+
+                // Chapter names live on the series, not on read state. Built once
+                // per series rather than per event.
+                Dictionary<decimal, Models.Chapter> byNumber = s.Sources
+                    .SelectMany(p => p.Chapters)
+                    .Where(c => !c.IsDeleted && c.Number != null)
+                    .GroupBy(c => c.Number!.Value)
+                    .ToDictionary(g => g.Key, g => g.First());
+
+                foreach (Models.ReadState.ChapterReadState st in states)
+                {
+                    // A state row exists as soon as a chapter is touched; only the
+                    // ones with a real timestamp are history.
+                    if (st.LastReadAt == default || st.LastReadAt.Year <= 1971)
+                        continue;
+                    byNumber.TryGetValue(st.ChapterNumber, out Models.Chapter? ch);
+                    events.Add((s, new HistoryChapterDto
+                    {
+                        ChapterNumber = st.ChapterNumber,
+                        ChapterName = ch?.Name,
+                        Filename = st.LastReadFilename ?? ch?.Filename,
+                        ReadAt = st.LastReadAt,
+                        Progress = st.Progress,
+                        Completed = st.IsCompleted,
+                    }));
+                }
+            }
+
+            events.Sort((a, b) => b.Chapter.ReadAt.CompareTo(a.Chapter.ReadAt));
+
+            // Collapse consecutive same-series runs. "Consecutive" is in feed order,
+            // so an unrelated series read in the middle of a binge splits it — the
+            // stack describes what was actually read back-to-back.
+            var entries = new List<HistoryFeedItemDto>();
+            int i = 0;
+            while (i < events.Count && entries.Count < start + count + HistoryMaxEntries)
+            {
+                Models.Database.SeriesEntity s = events[i].Series;
+                int j = i + 1;
+                while (j < events.Count && events[j].Series.Id == s.Id)
+                    j++;
+
+                int runLength = j - i;
+                if (runLength >= HistoryStackThreshold)
+                {
+                    List<HistoryChapterDto> chapters = events.GetRange(i, runLength)
+                        .Select(e => e.Chapter)
+                        .OrderByDescending(c => c.ChapterNumber ?? decimal.MinValue)
+                        .ToList();
+                    entries.Add(new HistoryFeedItemDto
+                    {
+                        SeriesId = s.Id,
+                        SeriesTitle = s.Title,
+                        ThumbnailUrl = s.ThumbnailUrl,
+                        Kind = HistoryFeedItemDto.KindStack,
+                        ReadAt = events[i].Chapter.ReadAt,
+                        Chapters = chapters,
+                    });
+                }
+                else
+                {
+                    for (int k = i; k < j; k++)
+                    {
+                        HistoryChapterDto c = events[k].Chapter;
+                        entries.Add(new HistoryFeedItemDto
+                        {
+                            SeriesId = s.Id,
+                            SeriesTitle = s.Title,
+                            ThumbnailUrl = s.ThumbnailUrl,
+                            Kind = HistoryFeedItemDto.KindChapter,
+                            ReadAt = c.ReadAt,
+                            ChapterNumber = c.ChapterNumber,
+                            ChapterName = c.ChapterName,
+                            Filename = c.Filename,
+                            Progress = c.Progress,
+                            Completed = c.Completed,
+                        });
+                    }
+                }
+                i = j;
+            }
+
+            return entries
+                .Take(HistoryMaxEntries)
+                .Skip(Math.Max(0, start))
+                .Take(count)
+                .ToList();
+        }
+
+        /// <summary>
         /// Gets the latest series with optional filtering
         /// </summary>
         /// <param name="start">Starting index for pagination</param>
@@ -455,11 +602,25 @@ namespace RenzoBackend.Services.Series
             }
         }
 
-        // How long a single browse request waits for the live source search
-        // before returning cached rows only. The search keeps running in the
-        // background and lands in the memory cache, so the next request (page
-        // scroll, idle refresh, retyped keyword) picks the full set up.
-        private const int LiveSearchBudgetMs = 15_000;
+        // How long a browse request waits for the live source search when it does
+        // not already have enough stored rows to fill the page being asked for.
+        //
+        // Waiting at all is the point: sources are searched 10 at a time
+        // (NumberOfSimultaneousSearches) with a 30s cap each, so a 50-source sweep
+        // runs in waves, and the old 15s budget expired mid-sweep almost every
+        // time. The request then returned the handful of stored rows and the rest
+        // surfaced on some later request — which reads as results appearing and
+        // disappearing at random rather than as a search still running.
+        //
+        // It is NOT a "wait for every source" timer. A request that can already
+        // fill its page skips the wait entirely (see GetKeywordCatalogPageAsync),
+        // so this only ever delays a screen that would otherwise render nearly
+        // empty. Scrolling still reveals whatever landed since.
+        //
+        // Kept under the ~100s at which reverse proxies (the Cloudflare tunnel
+        // included) cut off an idle request, so an overrun still returns rows
+        // instead of failing outright.
+        private const int LiveSearchBudgetMs = 60_000;
 
         /// <summary>
         /// Full-catalog browse search: merges the cached latest/popular feed with
@@ -482,7 +643,14 @@ namespace RenzoBackend.Services.Series
                 .Select(a => a.ToSeriesInfo()).ToList();
             var known = new HashSet<string>(merged.Select(m => m.MihonId), StringComparer.Ordinal);
 
-            List<LatestSeriesDto> live = await GetLiveSearchRowsAsync(keyword, mihonProviderId, token).ConfigureAwait(false);
+            // Wait for the live sweep only when the stored rows can't fill the page
+            // being asked for. A screen's worth already in hand renders now and the
+            // sweep lands in cache for the next scroll; a nearly-empty screen is
+            // worth waiting on, because showing two of seven sources and filling the
+            // rest in later is what looked broken.
+            bool canFillPage = merged.Count >= Math.Max(0, start) + count;
+            List<LatestSeriesDto> live = await GetLiveSearchRowsAsync(
+                keyword, mihonProviderId, canFillPage ? 0 : LiveSearchBudgetMs, token).ConfigureAwait(false);
             foreach (LatestSeriesDto row in live)
             {
                 if (known.Add(row.MihonId))
@@ -540,7 +708,10 @@ namespace RenzoBackend.Services.Series
         /// A slow fan-out returns empty for this request; the task keeps running
         /// and its result is served from cache to subsequent requests.
         /// </summary>
-        private async Task<List<LatestSeriesDto>> GetLiveSearchRowsAsync(string keyword, string? mihonProviderId, CancellationToken token)
+        /// <param name="budgetMs">How long to wait for the fan-out. Zero starts it and
+        /// returns immediately — the caller already has enough to render, and the
+        /// result still lands in the cache for the next request.</param>
+        private async Task<List<LatestSeriesDto>> GetLiveSearchRowsAsync(string keyword, string? mihonProviderId, int budgetMs, CancellationToken token)
         {
             string cacheKey = $"BrowseLive:{mihonProviderId ?? "all"}:{keyword.ToLowerInvariant()}";
             Task<List<LatestSeriesDto>>? searchTask = _memoryCache.GetOrCreate(cacheKey, entry =>
@@ -554,11 +725,19 @@ namespace RenzoBackend.Services.Series
             if (searchTask == null)
                 return [];
 
-            Task finished = await Task.WhenAny(searchTask, Task.Delay(LiveSearchBudgetMs, token)).ConfigureAwait(false);
-            if (finished != searchTask)
+            if (budgetMs <= 0)
             {
-                _logger.LogInformation("Live browse search for '{Keyword}' still running after {Budget}ms; returning cached rows for now.", keyword, LiveSearchBudgetMs);
-                return [];
+                if (!searchTask.IsCompleted)
+                    return [];   // enough stored rows to render; don't stall on the sweep
+            }
+            else
+            {
+                Task finished = await Task.WhenAny(searchTask, Task.Delay(budgetMs, token)).ConfigureAwait(false);
+                if (finished != searchTask)
+                {
+                    _logger.LogInformation("Live browse search for '{Keyword}' still running after {Budget}ms; returning cached rows for now.", keyword, budgetMs);
+                    return [];
+                }
             }
             try
             {
@@ -690,6 +869,7 @@ namespace RenzoBackend.Services.Series
             string lang = src.Language == "all" ? string.Empty : src.Language;
             var rows = new List<LatestSeriesDto>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
+            var catalogBridgeInfo = new Dictionary<string, string?>(StringComparer.Ordinal);
 
             // Catalog rows carry no real per-series update time, so they must NOT
             // outrank series the update jobs stamped with genuine recency. Seed them
@@ -723,6 +903,11 @@ namespace RenzoBackend.Services.Series
                         continue;
                     if (!string.IsNullOrEmpty(m.ThumbnailUrl))
                         await thumb.AddUrlAsync(m.ThumbnailUrl, mihonProviderId).ConfigureAwait(false);
+                    // The parsed manga is the payload ToManga() needs to open this row
+                    // in the reader. It was dropped on the floor here, so catalog rows
+                    // were browsable but not readable — the same defect the search path
+                    // had, arrived at from the other direction.
+                    catalogBridgeInfo[mihonId] = JsonSerializer.Serialize<Manga>(m);
                     rows.Add(new LatestSeriesDto
                     {
                         MihonId = mihonId,
@@ -769,6 +954,7 @@ namespace RenzoBackend.Services.Series
                         {
                             MihonId = r.MihonId,
                             MihonProviderId = r.MihonProviderId,
+                            BridgeItemInfo = catalogBridgeInfo.GetValueOrDefault(r.MihonId),
                             Provider = r.Provider,
                             Language = r.Language,
                             Url = r.Url,
@@ -878,6 +1064,10 @@ namespace RenzoBackend.Services.Series
             List<LinkedSeriesDto> linked = await search.SearchSeriesAsync(keyword, sources, settings).ConfigureAwait(false);
 
             var rows = new List<LatestSeriesDto>(linked.Count);
+            // Kept alongside the rows so they can be persisted below. ToManga()
+            // reads this and nothing else, so a row stored without it is visible in
+            // Browse but cannot be opened.
+            var bridgeInfo = new Dictionary<string, string?>(StringComparer.Ordinal);
             foreach (LinkedSeriesDto l in linked)
             {
                 if (string.IsNullOrEmpty(l.MihonId))
@@ -893,6 +1083,7 @@ namespace RenzoBackend.Services.Series
                 }
 
                 int sep = l.MihonId.IndexOf('|');
+                bridgeInfo[l.MihonId] = l.BridgeItemInfo;
                 rows.Add(new LatestSeriesDto
                 {
                     MihonId = l.MihonId,
@@ -909,6 +1100,66 @@ namespace RenzoBackend.Services.Series
                     Status = manga != null ? (SeriesStatus)(int)manga.Status : SeriesStatus.UNKNOWN,
                     FetchDate = DateTime.UtcNow,
                 });
+            }
+
+            // Persist what the search found, exactly as the live CATALOG fetch below
+            // already does for its rows.
+            //
+            // Without this, a search-only row existed nowhere but this method's
+            // return value. Two things followed, and both were reported as bugs:
+            // the card vanished from Browse the moment the in-memory result went
+            // (leaving only the handful of rows the update jobs had stored), and
+            // opening one 404'd instantly — the reader resolves a browse row by
+            // looking its MihonId up in LatestSeries, so a row that was never
+            // stored cannot be read, whatever the source would have served.
+            //
+            // Insert-only: an existing row may carry richer job-populated data.
+            if (rows.Count > 0)
+            {
+                try
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+                    var ids = rows.Select(r => r.MihonId).ToList();
+                    var existing = await db.LatestSeries
+                        .Where(a => ids.Contains(a.MihonId))
+                        .Select(a => a.MihonId)
+                        .ToListAsync().ConfigureAwait(false);
+                    var have = new HashSet<string>(existing, StringComparer.Ordinal);
+
+                    // Seeded a year back, decremented by result position — the same
+                    // convention the catalog fetch uses. A search hit carries no real
+                    // update time, and stamping it "now" would park arbitrary search
+                    // results at the top of the recently-updated feed.
+                    DateTime seededBase = DateTime.UtcNow.AddYears(-1);
+                    int order = 0;
+                    foreach (LatestSeriesDto r in rows)
+                    {
+                        if (!have.Add(r.MihonId))
+                            continue;
+                        db.LatestSeries.Add(new LatestSerieEntity
+                        {
+                            MihonId = r.MihonId,
+                            MihonProviderId = r.MihonProviderId,
+                            BridgeItemInfo = bridgeInfo.GetValueOrDefault(r.MihonId),
+                            Provider = r.Provider,
+                            Language = r.Language,
+                            Url = r.Url,
+                            Title = r.Title,
+                            ThumbnailUrl = r.ThumbnailUrl,
+                            Artist = r.Artist,
+                            Author = r.Author,
+                            Description = r.Description,
+                            Genre = r.Genre,
+                            Status = r.Status,
+                            FetchDate = seededBase.AddSeconds(-order++),
+                        });
+                    }
+                    await db.SaveChangesAsync().ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    _logger.LogWarning(e, "Failed to persist live search rows for '{Keyword}'.", keyword);
+                }
             }
             return rows;
         }

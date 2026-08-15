@@ -4,6 +4,7 @@ import {
   Activity,
   Bell,
   DownloadCloud,
+  History,
   Library,
   List,
   Plug,
@@ -46,6 +47,9 @@ export function useSections(): SectionDef[] {
   if (canViewLibrary) {
     sections.push({ name: "Library", href: "/library", icon: Library });
     sections.push({ name: "Updates", href: "/updates", icon: Bell });
+    // Gated with the library for the same reason Updates is: history is a view
+    // over the user's own library reads and is empty without one.
+    sections.push({ name: "History", href: "/history", icon: History });
   }
   if (canBrowse) {
     sections.push({ name: "Browse", href: "/cloud-latest", icon: Sparkles });

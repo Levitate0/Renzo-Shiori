@@ -250,6 +250,27 @@ namespace RenzoBackend
                         context.Request.Path = path + "/";
                     }
                 }
+                // Client-side navigation asks for a route's RSC payload as
+                // "<route>.txt", but the same trailingSlash export that puts the HTML
+                // at "<route>/index.html" puts the payload at "<route>/index.txt".
+                // Nothing served the requested name, so the request fell past the
+                // static files into the API pipeline and came back 401 — and a failed
+                // payload fetch is rendered by the router as "not found", with no
+                // request ever reaching the endpoint the user was actually opening.
+                // That is why navigating to the reader from Browse 404'd instantly
+                // while a full page load of the same URL worked.
+                else if (!string.IsNullOrEmpty(path) && path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                {
+                    var relative = path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                    if (!File.Exists(Path.Combine(webRoot, relative)))
+                    {
+                        string route = path[..^".txt".Length];
+                        var candidate = Path.Combine(
+                            webRoot, route.TrimStart('/').Replace('/', Path.DirectorySeparatorChar), "index.txt");
+                        if (File.Exists(candidate))
+                            context.Request.Path = route + "/index.txt";
+                    }
+                }
                 await next();
             });
 

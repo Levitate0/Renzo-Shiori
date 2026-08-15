@@ -214,12 +214,18 @@ public class ReaderController : ControllerBase
 
     [HttpGet("stream/pages")]
     [ProducesResponseType(typeof(PreviewPagesDto), 200)]
-    public async Task<ActionResult<PreviewPagesDto>> GetStreamPagesAsync([FromQuery] Guid seriesId, [FromQuery] decimal chapter, [FromQuery] bool refresh = false, CancellationToken token = default)
+    /// <param name="refresh">Re-fetch this chapter's PAGES from the source, bypassing the
+    /// cached page list and dropping the chapter's cached page images.</param>
+    /// <param name="refreshChapters">Additionally re-fetch the source's whole chapter LIST.
+    /// Much more expensive — one 20s-bounded source call per candidate source — and only
+    /// meaningful when the question is whether a chapter has appeared in the listing at all
+    /// (a coin-gated chapter after purchase). A plain reopen must not set this.</param>
+    public async Task<ActionResult<PreviewPagesDto>> GetStreamPagesAsync([FromQuery] Guid seriesId, [FromQuery] decimal chapter, [FromQuery] bool refresh = false, [FromQuery] bool refreshChapters = false, CancellationToken token = default)
     {
         try
         {
             if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
-            var result = await _preview.GetLibraryStreamPagesAsync(seriesId, chapter, CurrentUser?.Id, refresh, token).ConfigureAwait(false);
+            var result = await _preview.GetLibraryStreamPagesAsync(seriesId, chapter, CurrentUser?.Id, refresh, refreshChapters, token).ConfigureAwait(false);
             return result == null ? NotFound() : Ok(result);
         }
         catch (Exception ex)

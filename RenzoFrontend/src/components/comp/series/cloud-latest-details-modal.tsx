@@ -111,7 +111,16 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
   if (isDesktop) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="w-[95vw] md:max-w-[660px] p-0 overflow-hidden">
+        {/* Half the viewport, not a fixed 660px. On a wide monitor that cap left
+            the card occupying about a quarter of the screen while the synopsis —
+            the thing the card exists to show — wrapped into a narrow column.
+            Grows in BOTH dimensions: the old card was 660x373 (cover, badge and
+            padding over a 61px footer), near enough 16:9, so holding that ratio
+            keeps the same shape instead of stretching it into a letterbox. The
+            floor keeps it from shrinking on small laptops, where 50vw is narrower
+            than the old fixed width; the height cap keeps it on screen when the
+            display is wide but short. */}
+        <DialogContent className="w-[95vw] md:w-[50vw] md:max-w-none md:min-w-[660px] md:aspect-[16/9] md:max-h-[85vh] p-0 overflow-hidden flex flex-col">
           <DialogTitle className="sr-only">{item.title}</DialogTitle>
           <DialogDescription className="sr-only">
             Details for {item.title}
@@ -120,12 +129,19 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
           {coverExpanded && (
             <CoverLightbox src={formatThumbnailUrl(item.thumbnailUrl)} alt={item.title} onClose={() => setCoverExpanded(false)} />
           )}
-          {/* Content area */}
-          <div className="p-5 flex gap-0 items-start">
+          {/* Content area — takes the height the ratio adds, so the footer stays
+              pinned at the bottom instead of the card ending early with dead space
+              beneath it. Scrolls internally if a long synopsis outgrows it. */}
+          <div className="p-5 flex gap-0 items-start flex-1 min-h-0 overflow-y-auto">
             {/* Cover wrap */}
-            <div className="shrink-0 w-[160px]">
+            {/* A fixed pixel width can't hold its proportion against a card that is
+                now a share of the viewport — it shrank to a thumbnail on a wide
+                monitor and dominated on a narrow one. Pinned to 26% of the card
+                instead, matching the Hub's proportions, so the cover reads the same
+                at any width. */}
+            <div className="shrink-0 w-[26%]">
               <div
-                className="w-[160px] aspect-[2/3] cursor-zoom-in rounded-xl overflow-hidden bg-muted border border-border shadow-md relative"
+                className="w-full aspect-[2/3] cursor-zoom-in rounded-xl overflow-hidden bg-muted border border-border shadow-md relative"
                 title="Click to expand"
                 onClick={() => setCoverExpanded(true)}
               >
@@ -182,7 +198,10 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
               )}
 
               {/* Description */}
-              <p className="text-[12.5px] text-muted-foreground leading-relaxed mt-2.5 line-clamp-4">
+              {/* The clamp existed because the old card was short. With the taller
+                  one it would leave the synopsis truncated above empty space, so
+                  it relaxes where there is room to relax into. */}
+              <p className="text-[12.5px] text-muted-foreground leading-relaxed mt-2.5 line-clamp-4 md:line-clamp-[10] lg:line-clamp-none">
                 {item.description || "No description available"}
               </p>
 

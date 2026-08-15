@@ -43,12 +43,23 @@ export const readerService = {
   // ── Library streaming (read a not-yet-downloaded chapter live) ──
   // refresh=true bypasses the backend page-list cache and drops the chapter's
   // cached page images, so the pages genuinely come from the source again. Used
-  // when opening an undownloaded chapter (it may have gained or fixed pages since
-  // it was last read) and to re-check a locked one after it may have been
-  // purchased or turned free.
-  async streamPages(seriesId: string, chapterNumber: number, refresh = false): Promise<{ pageCount: number; locked?: boolean }> {
+  // when opening an undownloaded chapter — it may have gained or fixed pages
+  // since it was last read.
+  //
+  // refreshChapters=true additionally re-fetches the source's whole chapter
+  // list. That is one 20s-bounded source call PER candidate source, paid before
+  // the reader can open, so it is reserved for the locked-chapter poll, where
+  // "has this chapter appeared in the listing yet" is the actual question. A
+  // plain reopen must never set it.
+  async streamPages(
+    seriesId: string,
+    chapterNumber: number,
+    refresh = false,
+    refreshChapters = false,
+  ): Promise<{ pageCount: number; locked?: boolean }> {
     return apiClient.get<{ pageCount: number; locked?: boolean }>(
-      `/api/reader/stream/pages?seriesId=${seriesId}&chapter=${chapterNumber}${refresh ? "&refresh=true" : ""}`);
+      `/api/reader/stream/pages?seriesId=${seriesId}&chapter=${chapterNumber}`
+      + `${refresh ? "&refresh=true" : ""}${refreshChapters ? "&refreshChapters=true" : ""}`);
   },
 
   streamPageUrl(seriesId: string, chapterNumber: number, page: number): string {

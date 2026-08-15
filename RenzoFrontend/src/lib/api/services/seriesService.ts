@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api/client';
-import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail, type UpdateFeedItem } from '@/lib/api/types';
+import { type FullSeries, type SeriesInfo, type SeriesExtendedInfo, type ProviderMatch, type AugmentedResponse, type LatestSeriesInfo, type LatestGenre, type SearchSource, type SeriesIntegrityResult, type ChapterDetail, type UpdateFeedItem, type HistoryFeedItem } from '@/lib/api/types';
 
 export const seriesService = {
   /**
@@ -116,6 +116,20 @@ export const seriesService = {
     });
     if (viewAll) params.set('viewAll', 'true');
     return apiClient.get<UpdateFeedItem[]>(`/api/serie/updates?${params.toString()}`);
+  },
+
+  /**
+   * Reading history, newest first. Runs of chapters read back-to-back from one
+   * series arrive pre-stacked, and the server's 500-entry cap counts a stack as
+   * one entry — so the client must not re-stack or re-cap.
+   */
+  async getHistory(start: number, count: number, viewAll = false): Promise<HistoryFeedItem[]> {
+    const params = new URLSearchParams({
+      start: start.toString(),
+      count: count.toString(),
+    });
+    if (viewAll) params.set('viewAll', 'true');
+    return apiClient.get<HistoryFeedItem[]>(`/api/serie/history?${params.toString()}`);
   },
 
   /**
