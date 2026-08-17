@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useRibbonMount } from "@/components/comp/layout/ribbon";
 import { useSearch } from "@/contexts/search-context";
+import { useModifierKeyLabel } from "@/hooks/use-modifier-key";
 
 /**
  * Command Bar.
@@ -46,6 +47,7 @@ export function CommandBar() {
   const mobileInputRef = useRef<HTMLInputElement>(null);
   const desktopInputRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
+  const modifierKey = useModifierKeyLabel();
   const { setTarget: setRibbonTarget, active: ribbonActive } = useRibbonMount();
 
   // Close mobile sheet when route changes.
@@ -228,11 +230,16 @@ export function CommandBar() {
               >
                 <X className="h-3.5 w-3.5" />
               </button>
-            ) : (
+            ) : modifierKey ? (
+              // Was hardcoded to ⌘, which is wrong for everyone not on a Mac —
+              // and the handler has always accepted Ctrl too, so the hint was
+              // the only part that lied. Rendered only once the platform is
+              // known (see useModifierKeyLabel) so nobody sees the wrong key first.
               <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none hidden xl:inline-flex items-center gap-0.5 rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                ⌘K
+                <span>{modifierKey}</span>
+                <span>K</span>
               </kbd>
-            )}
+            ) : null}
           </div>
         )}
 

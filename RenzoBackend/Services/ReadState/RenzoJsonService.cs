@@ -62,7 +62,15 @@ public class RenzoJsonService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error parsing renzo.json at {Path}, will overwrite", renzoJsonPath);
+                    // Previously this warned and carried on, which handed the caller
+                    // a null snapshot — indistinguishable from "no file yet". Callers
+                    // treat null as "nothing to preserve" and write a fresh snapshot,
+                    // so an unreadable file was silently REPLACED and every user's
+                    // read state in it destroyed. Refusing the write keeps the file
+                    // intact and recoverable; the cost is that this one update is
+                    // lost, which is the cheaper of the two.
+                    throw new IOException(
+                        $"renzo.json at {renzoJsonPath} exists but could not be read; refusing to overwrite it.", ex);
                 }
             }
 
@@ -97,7 +105,10 @@ public class RenzoJsonService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error parsing renzo.json at {Path}, will overwrite", renzoJsonPath);
+                    // See ModifyAsync — an unreadable file must never be replaced
+                    // with a snapshot built as though it had never existed.
+                    throw new IOException(
+                        $"renzo.json at {renzoJsonPath} exists but could not be read; refusing to overwrite it.", ex);
                 }
             }
 

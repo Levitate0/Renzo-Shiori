@@ -86,6 +86,30 @@ public class SeriesStateService
                 return;
             }
 
+            // Storage-readiness guard. This sync writes a snapshot built from the
+            // DB and re-attaches read state read back off disk — so if the folder
+            // is not there to read from, it writes a file with NO read state and
+            // (because the writer creates missing directories) does so on a path
+            // that may only exist because the library mount hasn't come up yet.
+            //
+            // That is how read state went missing across restarts: the startup
+            // integrity verify calls this for every series, and a boot that races
+            // the mergerfs /series mount finds no renzo.json, preserves nothing,
+            // and writes DB-only files over the whole library. The in-memory cache
+            // still held the state for the rest of that session, so it only
+            // surfaced after the NEXT restart — which is what made it look
+            // intermittent and unrelated to booting.
+            //
+            // Same rule the download-record verify already follows: never treat
+            // absent storage as absent data. See SeriesArchiveService's own guards.
+            if (!Directory.Exists(seriesFolder))
+            {
+                _logger.LogWarning(
+                    "Skipping renzo.json sync for '{Title}': its folder {Folder} isn't there. Storage is likely not mounted yet; writing now would discard the read state stored in it.",
+                    series.Title, seriesFolder);
+                return;
+            }
+
             // Step 1: Build snapshot from current DB state
             ImportSeriesSnapshot snapshot = series.ToImportSeriesSnapshot();
 
