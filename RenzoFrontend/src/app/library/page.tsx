@@ -2,7 +2,7 @@
 
 // All rendering happens on the client for static export compatibility
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { AddSeries } from "@/components/comp/series/add-series";
 import { TrackAllButton } from "@/components/comp/scrobbler/track-all-button";
 import { ListSeries } from "@/components/comp/series/list-series";
@@ -26,6 +26,7 @@ import { usePermission } from "@/hooks/use-permission";
 import { useAuth } from "@/contexts/auth-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { getResponsiveCardDefault } from "@/lib/utils/responsive-card-default";
+import { isAdultItem, isAdultTag, useHideAdult } from "@/lib/utils/adult-filter";
 
 // Session storage keys for the library page.
 const SESSION_KEYS = {
@@ -80,6 +81,7 @@ export default function RootPage() {
   const [viewAllLibraries, setViewAllLibraries] = useState(false);
   const { data: library } = useLibrary(canOwner && viewAllLibraries);
   const { data: favoriteLists } = useFavorites();
+  const [hideAdult] = useHideAdult();
 
   // Favourites dropdown entries: each top-level tab followed by its indented
   // sub-lists. Selecting a tab shows its own series plus every sub-list's
@@ -139,6 +141,18 @@ export default function RootPage() {
     return unique;
   }, [library]);
 
+  // The series the grid will actually render. ListSeries drops 18+ titles when
+  // the hide toggle is on, so every filter option and tab count on this page is
+  // derived from this set rather than the raw library — otherwise the ribbon
+  // advertises genres, sources and counts belonging to series you cannot see,
+  // and picking one of them lands you on an empty grid.
+  const visibleLibrary = useMemo(() => {
+    if (!deduplicatedLibrary) return deduplicatedLibrary;
+    return hideAdult
+      ? deduplicatedLibrary.filter((series) => !isAdultItem(series))
+      : deduplicatedLibrary;
+  }, [deduplicatedLibrary, hideAdult]);
+
   const cardWidthOptions = [
     { value: "w-20", label: "XS", text: "text-[0.4rem]" },
     { value: "w-32", label: "S", text: "text-xs" },
@@ -147,25 +161,52 @@ export default function RootPage() {
     { value: "w-70", label: "XL", text: "text-lg" },
   ];
 
-  // Compute unique sorted genres from all series
+  // Compute unique sorted genres from the visible series. The explicit
+  // isAdultTag guard is belt-and-braces on top of that: a series can carry an
+  // 18+ rating tag without the server having flagged the series itself (older
+  // cached payloads, or a tag that only one of its sources reports), and an
+  // "Erotica" entry sitting in the genre picker is exactly what the hide
+  // toggle is meant to keep off the screen.
   const genres = useMemo(() => {
-    if (!deduplicatedLibrary) return [];
+    if (!visibleLibrary) return [];
     const genreSet = new Set<string>();
-    deduplicatedLibrary.forEach((series) => {
-      series.genre?.forEach((g) => genreSet.add(g));
+    visibleLibrary.forEach((series) => {
+      series.genre?.forEach((g) => {
+        if (hideAdult && isAdultTag(g)) return;
+        genreSet.add(g);
+      });
     });
     return Array.from(genreSet).sort((a, b) => a.localeCompare(b));
-  }, [deduplicatedLibrary]);
+  }, [visibleLibrary, hideAdult]);
 
   // Compute unique sorted providers from all series
   const providers = useMemo(() => {
-    if (!deduplicatedLibrary) return [];
+    if (!visibleLibrary) return [];
     const providerSet = new Set<string>();
-    deduplicatedLibrary.forEach((series) => {
+    visibleLibrary.forEach((series) => {
       series.providers?.forEach((p) => providerSet.add(p.provider));
     });
     return Array.from(providerSet).sort((a, b) => a.localeCompare(b));
-  }, [deduplicatedLibrary]);
+  }, [visibleLibrary]);
+
+  // Drop a selection that the ribbon no longer offers. Both filters persist in
+  // sessionStorage, so without this, hiding 18+ while "Hentai" (or a source
+  // whose only titles were adult) is selected leaves the filter silently
+  // applied to an option that is no longer in its own dropdown: the grid comes
+  // up empty and the trigger renders blank, with nothing to click to undo it.
+  // Guarded on a non-empty list so a still-loading library can't wipe a valid
+  // saved selection.
+  useEffect(() => {
+    if (genres.length > 0 && selectedGenre && !genres.includes(selectedGenre)) {
+      setSelectedGenre(null);
+    }
+    if (providers.length > 0 && selectedProvider && !providers.includes(selectedProvider)) {
+      setSelectedProvider(null);
+    }
+    // setSelectedGenre/setSelectedProvider are stable inline writers, not state
+    // setters, so they are deliberately not dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genres, providers, selectedGenre, selectedProvider]);
 
   // Determine if the categories filter should be shown
   const showCategoriesFilter = settings?.categorizedFolders === true;
@@ -204,7 +245,7 @@ export default function RootPage() {
 
   // Count for each tab (with genre, provider, and category filter applied) - memoized for performance
   const { allCount, activeCount, pausedCount, unassignedCount, completedCount } = useMemo(() => {
-    if (!deduplicatedLibrary) return { allCount: 0, activeCount: 0, pausedCount: 0, unassignedCount: 0, completedCount: 0 };
+    if (!visibleLibrary) return { allCount: 0, activeCount: 0, pausedCount: 0, unassignedCount: 0, completedCount: 0 };
 
     const baseFilter = (series: SeriesInfo) =>
       (!selectedGenre || series.genre?.includes(selectedGenre)) &&
@@ -212,7 +253,7 @@ export default function RootPage() {
       (!selectedCategory || series.category === selectedCategory) &&
       (!favoriteFilterIds || favoriteFilterIds.has(series.id));
 
-    const baseFiltered = deduplicatedLibrary.filter(baseFilter);
+    const baseFiltered = visibleLibrary.filter(baseFilter);
 
     return {
       allCount: baseFiltered.length,
@@ -229,7 +270,7 @@ export default function RootPage() {
         series.status === SeriesStatus.PUBLISHING_FINISHED
       ).length,
     };
-  }, [deduplicatedLibrary, selectedGenre, selectedProvider, selectedCategory, favoriteFilterIds]);
+  }, [visibleLibrary, selectedGenre, selectedProvider, selectedCategory, favoriteFilterIds]);
 
   // Offline mode: same page shell, but the source-specific filters above
   // (status/genre/provider/category/favorites) don't apply to a small local
