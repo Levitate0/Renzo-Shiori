@@ -58,6 +58,7 @@ export function ChaptersSection({
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState<Set<number>>(new Set());
   const [readPending, setReadPending] = useState<Set<number>>(new Set());
+  const [bookmarkPending, setBookmarkPending] = useState<Set<number>>(new Set());
   const [markingAll, setMarkingAll] = useState(false);
   // Multi-select mode
   const [selecting, setSelecting] = useState(false);
@@ -201,6 +202,41 @@ export function ChaptersSection({
       });
     } finally {
       setReadPending((prev) => {
+        const next = new Set(prev);
+        next.delete(chapterNumber);
+        return next;
+      });
+    }
+  };
+
+  // Same shape as handleToggleRead: optimistic flip, server call, invalidate,
+  // roll back and say so if it fails. A bookmark is independent of read state —
+  // it never touches progress or completion, and never scrobbles.
+  const handleToggleBookmark = async (chapterNumber: number, bookmarked: boolean) => {
+    setBookmarkPending((prev) => new Set(prev).add(chapterNumber));
+    const previous = queryClient.getQueryData<typeof readerChapters>(readStateKey);
+    queryClient.setQueryData<typeof readerChapters>(readStateKey, (old) =>
+      old
+        ? {
+            ...old,
+            chapters: old.chapters.map((c) =>
+              c.number === chapterNumber ? { ...c, bookmarked } : c
+            ),
+          }
+        : old
+    );
+    try {
+      await readerService.setBookmark(seriesId, chapterNumber, bookmarked);
+      void queryClient.invalidateQueries({ queryKey: readStateKey });
+    } catch (err) {
+      queryClient.setQueryData(readStateKey, previous);
+      toast({
+        variant: "destructive",
+        title: bookmarked ? "Couldn't bookmark" : "Couldn't remove bookmark",
+        description: err instanceof Error ? err.message : "Please try again.",
+      });
+    } finally {
+      setBookmarkPending((prev) => {
         const next = new Set(prev);
         next.delete(chapterNumber);
         return next;
@@ -783,6 +819,8 @@ export function ChaptersSection({
                           onRead={readerEnabled ? handleRead : undefined}
                           onToggleRead={readerEnabled ? handleToggleRead : undefined}
                           readPending={chapter.number != null && readPending.has(chapter.number)}
+                          onToggleBookmark={readerEnabled ? handleToggleBookmark : undefined}
+                          bookmarkPending={chapter.number != null && bookmarkPending.has(chapter.number)}
                           readProgress={rs?.progress}
                           readCompleted={rs?.isCompleted}
                           readBookmarked={rs?.bookmarked}

@@ -46,6 +46,10 @@ export interface ChapterRowProps {
   onToggleRead?: (chapterNumber: number, read: boolean) => void;
   /** A read/unread toggle for this chapter is in flight. */
   readPending?: boolean;
+  /** Toggle this chapter's bookmark. Undefined when the reader is disabled. */
+  onToggleBookmark?: (chapterNumber: number, bookmarked: boolean) => void;
+  /** A bookmark toggle for this chapter is in flight. */
+  bookmarkPending?: boolean;
   /** Read-state overlay from the reader API (progress 0..1). */
   readProgress?: number;
   readCompleted?: boolean;
@@ -95,6 +99,8 @@ export function ChapterRow({
   onRedownload,
   onRead,
   onToggleRead,
+  onToggleBookmark,
+  bookmarkPending,
   readPending,
   readProgress,
   readCompleted,
@@ -192,7 +198,6 @@ export function ChapterRow({
               {chapter.name}
             </span>
           )}
-          {readBookmarked && <Bookmark className="h-3 w-3 shrink-0 self-center fill-pink-500 text-pink-500" />}
           {!readCompleted && (readProgress ?? 0) > 0 && (
             <span className="shrink-0 self-center rounded bg-primary/15 px-1 text-[10px] font-medium text-primary">
               {Math.round((readProgress ?? 0) * 100)}%
@@ -279,6 +284,40 @@ export function ChapterRow({
             </Button>
           </TooltipTrigger>
           <TooltipContent>{readCompleted ? "Mark as unread" : "Mark as read"}</TooltipContent>
+        </Tooltip>
+      )}
+
+      {/* Bookmark toggle — sits beside the read toggle and behaves the same way:
+          the icon IS the control, so the state is readable at a glance and one
+          click away, rather than a passive marker set only from inside the
+          reader. Bookmarks are independent of read state. */}
+      {onToggleBookmark && num != null && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              disabled={bookmarkPending}
+              onClick={() => onToggleBookmark(num, !readBookmarked)}
+              aria-pressed={readBookmarked}
+              aria-label={readBookmarked ? "Remove bookmark" : "Bookmark chapter"}
+              className="h-8 w-8 shrink-0"
+            >
+              {bookmarkPending ? (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              ) : (
+                <Bookmark
+                  className={cn(
+                    "h-4 w-4",
+                    readBookmarked
+                      ? "fill-pink-500 text-pink-500"
+                      : "text-muted-foreground/50"
+                  )}
+                />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{readBookmarked ? "Remove bookmark" : "Bookmark chapter"}</TooltipContent>
         </Tooltip>
       )}
 
