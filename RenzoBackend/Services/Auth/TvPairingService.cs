@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using RenzoBackend.Data;
@@ -34,6 +35,36 @@ public class TvPairingService
     public const int PollIntervalSeconds = 5;
     private const int MaxFailedApprovals = 5;
 
+    /// <summary>
+    /// A code locks only once misses come from at least this many distinct
+    /// callers. A user code is meant to be read across a room, so anyone who
+    /// can SEE it — a housemate, a shoulder-surfer, a screenshot — could
+    /// otherwise name it five times and lock the pairing out from under the
+    /// person trying to approve it. A real distributed guesser has many
+    /// sources by definition; a griefer has one.
+    /// </summary>
+    private const int MinLockSources = 2;
+
+    /// <summary>Global ceiling on live requests. `tv/code` needs no auth and
+    /// writes a row per call, so without this the table's size in any 10-minute
+    /// window is whatever callers ask for.</summary>
+    private const int MaxLiveRequests = 500;
+
+    /// <summary>Live requests one address may hold at once. Over this, that
+    /// address's own oldest is dropped — which harms nobody else.</summary>
+    private const int MaxLivePerSource = 10;
+
+    /// <summary>
+    /// Distinct callers that have missed on each live code, for the
+    /// corroboration rule above. Process memory only: it is a defence against a
+    /// burst, not state worth a schema change, and losing it on restart costs
+    /// nothing but a reset counter.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> MissSources = new();
+
+    /// <summary>Cap per code, so a wide flood cannot grow the set without bound.</summary>
+    private const int MaxMissSources = 8;
+
     public TvPairingService(AppDbContext db, JwtTokenService jwt, ILogger<TvPairingService> logger)
     {
         _db = db;
@@ -41,11 +72,44 @@ public class TvPairingService
         _logger = logger;
     }
 
-    /// <summary>Creates a pending request. Returns the raw device code ONCE.</summary>
-    public async Task<(TvPairingRequestEntity request, string rawDeviceCode)> CreateAsync(
+    /// <summary>
+    /// Creates a pending request. Returns the raw device code ONCE, or null when
+    /// the instance is already holding as many live requests as it will hold.
+    /// </summary>
+    public async Task<(TvPairingRequestEntity request, string rawDeviceCode)?> CreateAsync(
         string? deviceName, string? ip, CancellationToken token = default)
     {
         await SweepAsync(token).ConfigureAwait(false);
+
+        DateTime liveFrom = DateTime.UtcNow;
+        string? source = Truncate(ip, 64);
+
+        // This caller's own excess is reclaimed from this caller: dropping the
+        // oldest request an address holds cannot strand anybody else's TV.
+        if (source != null)
+        {
+            List<TvPairingRequestEntity> mine = await _db.TvPairingRequests
+                .Where(r => r.ExpiresAt > liveFrom && r.RequestIp == source)
+                .OrderBy(r => r.ExpiresAt)
+                .ToListAsync(token).ConfigureAwait(false);
+            if (mine.Count >= MaxLivePerSource)
+            {
+                _db.TvPairingRequests.RemoveRange(mine.Take(mine.Count - MaxLivePerSource + 1));
+                await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            }
+        }
+
+        // The global ceiling REFUSES rather than evicting. Evicting "the
+        // biggest" during a wide flood of one-request sources picks the honest
+        // household with three TVs; a request already waiting has a better claim
+        // to the last slot than one just arrived.
+        int live = await _db.TvPairingRequests
+            .CountAsync(r => r.ExpiresAt > liveFrom, token).ConfigureAwait(false);
+        if (live >= MaxLiveRequests)
+        {
+            _logger.LogWarning("TV pairing refused: {Live} live requests already held.", live);
+            return null;
+        }
 
         string userCode = await GenerateUniqueUserCodeAsync(token).ConfigureAwait(false);
         (string rawDeviceCode, string hash) = _jwt.GenerateRefreshToken();
@@ -85,7 +149,7 @@ public class TvPairingService
         TvPairingRequestEntity? request = await FindPendingByUserCodeAsync(userCode, token).ConfigureAwait(false);
         if (request == null)
             return TvPairingResult.NotFound;
-        if (request.FailedAttempts >= MaxFailedApprovals)
+        if (request.FailedAttempts >= MaxFailedApprovals && MissSourceCount(request.UserCode) >= MinLockSources)
             return TvPairingResult.Locked;
         if (request.Status != TvPairingStatus.Pending)
             return TvPairingResult.AlreadyResolved;
@@ -113,16 +177,34 @@ public class TvPairingService
 
     /// <summary>
     /// Records a miss against a code so brute force locks the request out rather
-    /// than the whole endpoint. Called when an approval names an unknown code.
+    /// than the whole endpoint.
+    ///
+    /// This used to be called ONLY when an approval returned NotFound — i.e.
+    /// exactly when the lookup below had already failed — so it returned early
+    /// every time and <c>FailedAttempts</c> could never increment. The lockout,
+    /// and the 429 the controller returns for it, were unreachable. Callers now
+    /// pass the miss for codes that DO exist (a code named after it was already
+    /// used, or a pending-lookup that was refused), which is the case the
+    /// counter can actually see.
     /// </summary>
-    public async Task RecordFailedApprovalAsync(string userCode, CancellationToken token = default)
+    public async Task RecordFailedApprovalAsync(string userCode, string? source = null, CancellationToken token = default)
     {
         TvPairingRequestEntity? request = await FindPendingByUserCodeAsync(userCode, token).ConfigureAwait(false);
         if (request == null)
             return;
         request.FailedAttempts++;
+        if (source != null)
+        {
+            ConcurrentDictionary<string, byte> seen =
+                MissSources.GetOrAdd(request.UserCode, _ => new ConcurrentDictionary<string, byte>());
+            if (seen.Count < MaxMissSources) seen.TryAdd(source, 0);
+        }
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
+
+    /// <summary>How many distinct callers have missed on this code.</summary>
+    private static int MissSourceCount(string userCode) =>
+        MissSources.TryGetValue(userCode, out ConcurrentDictionary<string, byte>? seen) ? seen.Count : 0;
 
     /// <summary>
     /// Resolves a polling device code. A device code is single-use: once the
@@ -171,6 +253,8 @@ public class TvPairingService
             .ToListAsync(token).ConfigureAwait(false);
         if (dead.Count == 0)
             return;
+        foreach (TvPairingRequestEntity r in dead)
+            MissSources.TryRemove(r.UserCode, out _);
         _db.TvPairingRequests.RemoveRange(dead);
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
@@ -187,8 +271,10 @@ public class TvPairingService
             if (!taken)
                 return code;
         }
-        // Astronomically unlikely; better than looping forever.
-        return RandomCode(4) + RandomCode(5);
+        // Astronomically unlikely; better than looping forever. Stays 8 chars
+        // like every other path — the UI groups 4-4, so a 9th would render as
+        // ABCD-12345.
+        return RandomCode(4) + RandomCode(4);
     }
 
     private static string RandomCode(int length)

@@ -283,8 +283,11 @@ public class AuthController : ControllerBase
     [EnableRateLimiting("login")]
     public async Task<ActionResult> TvCode([FromBody] TvCodeRequestDto? request, CancellationToken token)
     {
-        var (pairing, rawDeviceCode) = await _tvPairing
+        var created = await _tvPairing
             .CreateAsync(request?.DeviceName, ClientIp(), token).ConfigureAwait(false);
+        if (created == null)
+            return StatusCode(503, new { error = "Too many pairings in progress right now — try again in a minute." });
+        var (pairing, rawDeviceCode) = created.Value;
 
         return Ok(new
         {
@@ -367,8 +370,17 @@ public class AuthController : ControllerBase
         TvPairingResult result = await _tvPairing.ApproveAsync(request.UserCode, user.Id, token).ConfigureAwait(false);
         if (result == TvPairingResult.NotFound)
         {
-            await _tvPairing.RecordFailedApprovalAsync(request.UserCode, token).ConfigureAwait(false);
+            // Nothing to charge — the code names no request. Only the per-source
+            // limiter on this endpoint applies, which is the right defence here:
+            // for an approval a correct guess wins outright, so a per-code
+            // counter can never be what stops the guessing.
             return NotFound(new { error = "That code isn't valid — check it and try again, or restart pairing on the TV." });
+        }
+        if (result == TvPairingResult.AlreadyResolved)
+        {
+            // A code that exists and is named again after it was resolved is the
+            // pattern the per-code counter CAN see.
+            await _tvPairing.RecordFailedApprovalAsync(request.UserCode, ClientIp(), token).ConfigureAwait(false);
         }
         return result switch
         {
@@ -380,6 +392,7 @@ public class AuthController : ControllerBase
 
     /// <summary>POST /api/auth/tv/deny — refuse a request so the TV stops polling.</summary>
     [HttpPost("/api/auth/tv/deny")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult> TvDeny([FromBody] TvApproveRequestDto request, CancellationToken token)
     {
         if (HttpContext.Items["User"] is not UserEntity)
@@ -396,14 +409,23 @@ public class AuthController : ControllerBase
     /// can be told apart from something that looks wrong.
     /// </summary>
     [HttpGet("/api/auth/tv/pending")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult> TvPending([FromQuery] string userCode, CancellationToken token)
     {
         if (HttpContext.Items["User"] is not UserEntity)
             return Unauthorized(new { error = "Sign in first" });
         TvPairingRequestEntity? request = await _tvPairing
             .FindPendingByUserCodeAsync(userCode, token).ConfigureAwait(false);
-        if (request == null || request.Status != TvPairingStatus.Pending)
+        if (request == null)
             return NotFound(new { error = "That code isn't valid — check it and try again." });
+        if (request.Status != TvPairingStatus.Pending)
+        {
+            // The code is real; this caller just named it in a state it can't
+            // be shown in. That is a miss worth counting — this endpoint is the
+            // enumeration oracle, not approve.
+            await _tvPairing.RecordFailedApprovalAsync(userCode, ClientIp(), token).ConfigureAwait(false);
+            return NotFound(new { error = "That code isn't valid — check it and try again." });
+        }
         return Ok(new
         {
             deviceName = request.DeviceName ?? "Unnamed device",
