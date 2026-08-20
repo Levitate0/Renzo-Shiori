@@ -337,20 +337,30 @@ function ReaderInner() {
   const loadedDimsRef = useRef<Map<number, { w: number; h: number }>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  // Inter-chapter buffer dividers (keyed by segment index `si`): rendered as
-  // a compact "square" page by default so they can't be mistaken for real
-  // content or throw off the near-the-bottom append heuristic below. Once a
-  // divider is safely behind the reader (scrolled fully out of view, or the
-  // reader is 4 real pages past it) it's promoted to a full-screen block —
-  // see the matching comment on the divider's render for why a tall block
-  // is needed at all, just not while it's still the active/nearby content.
+  // Inter-chapter buffer dividers (keyed by segment index `si`): a full-screen
+  // block that collapses to a sliver once it is no longer needed at that size.
+  //
+  // Full height is what the end-of-strip block uses while the next chapter is
+  // still loading — it reads as a real page, gives the buttons room, and (see
+  // the render comment) guarantees the scroll tracker clearance below a
+  // short/wide last page whose box collapses when it finally loads. Once the
+  // next chapter's pages are actually below it, that clearance comes from the
+  // chapter itself and a screen of empty transition is just scrolling the user
+  // has to do for nothing — so it shrinks to a one-line sliver.
+  //
+  // It only ever collapses while fully off-screen. Shrinking a block the reader
+  // is looking at would yank the page out from under them.
   const dividerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const [grownDividers, setGrownDividers] = useState<Set<number>>(new Set());
-  // Mirrors `grownDividers` for the scroll-driven update() closure below (same
-  // reason maybeAppendRef exists: a useEffect-subscribed scroll listener would
-  // otherwise read a stale value captured whenever it last resubscribed).
-  const grownDividersRef = useRef(grownDividers);
-  useEffect(() => { grownDividersRef.current = grownDividers; }, [grownDividers]);
+  const [collapsedDividers, setCollapsedDividers] = useState<Set<number>>(new Set());
+  // Mirrors `collapsedDividers` for the scroll-driven update() closure below
+  // (same reason maybeAppendRef exists: a useEffect-subscribed scroll listener
+  // would otherwise read a stale value captured whenever it last resubscribed).
+  const collapsedDividersRef = useRef(collapsedDividers);
+  useEffect(() => { collapsedDividersRef.current = collapsedDividers; }, [collapsedDividers]);
+  // Set to the pre-collapse scrollHeight when a divider ABOVE the viewport is
+  // about to shrink: losing height above the reader would otherwise slide the
+  // content up under them. Consumed by the layout effect that re-anchors.
+  const dividerCollapseAdjustRef = useRef<number | null>(null);
   const progressSentRef = useRef<{ key: string; page: number; at: number }>({ key: "", page: -1, at: 0 });
   // Progress reporting is "armed" a moment after a chapter loads, so the position
   // churn during initial layout/resume doesn't get written as real reading.
@@ -1107,6 +1117,19 @@ function ReaderInner() {
     prependAdjustRef.current = null;
   }, [prepended]);
 
+  // Mirror of the above for a divider collapsing above the viewport: it removes
+  // height the reader has already scrolled past, so without this the content
+  // slides up and the reader loses their place mid-chapter.
+  useLayoutEffect(() => {
+    const before = dividerCollapseAdjustRef.current;
+    if (before == null) return;
+    dividerCollapseAdjustRef.current = null;
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const lost = before - scroller.scrollHeight;
+    if (lost > 0) scroller.scrollTop -= lost;
+  }, [collapsedDividers]);
+
   // Sliding window: keep only ±CHAPTER_WINDOW chapters around the active one,
   // dropping the rest (which frees their page images). `active` is the on-screen
   // segment index and `currentGi` the on-screen global page index — the page we
@@ -1272,23 +1295,31 @@ function ReaderInner() {
       if (scrollingUp) maybePrependRef.current();
       pruneWindowRef.current(si, current);
 
-      // Promote a divider to its full-screen size once it's safely behind
-      // the reader — either scrolled fully out of view, or the reader is 4
-      // real pages past where it sits — never while it's still nearby, so
-      // it can't dominate the screen or read as "near the bottom" to the
-      // append check above while the reader is actually still arriving.
-      let grew: number[] | null = null;
+      // Collapse a divider to its sliver once it is fully off-screen — above
+      // or below. Below is the common case and the point of the whole thing:
+      // infinite scroll appends the next chapter well before the reader gets
+      // there, so by the time they arrive the transition is already a sliver
+      // and they never scroll through a screen of nothing. Never collapse one
+      // that is even partly visible; that would move the page under the reader.
+      const sRect = scroller.getBoundingClientRect();
+      let collapse: number[] | null = null;
+      let anyAbove = false;
       for (const [si2, node] of dividerRefs.current.entries()) {
-        if (grownDividersRef.current.has(si2)) continue;
-        const off = segOffsets[si2] ?? 0;
-        const farEnough = current >= off + 4;
-        const outOfView = !farEnough && node.getBoundingClientRect().bottom < 0;
-        if (farEnough || outOfView) (grew ??= []).push(si2);
+        if (collapsedDividersRef.current.has(si2)) continue;
+        const r = node.getBoundingClientRect();
+        const above = r.bottom < sRect.top;
+        const below = r.top > sRect.bottom;
+        if (!above && !below) continue;
+        if (above) anyAbove = true;
+        (collapse ??= []).push(si2);
       }
-      if (grew) {
-        setGrownDividers((prev) => {
+      if (collapse) {
+        // Height disappearing ABOVE the viewport shifts everything up; record
+        // the current scrollHeight so the layout effect can put it back.
+        if (anyAbove) dividerCollapseAdjustRef.current = scroller.scrollHeight;
+        setCollapsedDividers((prev) => {
           const next = new Set(prev);
-          for (const si2 of grew!) next.add(si2);
+          for (const si2 of collapse!) next.add(si2);
           return next;
         });
       }
@@ -1606,34 +1637,45 @@ function ReaderInner() {
             {segments.map((seg, si) => (
               <React.Fragment key={seg.key}>
                 {si > 0 && (
-                  // Renders as a compact "square" page by default — tall enough
-                  // for the scroll tracker's probe line to clear the previous
-                  // page normally, but not so tall it dominates the screen or
-                  // reads as "near the bottom" to the infinite-scroll append
-                  // check while it's still the active/nearby content (a full
-                  // -screen block here was pulling the next chapter in and
-                  // marking the current one read the moment this divider was
-                  // the only thing on screen, well before it was actually
-                  // read). Only once it's safely behind the reader — scrolled
-                  // fully out of view, or 4 real pages further in — does it
-                  // grow to a full screen, which is what actually guarantees
-                  // the probe line got real clearance past a short/wide last
-                  // page (e.g. a scanlator credits banner) whose placeholder
-                  // height can collapse once it finishes loading. By the time
-                  // it grows, the reader is already well past it, so the
-                  // larger size no longer affects anything it could distort.
+                  // Full screen until it is scrolled off, then a sliver — same
+                  // block the end of the strip shows while the next chapter is
+                  // still loading, so the transition doesn't change shape when
+                  // that chapter arrives.
+                  //
+                  // Full height matters only while this is the last thing in
+                  // the strip: it's what guarantees the scroll tracker clearance
+                  // below a short/wide last page (a scanlator credits banner,
+                  // say) whose box collapses when it finally loads, which is how
+                  // that page ends up never marked read. Once the next chapter's
+                  // pages sit below it, they provide that clearance many times
+                  // over and the screen of empty transition is pure scrolling
+                  // tax — so it drops to one line. The collapse is gated on
+                  // being off-screen (see the tracker), so the reader never sees
+                  // it happen.
                   <div
                     ref={(el) => { if (el) dividerRefs.current.set(si, el); else dividerRefs.current.delete(si); }}
                     className={`flex w-full flex-col items-center justify-center px-4 text-center text-white ${
-                      grownDividers.has(si) ? "min-h-dvh" : "aspect-square"
+                      collapsedDividers.has(si) ? "py-3" : "min-h-dvh"
                     }`}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <div className="text-[11px] uppercase tracking-[0.15em] text-white/35">Finished</div>
-                    <div className="mt-0.5 text-sm font-medium text-white/70">{segments[si - 1]?.name}</div>
-                    <div className="mx-auto my-3 h-px w-16 bg-white/15" />
-                    <div className="text-[11px] uppercase tracking-[0.15em] text-white/35">Up next</div>
-                    <div className="mt-0.5 text-sm font-medium text-primary/90">{seg.name}</div>
+                    {collapsedDividers.has(si) ? (
+                      <div className="flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[11px] leading-tight">
+                        <span className="uppercase tracking-[0.15em] text-white/30">Finished</span>
+                        <span className="font-medium text-white/55">{segments[si - 1]?.name}</span>
+                        <span className="text-white/20">·</span>
+                        <span className="uppercase tracking-[0.15em] text-white/30">Up next</span>
+                        <span className="font-medium text-primary/80">{seg.name}</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="text-[11px] uppercase tracking-[0.15em] text-white/35">Finished</div>
+                        <div className="mt-0.5 text-sm font-medium text-white/70">{segments[si - 1]?.name}</div>
+                        <div className="mx-auto my-3 h-px w-16 bg-white/15" />
+                        <div className="text-[11px] uppercase tracking-[0.15em] text-white/35">Up next</div>
+                        <div className="mt-0.5 text-sm font-medium text-primary/90">{seg.name}</div>
+                      </>
+                    )}
                   </div>
                 )}
                 {Array.from({ length: seg.pageCount }, (_, i) => {
