@@ -360,6 +360,26 @@ namespace RenzoBackend.Services.Series
         /// <summary>
         /// Updates a source with latest series information (moved from SeriesUpdateService)
         /// </summary>
+        /// <summary>
+        /// The newest chapter in a source's chapter list.
+        ///
+        /// This used to be <c>OrderByDescending(a =&gt; a.Index).First()</c>, which
+        /// assumes Index rises with the chapter number. That only holds for
+        /// sources whose list arrives oldest-first. Plenty return it newest-first
+        /// — EZmanga and Manga Ball among them — and there the HIGHEST Index is
+        /// the OLDEST chapter, so a 67-chapter series recorded "Chapter 1" as its
+        /// latest and Browse showed that as the series' chapter number.
+        ///
+        /// ParsedNumber is the actual chapter number, so it does not care which
+        /// way round the source hands the list over. DateUpload breaks ties
+        /// between chapters sharing a number (re-releases, split uploads).
+        /// </summary>
+        private static ParsedChapter? LatestChapterOf(IEnumerable<ParsedChapter> chapters) =>
+            chapters
+                .OrderByDescending(a => a.ParsedNumber)
+                .ThenByDescending(a => a.DateUpload)
+                .FirstOrDefault();
+
         public async Task<JobResult> UpdateSourceAsync(string mihonProviderId, CancellationToken token)
         {
             try
@@ -432,10 +452,14 @@ namespace RenzoBackend.Services.Series
                             }
 
                             s.Chapters = chaps;
-                            ParsedChapter? latest_online = chaps.OrderByDescending(a => a.Index).FirstOrDefault();
+                            ParsedChapter? latest_online = LatestChapterOf(chaps);
                             if (latest_online != null && latestDates.TryGetValue(mihonId, out (DateTime, Manga?, ParsedChapter?) value2) && value2.Item2 != null && value2.Item3!=null)
                             {
-                                if ((latestDates[mihonId].Item3!.Index >= latest_online.Index) &&
+                                // Compare by chapter number for the same reason:
+                                // "we already know something at least this new" is a
+                                // statement about the chapter, not its position in
+                                // whatever order the source happened to return.
+                                if ((latestDates[mihonId].Item3!.ParsedNumber >= latest_online.ParsedNumber) &&
                                     (latestDates[mihonId].Item3!.DateUpload >= latest_online.DateUpload))
                                 {
                                     upToDate = true;
@@ -469,7 +493,7 @@ namespace RenzoBackend.Services.Series
                         await s.PopulateSeriesAsync(src, c.Series, _cache).ConfigureAwait(false);
                     }
                     s.Chapters = c.Chapters;
-                    ParsedChapter? latest_online = s.Chapters.OrderByDescending(a => a.Index).FirstOrDefault();
+                    ParsedChapter? latest_online = LatestChapterOf(s.Chapters);
                     DateTime latestUTC = latest_online?.DateUpload.DateTime ?? DateTime.MinValue;
 
                     if (latestUTC > DateTime.UtcNow || latestUTC.AddMonths(1) < DateTime.UtcNow)
