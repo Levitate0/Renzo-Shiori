@@ -1363,13 +1363,15 @@ class KcefWebViewProvider(
 
     override fun evaluateJavaScript(
         script: String,
-        resultCallback: ValueCallback<String>,
+        resultCallback: ValueCallback<String>?,
     ) {
-        // Extensions may call evaluateJavascript(script, null) (legal on Android). resultCallback is
-        // typed non-null here, but a null slips through from the extension's Java call and NPEs the
-        // ConcurrentHashMap.put below. Substitute a no-op so the eval still runs. (Previously handled
-        // by the .NET SafeWebViewProvider shim; fixed at the root now that we run on a real JVM.)
-        @Suppress("SENSELESS_COMPARISON")
+        // Extensions may call evaluateJavascript(script, null) — legal on Android, and AllManga and
+        // Comix both do it. The parameter MUST be declared nullable: with a non-null type Kotlin
+        // emits Intrinsics.checkNotNullParameter at the top of the method, which throws
+        // "Parameter specified as non-null is null" BEFORE the body runs — so the elvis below never
+        // got the chance to substitute anything, and the previous non-null signature left the crash
+        // exactly as it was (surfacing as a 502 from /source/pages). Nullable here removes the
+        // intrinsic; the elvis then does the real work.
         val cb: ValueCallback<String> = resultCallback ?: ValueCallback<String> { }
 
         val activeBrowser = browser
