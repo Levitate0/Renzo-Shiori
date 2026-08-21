@@ -90,8 +90,15 @@ public class CookieJarBridge
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to inject cookies into the sidecar jar");
-                // fall through to the in-process store as a best-effort backup
             }
+            // The sidecar IS the live jar (cutover complete) — the in-process
+            // store below is read by no source. So once a sidecar exists, its
+            // result is the honest answer: falling through to that dead store and
+            // returning its count reported "N cookies active" while the sources
+            // still ran logged-out, which is exactly how a stale login looked
+            // green. Return 0 on sidecar failure so the caller records a failure
+            // (a restart's re-inject, below, recovers when the sidecar is back).
+            return 0;
         }
 
         CookieStore? store = Store;

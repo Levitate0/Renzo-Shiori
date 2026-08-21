@@ -49,21 +49,17 @@ public class ReaderPreviewService
     private static readonly TimeSpan StreamProbeTimeout = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// EnsureLoggedInAsync performs a REAL login POST every call. The locked-chapter
-    /// poll retries page fetches repeatedly, and a chapter that stays locked would
-    /// re-login on every attempt — spamming the coin site's login endpoint (ban
-    /// risk). Gate attempts to once per provider per minute; within the window the
-    /// existing session is reused without a fresh POST.
+    /// A REAL login POST is expensive and the locked-chapter poll retries fast,
+    /// so this delegates to SiteAuthService's shared, single-flight relogin gate
+    /// (once per user+provider/minute). It used to keep its OWN IMemoryCache gate,
+    /// which (a) was a check-then-act race — several concurrent stream requests for
+    /// the same locked chapter all missed the cache and each fired a login — and
+    /// (b) didn't share throttle state with the download path's gate, so a reader
+    /// and a download relogin for the same site could still coincide. One shared
+    /// gate fixes both.
     /// </summary>
-    private async Task<bool> RateLimitedReloginAsync(Guid userId, string provider, CancellationToken token)
-    {
-        string gate = $"siteauth:relogin:{userId}:{provider}";
-        if (_cache.TryGetValue(gate, out bool lastResult))
-            return lastResult;
-        bool ok = await _siteAuth.EnsureLoggedInAsync(userId, provider, token).ConfigureAwait(false);
-        _cache.Set(gate, ok, TimeSpan.FromSeconds(60));
-        return ok;
-    }
+    private Task<bool> RateLimitedReloginAsync(Guid userId, string provider, CancellationToken token) =>
+        _siteAuth.EnsureLoggedInRateLimitedAsync(userId, provider, token);
 
     private readonly StreamImageCache _imageCache;
 

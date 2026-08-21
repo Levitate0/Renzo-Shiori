@@ -44,6 +44,7 @@ namespace RenzoBackend.Services.Downloads
         private readonly HashCacheService _hashCache;
         private readonly ThumbCacheService _thumb;
         private readonly Series.VComicsContentService _vcomics;
+        private readonly SiteAuth.SiteAuthService _siteAuth;
         private static readonly KeyedAsyncLock _lock = new KeyedAsyncLock();
 
         public DownloadCommandService(
@@ -58,8 +59,10 @@ namespace RenzoBackend.Services.Downloads
             Series.SeriesStateService stateService,
             HashCacheService hashCache,
             ThumbCacheService thumb,
-            Series.VComicsContentService vcomics)
+            Series.VComicsContentService vcomics,
+            SiteAuth.SiteAuthService siteAuth)
         {
+            _siteAuth = siteAuth;
             _vcomics = vcomics;
             _mihon = mihon;
             _db = db;
@@ -145,7 +148,29 @@ namespace RenzoBackend.Services.Downloads
                 // which reads as "this source is broken". Record the lock so the
                 // UI shows it as purchasable and stop.
                 if (pages == null && ModelExtensions.IsPurchaseError(pageFailure))
-                    return await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
+                {
+                    // A lapsed site session throws the SAME purchase error as a
+                    // genuinely unowned chapter — so a session that simply expired
+                    // mid-download would permanently mark an OWNED chapter locked.
+                    // Before giving up, if the series' owner holds a login for this
+                    // source, do one rate-gated verified re-login and re-fetch once.
+                    // The gate (per user+provider/minute) keeps a batch of locked
+                    // chapters from each triggering a login. If it's really unowned,
+                    // this fetch throws the same error again and we fall through to
+                    // the lock exactly as before — no retry loop, no queue change.
+                    if (downloadOwnerId is Guid oid &&
+                        await _siteAuth.EnsureLoggedInRateLimitedAsync(oid, src.Name, token).ConfigureAwait(false))
+                    {
+                        pageFailure = null;
+                        pages = await _mihon.MihonErrorWrapperAsync(
+                                    () => SourceTimeout.RunAsync(ct => src.GetPagesAsync(ch.Chapter, ct), token),
+                                    e => pageFailure = e,
+                                    "Unable to get Pages from Chapter {ParsedNumber}, Series {Title} from {provider}", ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                    }
+
+                    if (pages == null && ModelExtensions.IsPurchaseError(pageFailure))
+                        return await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
+                }
 
                 if (pages==null)
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
