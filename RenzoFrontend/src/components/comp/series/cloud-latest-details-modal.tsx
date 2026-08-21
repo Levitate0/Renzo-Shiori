@@ -15,6 +15,7 @@ import {
   DrawerDescription,
   DrawerFooter,
 } from '@/components/ui/drawer';
+import { isAdultTag, useHideAdult } from "@/lib/utils/adult-filter";
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Plus, ExternalLink } from 'lucide-react';
@@ -44,6 +45,9 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
   item,
   onAddSeries,
 }) => {
+  // An adult rating tag shouldn't be spelled out on a card while 18+ is hidden —
+  // the grid filters the series, but this modal rendered its raw tag list.
+  const [hideAdultTags] = useHideAdult();
   const statusDisplay = getStatusDisplay(item.status);
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [coverExpanded, setCoverExpanded] = React.useState(false);
@@ -186,7 +190,7 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
               {/* Genre tags */}
               {item.genre && item.genre.length > 0 && (
                 <div className="flex flex-wrap gap-[5px] mt-2">
-                  {item.genre.map((g) => (
+                  {item.genre.filter((g) => !hideAdultTags || !isAdultTag(g)).map((g) => (
                     <span
                       key={g}
                       className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted border border-border text-[11px] text-muted-foreground"
@@ -314,7 +318,7 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
           {item.genre && item.genre.length > 0 && (
             <div className="px-3.5 py-2.5 border-b border-border">
               <div className="flex flex-wrap gap-1">
-                {item.genre.map((g) => (
+                {item.genre.filter((g) => !hideAdultTags || !isAdultTag(g)).map((g) => (
                   <span
                     key={g}
                     className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted border border-border text-[10px] text-muted-foreground"

@@ -436,6 +436,20 @@ export default function CloudLatestPage() {
     [items, hideAdult],
   );
 
+  // Hiding 18+ happens after the fetch, so a server page that is entirely adult
+  // renders as a blank grid — and because the infinite-scroll sentinel then has
+  // nothing to observe, Browse dead-ends with more results still available.
+  // Pull the next page automatically while the visible list is empty. Bounded by
+  // hasMore, and only while nothing is already in flight.
+  useEffect(() => {
+    if (!hasMore || isLoading || isLoadingMore) return;
+    if (items.length > 0 && visibleItems.length === 0) {
+      setIsLoadingMore(true);
+      setCurrentPage((prev) => prev + 1);
+    }
+  }, [items, visibleItems, hasMore, isLoading, isLoadingMore]);
+
+
   // Browse spotlight CTA: if the candidate already has a backing seriesId
   // (e.g. became InLibrary mid-session), navigate to its detail page;
   // otherwise open the AddSeries modal pre-filled with the title so the
