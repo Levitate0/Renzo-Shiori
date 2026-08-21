@@ -43,11 +43,6 @@ namespace RenzoBackend.Services.Series
             _logger = logger;
         }
 
-        // Upper bound on rows scanned when applying a genre filter client-side.
-        // Genre is a value-converted CSV column EF can't translate a Contains/All
-        // predicate over, so we stream FetchDate-desc rows and filter in memory up
-        // to this cap to keep an unfiltered-heavy table from being fully walked.
-        private const int MaxGenreScanRows = 20_000;
 
         /// <summary>
         /// True when a series belonging to <paramref name="seriesOwnerId"/> may be
@@ -449,100 +444,93 @@ namespace RenzoBackend.Services.Series
             if (enabledForBrowse != null && enabledForBrowse.Count == 0)
                 return []; // nothing enabled yet — an empty Browse, not "everything"
 
-            IQueryable<LatestSerieEntity> series = _db.LatestSeries;
-            if (!string.IsNullOrEmpty(mihonProviderId))
-            {
-                series = series.Where(a => a.MihonProviderId == mihonProviderId);
-            }
-            if (enabledForBrowse != null)
-            {
-                series = series.Where(a => a.MihonProviderId != null && enabledForBrowse.Contains(a.MihonProviderId));
-            }
-
-            series = series.OrderByDescending(a => a.FetchDate);
+            IQueryable<LatestSerieEntity> series;
 
             // Normalize the incoming genre filter; null/empty (after trimming blanks)
-            // means "no tag filter" and we take the fast SQL pagination path.
-            List<string>? normalizedGenres = null;
-            if (genres != null && genres.Count > 0)
-            {
-                normalizedGenres = genres
-                    .Where(g => !string.IsNullOrWhiteSpace(g))
-                    .Select(g => g.Trim())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                if (normalizedGenres.Count == 0)
-                    normalizedGenres = null;
-            }
+            // means "no tag filter".
+            List<string>? normalizedGenres = NormalizeGenres(genres);
 
-            if (normalizedGenres == null)
-            {
-                if (start > 0)
-                    series = series.Skip(start);
+            // Genre is a value-converted CSV column, so EF can't translate a
+            // predicate over it. This used to stream FetchDate-desc rows and match
+            // in memory up to a 20k scan cap — which quietly made tag filtering a
+            // lie: the tag picker counts across the WHOLE catalogue (~475k rows),
+            // so it would advertise "Psychological (25,914)" while the filter could
+            // only ever see the newest 20k rows and reach ~900 of them. Measured
+            // reachability was 3-8% depending on the tag, and worse for AND-combos.
+            //
+            // Pushing the match into SQL fixes both halves: it sees every row, and
+            // it's FASTER, because IX_LatestSerie_FetchDate lets SQLite walk in
+            // FetchDate order and stop as soon as the page is full instead of
+            // materialising 20k entities (measured 2-15ms/page vs a 20k-row scan).
+            if (normalizedGenres != null)
+                series = ApplyGenreFilterSql(normalizedGenres);
+            else
+                series = _db.LatestSeries;
 
-                List<LatestSeriesDto> page = (await series.Take(count).ToListAsync(token).ConfigureAwait(false))
-                    .Select(a => a.ToSeriesInfo()).ToList();
-                await PopulateOwnerLibraryStatusAsync(page, requesterId, allowAll, token).ConfigureAwait(false);
-                await PopulateNsfwDetectionAsync(page, token).ConfigureAwait(false);
-                return page;
-            }
+            if (!string.IsNullOrEmpty(mihonProviderId))
+                series = series.Where(a => a.MihonProviderId == mihonProviderId);
+            if (enabledForBrowse != null)
+                series = series.Where(a => a.MihonProviderId != null && enabledForBrowse.Contains(a.MihonProviderId));
 
-            // Genre filtering. Genre is stored as a value-converted CSV column
-            // (List<string> ↔ string), so EF can't translate the predicate to SQL.
-            // Stream rows in FetchDate-desc order, filter client-side with AND
-            // semantics (a row must carry every selected tag), apply the offset
-            // against matches, and stop once enough are produced or the scan cap hits.
-            var taken = new List<LatestSerieEntity>(count);
-            var rangeStart = Math.Max(0, start);
-            int matched = 0;
-            int scanned = 0;
+            series = series.OrderByDescending(a => a.FetchDate);
+            if (start > 0)
+                series = series.Skip(start);
 
-            await foreach (var row in series.AsAsyncEnumerable().WithCancellation(token))
-            {
-                scanned++;
-                if (scanned > MaxGenreScanRows)
-                    break;
-
-                if (row.Genre == null || row.Genre.Count == 0)
-                    continue;
-
-                var rowSet = new HashSet<string>(row.Genre.Count, StringComparer.OrdinalIgnoreCase);
-                foreach (var g in row.Genre)
-                {
-                    var trimmed = g?.Trim();
-                    if (!string.IsNullOrEmpty(trimmed))
-                        rowSet.Add(trimmed);
-                }
-
-                bool hasAll = true;
-                foreach (var want in normalizedGenres)
-                {
-                    if (!rowSet.Contains(want))
-                    {
-                        hasAll = false;
-                        break;
-                    }
-                }
-                if (!hasAll)
-                    continue;
-
-                if (matched < rangeStart)
-                {
-                    matched++;
-                    continue;
-                }
-
-                taken.Add(row);
-                matched++;
-                if (taken.Count >= count)
-                    break;
-            }
-
-            List<LatestSeriesDto> result = taken.Select(a => a.ToSeriesInfo()).ToList();
+            List<LatestSeriesDto> result = (await series.Take(count).ToListAsync(token).ConfigureAwait(false))
+                .Select(a => a.ToSeriesInfo()).ToList();
             await PopulateOwnerLibraryStatusAsync(result, requesterId, allowAll, token).ConfigureAwait(false);
             await PopulateNsfwDetectionAsync(result, token).ConfigureAwait(false);
             return result;
         }
+
+        /// <summary>
+        /// Trims/dedupes an incoming tag filter. Returns null for "no filter" so
+        /// callers can take the plain pagination path.
+        /// </summary>
+        private static List<string>? NormalizeGenres(IReadOnlyList<string>? genres)
+        {
+            if (genres == null || genres.Count == 0)
+                return null;
+            List<string> normalized = genres
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .Select(g => g.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return normalized.Count == 0 ? null : normalized;
+        }
+
+        /// <summary>
+        /// A LatestSeries query filtered to rows carrying EVERY supplied tag (AND
+        /// semantics), matched in SQL.
+        ///
+        /// Genre is persisted as a CSV string by a value converter, so the match is
+        /// done by wrapping both sides in commas — <c>',Action,Romance,' LIKE '%,Action,%'</c>
+        /// — which prevents a tag matching a substring of a different one ("Art"
+        /// inside "Martial Arts"). <c>replace(Genre, ', ', ',')</c> normalizes the
+        /// spacing some sources emit. SQLite's LIKE is case-insensitive for ASCII,
+        /// which matches the OrdinalIgnoreCase semantics used elsewhere.
+        ///
+        /// Tags are passed as PARAMETERS, never interpolated; LIKE wildcards inside
+        /// a tag are escaped so a tag containing % or _ can't widen the match.
+        /// </summary>
+        private IQueryable<LatestSerieEntity> ApplyGenreFilterSql(List<string> normalizedGenres)
+        {
+            var clauses = new List<string>(normalizedGenres.Count);
+            var args = new object[normalizedGenres.Count];
+            for (int i = 0; i < normalizedGenres.Count; i++)
+            {
+                clauses.Add($"(',' || replace(\"Genre\", ', ', ',') || ',') LIKE ('%,' || {{{i}}} || ',%') ESCAPE '\\'");
+                args[i] = EscapeLike(normalizedGenres[i]);
+            }
+
+            string sql = "SELECT * FROM \"LatestSeries\" WHERE \"Genre\" IS NOT NULL AND \"Genre\" <> '' AND "
+                         + string.Join(" AND ", clauses);
+            return _db.LatestSeries.FromSqlRaw(sql, args);
+        }
+
+        /// <summary>Escapes LIKE wildcards so a tag matches literally.</summary>
+        private static string EscapeLike(string value) =>
+            value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 
         /// <summary>
         /// MihonProviderIds the given user has personally enabled, or null for "no
@@ -764,7 +752,18 @@ namespace RenzoBackend.Services.Series
         private async Task<List<LatestSeriesDto>> GetSourceCatalogPageAsync(int start, int count,
             string mihonProviderId, IReadOnlyList<string>? genres, Guid requesterId, bool allowAll, CancellationToken token)
         {
-            List<LatestSeriesDto> merged = (await _db.LatestSeries
+            // Cached rows for this source. Without a tag filter we take the newest
+            // LiveCatalogMaxRows and merge the live catalogue on top. WITH one, that
+            // cap would be applied BEFORE the filter — matching tags against only
+            // the newest 400 rows of a source that may hold 78k — so the filter runs
+            // in SQL across all of the source's rows instead (same reasoning as the
+            // all-sources path above).
+            List<string>? sourceGenres = NormalizeGenres(genres);
+            IQueryable<LatestSerieEntity> cached = sourceGenres != null
+                ? ApplyGenreFilterSql(sourceGenres)
+                : _db.LatestSeries;
+
+            List<LatestSeriesDto> merged = (await cached
                     .Where(a => a.MihonProviderId == mihonProviderId)
                     .OrderByDescending(a => a.FetchDate)
                     .Take(LiveCatalogMaxRows)
@@ -788,19 +787,16 @@ namespace RenzoBackend.Services.Series
             // In-library status is re-derived below (PopulateOwnerLibraryStatusAsync)
             // against the REQUESTING user's own library, for both cached and live rows.
 
-            List<string>? wantedGenres = genres?
-                .Where(g => !string.IsNullOrWhiteSpace(g))
-                .Select(g => g.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (wantedGenres is { Count: > 0 })
+            // Cached rows came back already filtered; this still has to police the
+            // LIVE rows merged in above, which never went through SQL.
+            if (sourceGenres != null)
             {
                 merged = merged.Where(row =>
                 {
                     if (row.Genre == null || row.Genre.Count == 0)
                         return false;
                     var rowSet = new HashSet<string>(row.Genre.Select(g => g.Trim()), StringComparer.OrdinalIgnoreCase);
-                    return wantedGenres.All(rowSet.Contains);
+                    return sourceGenres.All(rowSet.Contains);
                 }).ToList();
             }
 
