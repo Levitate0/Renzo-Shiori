@@ -14,30 +14,62 @@ import { useSyncExternalStore, useCallback } from "react";
  * one click in the user menu. Nothing is deleted or changed server-side.
  */
 
+// Explicit RATING/act tags only. Ecchi, mature, suggestive, seinen, josei and
+// harem are deliberately absent — this targets 18+, not fanservice — as are
+// orientation genres (yaoi/yuri/BL) and formats (doujinshi), which say what a
+// work is about rather than how explicit it is.
+//
+// Kept in step with the server's AdultContentClassifier.cs and Renzo Hub's
+// AdultFilter.kt. All three change together.
 const ADULT_TAGS = new Set([
-  "hentai",
-  "erotica",
-  "adult",
-  "smut",
-  "pornographic",
-  "porn",
-  "18+",
-  "r18",
-  "r-18",
-  "r18+",
-  "r-18g",
-  "nsfw",
+  // Ratings
+  "hentai", "erotica", "erotic", "adult", "smut", "pornographic", "porn",
+  "18+", "r18", "r-18", "r18+", "r-18g", "nsfw", "adult (18+)", "explicit",
+  // Explicit acts/kinks — a source that tags "Blowjob" but not "Adult" would
+  // otherwise pass straight through a hide-18+ filter.
+  "blowjob", "double penetration", "sex toys", "sexual violence",
+  "sexual abuse", "rape", "incest", "netorare", "ntr", "bdsm",
+  "bestiality", "futanari", "shemale", "dickgirl", "milf", "nudity",
+  // Sexualised minors — never reachable with 18+ hidden.
+  "loli", "lolicon", "shota", "shotacon",
 ]);
+
+/**
+ * The comparable pieces of a raw tag. Sources dress the same rating up in
+ * different ways and an exact-match set misses all of them: MangaDex-style
+ * prefixes ("Content rating: Pornographic") and bundled alternatives
+ * ("Futanari | Shemale | Dickgirl", "Fellatio/Blowjob"). Strip the prefix,
+ * split the alternatives, and match each piece on its own.
+ */
+function tagParts(raw: string): string[] {
+  let tag = raw.trim();
+  const colon = tag.indexOf(":");
+  if (colon > 0 && colon < tag.length - 1) {
+    const prefix = tag.slice(0, colon).trim().toLowerCase();
+    if (prefix === "content rating" || prefix === "rating" || prefix === "genre") {
+      tag = tag.slice(colon + 1).trim();
+    }
+  }
+  const parts = [tag];
+  if (tag.includes("|") || tag.includes("/")) {
+    for (const p of tag.split(/[|/]/)) {
+      const t = p.trim();
+      if (t) parts.push(t);
+    }
+  }
+  return parts;
+}
 
 /** True when the series' genres/tags mark it as explicit adult (18+) content. */
 export function isAdultSeries(genres?: string[] | null): boolean {
   if (!genres || genres.length === 0) return false;
-  return genres.some((g) => ADULT_TAGS.has(g.trim().toLowerCase()));
+  return genres.some((g) => isAdultTag(g));
 }
 
 /** True when a single tag name is an explicit adult rating. */
 export function isAdultTag(tag: string): boolean {
-  return ADULT_TAGS.has(tag.trim().toLowerCase());
+  if (!tag) return false;
+  return tagParts(tag).some((p) => ADULT_TAGS.has(p.toLowerCase()));
 }
 
 /**

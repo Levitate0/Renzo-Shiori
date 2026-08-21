@@ -26,10 +26,46 @@ object AdultFilter {
     private const val KEY = "renzo_hide_adult"
 
     /** Tag set the web classifies on, verbatim. */
+    // Kept in step with the server's AdultContentClassifier.cs and the web's
+    // adult-filter.ts. Explicit RATING/act tags only — ecchi/mature/seinen/josei/
+    // harem are deliberately absent (this targets 18+, not fanservice), as are
+    // orientation genres and formats.
     private val ADULT_TAGS = setOf(
-        "hentai", "erotica", "adult", "smut", "pornographic", "porn",
-        "18+", "r18", "r-18", "r18+", "r-18g", "nsfw",
+        "hentai", "erotica", "erotic", "adult", "smut", "pornographic", "porn",
+        "18+", "r18", "r-18", "r18+", "r-18g", "nsfw", "adult (18+)", "explicit",
+        // Explicit acts/kinks: a source tagging "Blowjob" but not "Adult" would
+        // otherwise pass straight through the filter.
+        "blowjob", "double penetration", "sex toys", "sexual violence",
+        "sexual abuse", "rape", "incest", "netorare", "ntr", "bdsm",
+        "bestiality", "futanari", "shemale", "dickgirl", "milf", "nudity",
+        // Sexualised minors — never reachable with 18+ hidden.
+        "loli", "lolicon", "shota", "shotacon",
     )
+
+    /**
+     * The comparable pieces of a raw tag. Sources dress the same rating up in
+     * different ways: MangaDex-style prefixes ("Content rating: Pornographic")
+     * and bundled alternatives ("Futanari | Shemale | Dickgirl").
+     */
+    private fun tagParts(raw: String): List<String> {
+        var tag = raw.trim()
+        val colon = tag.indexOf(':')
+        if (colon > 0 && colon < tag.length - 1) {
+            val prefix = tag.substring(0, colon).trim().lowercase()
+            if (prefix == "content rating" || prefix == "rating" || prefix == "genre") {
+                tag = tag.substring(colon + 1).trim()
+            }
+        }
+        val parts = mutableListOf(tag)
+        if (tag.contains('|') || tag.contains('/')) {
+            tag.split('|', '/').forEach { p -> p.trim().takeIf { it.isNotEmpty() }?.let(parts::add) }
+        }
+        return parts
+    }
+
+    /** True when a single tag name is an explicit 18+ rating. */
+    fun isAdultTag(tag: String): Boolean =
+        tagParts(tag).any { it.lowercase() in ADULT_TAGS }
 
     private var hiddenState by mutableStateOf(false)
 
@@ -57,7 +93,10 @@ object AdultFilter {
 
     /** Web `isAdultItem`: prefer the server's flag, fall back to the tags. */
     fun isAdultItem(isNsfw: Boolean?, genres: List<String>): Boolean =
-        isNsfw ?: genres.any { it.trim().lowercase() in ADULT_TAGS }
+        // OR, not elvis: the web is `isNsfw === true || tags`. With `?:` a FALSE
+        // flag short-circuits and the tags are never checked, so where the server
+        // flag and the tags disagree this showed what the web hides.
+        isNsfw == true || genres.any { isAdultTag(it) }
 }
 
 /** Compose-friendly handle mirroring the web's `useHideAdult()` hook. */

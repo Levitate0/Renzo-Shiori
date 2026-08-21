@@ -1184,8 +1184,15 @@ namespace RenzoBackend.Services.Series
             if (pending.Count == 0)
                 return;
 
+            // Query by the raw title AND by a decoration-stripped variant. Sources
+            // publish the same work under decorated names — "Never Just Friends Raw"
+            // on one, "Never Just Friends" on another — and the adult tags often sit
+            // only on the undecorated row. An exact-title join therefore missed
+            // precisely the rows that need this fallback most: an untagged listing
+            // on a dedicated adult source. Matching is then done on a normalized key
+            // so punctuation and spacing differences don't split the group either.
             List<string> titles = pending
-                .Select(r => r.Title.Trim().ToLowerInvariant())
+                .SelectMany(r => TitleQueryKeys(r.Title))
                 .Where(t => t.Length > 0)
                 .Distinct()
                 .ToList();
@@ -1204,7 +1211,7 @@ namespace RenzoBackend.Services.Series
             foreach (var m in catalogMatches)
             {
                 if (AdultContentClassifier.IsAdult(m.Genre))
-                    adultTitles.Add(m.Title.Trim());
+                    adultTitles.Add(NormalizeTitleKey(m.Title));
             }
 
             // Linked or same-titled library series: manual override, series tags,
@@ -1222,17 +1229,80 @@ namespace RenzoBackend.Services.Series
                 if (!adult)
                     continue;
                 adultSeriesIds.Add(s.Id);
-                adultTitles.Add(s.Title.Trim());
+                adultTitles.Add(NormalizeTitleKey(s.Title));
             }
 
             foreach (LatestSeriesDto row in pending)
             {
                 if ((row.SeriesId != null && adultSeriesIds.Contains(row.SeriesId.Value)) ||
-                    adultTitles.Contains(row.Title.Trim()))
+                    adultTitles.Contains(NormalizeTitleKey(row.Title)))
                 {
                     row.IsNsfw = true;
                 }
             }
+        }
+
+        // Decorations sources bolt onto a title that don't change which work it is.
+        private static readonly string[] TitleDecorations =
+        {
+            "raw", "uncensored", "uncut", "official", "colored", "full color",
+            "fan colored", "manhwa", "manhua", "webtoon",
+        };
+
+        /// <summary>
+        /// Lowercased titles to look the row up by: the title as given, plus the
+        /// same title with trailing decorations peeled off.
+        /// </summary>
+        private static IEnumerable<string> TitleQueryKeys(string? title)
+        {
+            string raw = (title ?? string.Empty).Trim().ToLowerInvariant();
+            if (raw.Length == 0)
+                yield break;
+            yield return raw;
+            string stripped = StripTitleDecorations(raw);
+            if (stripped.Length > 0 && stripped != raw)
+                yield return stripped;
+        }
+
+        private static string StripTitleDecorations(string lowered)
+        {
+            string current = lowered;
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                current = current.Trim().Trim('-', '–', ':', '|', '(', ')', '[', ']').Trim();
+                foreach (string d in TitleDecorations)
+                {
+                    if (current.Length > d.Length + 1 && current.EndsWith(d, StringComparison.Ordinal))
+                    {
+                        char before = current[current.Length - d.Length - 1];
+                        if (before is ' ' or '-' or '(' or '[' or ':' or '|')
+                        {
+                            current = current[..(current.Length - d.Length)];
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            return current.Trim().Trim('-', '–', ':', '|', '(', ')', '[', ']').Trim();
+        }
+
+        /// <summary>
+        /// Comparison key for grouping the same work across sources: decorations
+        /// removed, then everything but letters and digits dropped so spacing and
+        /// punctuation differences don't split it.
+        /// </summary>
+        private static string NormalizeTitleKey(string? title)
+        {
+            string stripped = StripTitleDecorations((title ?? string.Empty).Trim().ToLowerInvariant());
+            var sb = new System.Text.StringBuilder(stripped.Length);
+            foreach (char ch in stripped)
+            {
+                if (char.IsLetterOrDigit(ch))
+                    sb.Append(ch);
+            }
+            return sb.ToString();
         }
 
         /// <summary>
