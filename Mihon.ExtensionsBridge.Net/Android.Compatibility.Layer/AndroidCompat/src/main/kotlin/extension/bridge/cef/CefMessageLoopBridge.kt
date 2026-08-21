@@ -17,14 +17,35 @@ object CefMessageLoopBridge {
                 logger.info { "Starting CEF message loop" }
                 try {
                     while (running.get()) {
-                        app.doMessageLoopWork(0L)
+                        // Per-iteration guard. This catch used to sit OUTSIDE the
+                        // loop, so a single throwable from doMessageLoopWork ended
+                        // the pump for the lifetime of the JVM — and nothing ever
+                        // restarted it, because `running` stayed true so start()'s
+                        // compareAndSet kept returning early.
+                        //
+                        // That is catastrophic rather than cosmetic: CefClient.dispose()
+                        // and CefBrowser.close() are REQUESTS that only complete when
+                        // the message loop delivers onBeforeClose. With the pump dead,
+                        // every browser opened afterwards can never finish closing, so
+                        // its jcef_helper renderer stays alive (and zombies once the
+                        // child exits with nobody reaping). A dead pump turns every
+                        // subsequent WebView into a permanent process leak.
+                        try {
+                            app.doMessageLoopWork(0L)
+                        } catch (t: Throwable) {
+                            logger.warn { "Error inside CEF message loop iteration: ${'$'}t" }
+                        }
                         Thread.sleep(10L)
                     }
                 } catch (interrupted: InterruptedException) {
                     Thread.currentThread().interrupt()
                 } catch (t: Throwable) {
-                    logger.warn { "Error inside CEF message loop: ${'$'}t" }
+                    logger.warn { "CEF message loop terminated: ${'$'}t" }
                 } finally {
+                    // Clear the flag so a later start() can actually revive the pump
+                    // instead of being swallowed by the compareAndSet guard.
+                    running.set(false)
+                    loopThread = null
                     logger.info { "CEF message loop stopped" }
                 }
             }).apply {

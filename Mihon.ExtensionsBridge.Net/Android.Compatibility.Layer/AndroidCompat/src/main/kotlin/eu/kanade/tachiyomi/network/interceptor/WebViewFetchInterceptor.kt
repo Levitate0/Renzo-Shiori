@@ -329,13 +329,20 @@ class WebViewFetchInterceptor(
             webview.loadDataWithBaseURL(baseUrl, " ", "text/html", null, null)
         }
 
-        // Wait for response
-        val success = latch.await(timeout, TimeUnit.SECONDS)
-
-        handler.postDelayed(
-            { webView?.destroy() },
-            DELAY_MILLIS,
-        )
+        // Wait for response. The destroy must be scheduled even if await() is
+        // interrupted (thread pool shutdown, cancellation) — otherwise this
+        // WebView's CefClient and its jcef_helper renderer are pinned for the
+        // life of the JVM, since nothing else references them and there is no
+        // finalizer. try/finally, not a bare call after the await.
+        val success: Boolean
+        try {
+            success = latch.await(timeout, TimeUnit.SECONDS)
+        } finally {
+            handler.postDelayed(
+                { webView?.destroy() },
+                DELAY_MILLIS,
+            )
+        }
 
         if (!success) {
             Log.e(

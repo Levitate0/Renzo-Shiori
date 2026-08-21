@@ -230,9 +230,19 @@ public final class Looper {
             if (observer != null) {
                 observer.messageDispatched(token, msg);
             }
-        } catch (Exception exception) {
-            if (observer != null) {
-                observer.dispatchingThrewException(token, msg, exception);
+        } catch (Throwable exception) {
+            // Throwable, not Exception. This is the single main looper for the
+            // whole sidecar, and it is never restarted (startMainLooperIfNeeded
+            // hands back the existing thread object even when it has died). So an
+            // Error escaping here — an OutOfMemoryError under container memory
+            // pressure, an UnsatisfiedLinkError from the JCEF native layer —
+            // unwound Looper.loop() and killed message delivery permanently:
+            // every queued WebView destroy is dropped, every later post enqueues
+            // into a queue nobody drains, and every jcef_helper from then on is
+            // pinned forever. Swallowing an Error is normally wrong, but here the
+            // alternative is losing the loop that releases those processes.
+            if (observer != null && exception instanceof Exception) {
+                observer.dispatchingThrewException(token, msg, (Exception) exception);
             }
             Log.e(TAG, "Loop handler threw", exception);
             // throw exception;

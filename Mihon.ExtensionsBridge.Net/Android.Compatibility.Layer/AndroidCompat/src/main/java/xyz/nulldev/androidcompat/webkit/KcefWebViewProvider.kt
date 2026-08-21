@@ -202,6 +202,80 @@ class KcefWebViewProvider(
         )
         private val missingSettingsFields = ConcurrentHashMap.newKeySet<String>()
 
+        // ── live-WebView registry + reaper ──────────────────────────────
+        //
+        // Every WebView gets its OWN provider (AndroidCompatInitializer registers
+        // `{ view -> KcefWebViewProvider(view) }`), and init() below gives each one
+        // its own CefClient + CefMessageRouter; each page load then adds a
+        // CefBrowser, which is what actually forks a jcef_helper renderer. So one
+        // un-destroyed WebView pins a helper process forever.
+        //
+        // We cannot fix the callers: WebViewFetchInterceptor has no call sites in
+        // this repo — it is API surface for the extension JARs, and the WebViews
+        // come from inside precompiled extensions (Comix, AllAnime, Lunar) whose
+        // code we don't control and which do not reliably call destroy(). In
+        // production that leaked ~40 helpers/hour (479 in 12h, 48 of them zombies)
+        // until the container hit its memory cap and took the host's swap with it.
+        //
+        // So the backstop lives here, at the one chokepoint every WebView passes
+        // through: track each live provider, and force-destroy any that has gone
+        // untouched for IDLE_TTL_MS. A real fetch finishes in seconds — the
+        // interceptor's own wait is bounded well under a minute — so a provider
+        // idle for five minutes is abandoned by definition. MAX_LIVE is the second
+        // bound: past it, reap the least-recently-used regardless of age.
+        private const val IDLE_TTL_MS = 5 * 60 * 1000L
+        private const val MAX_LIVE = 16
+        private const val REAP_INTERVAL_MS = 30_000L
+
+        /** provider -> last time it was created or used. */
+        private val liveProviders = ConcurrentHashMap<KcefWebViewProvider, Long>()
+
+        private val reaper: Thread by lazy {
+            Thread({
+                while (true) {
+                    try {
+                        Thread.sleep(REAP_INTERVAL_MS)
+                        reapStale()
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@Thread
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "WebView reaper iteration failed", t)
+                    }
+                }
+            }).apply {
+                isDaemon = true
+                name = "kcef-webview-reaper"
+                start()
+            }
+        }
+
+        private fun reapStale() {
+            val now = System.currentTimeMillis()
+            val stale = liveProviders.entries
+                .filter { now - it.value > IDLE_TTL_MS }
+                .map { it.key }
+            val overflow = if (liveProviders.size - stale.size > MAX_LIVE) {
+                liveProviders.entries
+                    .filterNot { stale.contains(it.key) }
+                    .sortedBy { it.value }
+                    .take(liveProviders.size - stale.size - MAX_LIVE)
+                    .map { it.key }
+            } else {
+                emptyList()
+            }
+            val doomed = stale + overflow
+            if (doomed.isEmpty()) return
+            Log.w(TAG, "Reaping ${doomed.size} abandoned WebView(s) (live=${liveProviders.size})")
+            doomed.forEach { provider ->
+                // destroy() unregisters; runCatching so one bad browser can't stop
+                // the sweep or kill the daemon thread.
+                runCatching { provider.destroy() }
+                    .onFailure { Log.w(TAG, "Failed to reap a WebView", it) }
+                liveProviders.remove(provider)
+            }
+        }
+
         private val initHandler: InitBrowserHandler by KoinPlatformTools.defaultContext().get().inject()
 
         private fun ensureCefApp(): CefApp =
@@ -226,6 +300,20 @@ class KcefWebViewProvider(
                     "--off-screen-rendering-enabled",
                     "--disable-dev-shm-usage",
                     "--change-stack-guard-on-fork=disable",
+                    // Without this the renderers are forked by a zygote helper,
+                    // and that zygote never wait()s them — so an exited renderer
+                    // stays a ZOMBIE that even tini (correctly PID 1 here) cannot
+                    // reap, because its parent is alive. 48 of the 479 leaked
+                    // helpers were in exactly that state. --no-zygote makes the
+                    // browser process fork renderers directly, and it does reap
+                    // them. Safe here because --no-sandbox is already set (the
+                    // zygote exists to serve the sandbox, which we don't use).
+                    "--no-zygote",
+                    // Cap concurrent renderers. CEF spawns one per site-instance,
+                    // so a burst of scheduled jobs against WebView-using sources
+                    // would otherwise fan out unbounded; past the cap Chromium
+                    // reuses existing renderers instead of forking new ones.
+                    "--renderer-process-limit=8",
                 )
 
                 try {
@@ -306,8 +394,12 @@ class KcefWebViewProvider(
         }
     }
 
-    private fun requireClient(): CefClient =
-        cefClient ?: throw IllegalStateException("JCEF client is not initialized")
+    private fun requireClient(): CefClient {
+        // Any browser creation counts as activity — keeps an in-use WebView out of
+        // the reaper's sights (a request is bounded at 60s; the TTL is 5 minutes).
+        touch()
+        return cefClient ?: throw IllegalStateException("JCEF client is not initialized")
+    }
 
     private fun createBrowserForUrl(url: String): CefBrowser =
         requireClient()
@@ -1227,22 +1319,43 @@ class KcefWebViewProvider(
         destroy()
         val cefApp = ensureCefApp()
 
+        // From createClient() until the field assignment below, the client is live
+        // but unreachable — destroy() only ever touches the `cefClient` field, so
+        // anything thrown in between (an Error from the native layer, an OOM under
+        // memory pressure) would strand a CefClient that NOTHING can dispose, for
+        // the life of the JVM. Publish-or-dispose, so that window is closed.
         val client = cefApp.createClient()
-        client.addDisplayHandler(DisplayHandler())
-        client.addLoadHandler(LoadHandler())
-        client.addRequestHandler(RequestHandler())
-        client.addFocusHandler(FocusHandler())
+        val router: CefMessageRouter
+        try {
+            client.addDisplayHandler(DisplayHandler())
+            client.addLoadHandler(LoadHandler())
+            client.addRequestHandler(RequestHandler())
+            client.addFocusHandler(FocusHandler())
 
-        val routerConfig = CefMessageRouter.CefMessageRouterConfig().apply {
-            jsQueryFunction = QUERY_FN
-            jsCancelFunction = QUERY_CANCEL_FN
+            val routerConfig = CefMessageRouter.CefMessageRouterConfig().apply {
+                jsQueryFunction = QUERY_FN
+                jsCancelFunction = QUERY_CANCEL_FN
+            }
+            router = CefMessageRouter.create(routerConfig, MessageRouterHandler())
+            client.addMessageRouter(router)
+        } catch (t: Throwable) {
+            runCatching { client.dispose() }
+            throw t
         }
-        val router = CefMessageRouter.create(routerConfig, MessageRouterHandler())
-        client.addMessageRouter(router)
 
         cefClient = client
         messageRouter = router
+        // Register AFTER the native resources exist, so the reaper only ever sees
+        // providers that actually own something worth releasing. Touching the
+        // reaper lazy-starts the single daemon sweep thread on first WebView.
+        liveProviders[this] = System.currentTimeMillis()
+        reaper
         initHandler.init(this)
+    }
+
+    /** Mark this provider as still in use, so the reaper leaves it alone. */
+    private fun touch() {
+        if (liveProviders.containsKey(this)) liveProviders[this] = System.currentTimeMillis()
     }
 
     override fun setHorizontalScrollbarOverlay(overlay: Boolean): Unit = throw RuntimeException("Stub!")
@@ -1278,6 +1391,7 @@ class KcefWebViewProvider(
     ): Array<String> = throw RuntimeException("Stub!")
 
     override fun destroy() {
+        liveProviders.remove(this)
         shutdownBrowser()
         messageRouter?.let { router ->
             cefClient?.removeMessageRouter(router)
@@ -1372,6 +1486,7 @@ class KcefWebViewProvider(
         // got the chance to substitute anything, and the previous non-null signature left the crash
         // exactly as it was (surfacing as a 502 from /source/pages). Nullable here removes the
         // intrinsic; the elvis then does the real work.
+        touch()
         val cb: ValueCallback<String> = resultCallback ?: ValueCallback<String> { }
 
         val activeBrowser = browser
