@@ -1,0 +1,251 @@
+# Publishes the Renzo Shiori container image to GitHub Container Registry.
+#
+# Deliberately NOT triggered by pushes to a branch. Publishing is an explicit
+# act — cut a release (push a v* tag) or run this by hand — so a half-finished
+# commit never becomes the image strangers pull.
+#
+# RenzoBackend/Dockerfile is a STAGING build: it only COPYs artefacts, it
+# compiles nothing. Every artefact it needs is gitignored, so this job has to
+# produce all of them first, in this order:
+#
+#   1. frontend    -> RenzoBackend/wwwroot.zip + wwwroot.sha256
+#   2. sidecar     -> RenzoBackend/sidecar/{AndroidCompat-1.0-all.jar,enjarify/}
+#   3. backend     -> RenzoBackend/bin/linux/amd64
+#   4. oauth proxy -> RenzoBackend/bin/linux/amd64/oauthproxy
+#
+# The order is load-bearing, and the failure modes differ in nastiness:
+#   * wwwroot.zip/.sha256 are <EmbeddedResource> in RenzoBackend.csproj, so a
+#     missing frontend fails `dotnet publish` outright (CS1566). Loud, fine.
+#   * A missing sidecar/ fails `docker build` at COPY. Also loud.
+#   * A missing oauthproxy/ is SILENT: entrypoint.sh prints a note and carries
+#     on, and the image runs with AniList/MAL account linking quietly dead.
+#     That is why it gets its own build step and its own assertion below.
+
+name: Publish container image
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build'
+        required: true
+        default: 'main'
+        type: string
+      extra_tag:
+        description: 'Extra image tag (optional, e.g. testing)'
+        required: false
+        type: string
+      tag_latest:
+        description: 'Also move :latest to this build'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOTNET_VERSION: '8.0.x'
+  NODE_VERSION: '20'
+  # JDK 21 is a hard requirement, not a preference: the sidecar uses
+  # LinkedHashMap.firstEntry(), which is Java 21+. JDK 17 fails to compile.
+  JAVA_VERSION: '21'
+  # husky's prepare script is pointless on a runner and noisy when it can't
+  # find a git dir in the package subdirectory.
+  HUSKY: '0'
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          # REQUIRED, not vestigial. .gitattributes routes *.jar and *.dll
+          # through LFS, which includes gradle/wrapper/gradle-wrapper.jar and
+          # the 200MB Android.Compat.dll referenced by HintPath. Without LFS
+          # those are pointer files and both the gradle and dotnet builds die.
+          lfs: true
+
+      # ---- 1. Frontend -> wwwroot.zip -------------------------------------
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: RenzoFrontend/pnpm-lock.yaml
+
+      - name: Build frontend
+        working-directory: RenzoFrontend
+        # pnpm is authoritative here — build_frontend.ps1 uses it and
+        # pnpm-lock.yaml is the lockfile kept in step with package.json.
+        # (package-lock.json was deleted; having both invited exactly the
+        # drift that made --frozen-lockfile fail.)
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Package frontend for the backend
+        run: |
+          set -euo pipefail
+          rm -f RenzoBackend/wwwroot.zip RenzoBackend/wwwroot.sha256
+          (cd RenzoFrontend/out && zip -qr "$GITHUB_WORKSPACE/RenzoBackend/wwwroot.zip" .)
+          sha256sum RenzoBackend/wwwroot.zip | awk '{print $1}' > RenzoBackend/wwwroot.sha256
+          ls -l RenzoBackend/wwwroot.zip RenzoBackend/wwwroot.sha256
+
+      # ---- 2. Sidecar fat jar + enjarify ----------------------------------
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build sidecar fat jar
+        working-directory: Mihon.ExtensionsBridge.Net/Android.Compatibility.Layer
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :AndroidCompat:shadowJar --no-daemon
+
+      - name: Stage sidecar assets
+        run: |
+          set -euo pipefail
+          dest=RenzoBackend/sidecar
+          mkdir -p "$dest"
+          # Glob and rename rather than assuming the produced name: the
+          # Dockerfile hardcodes RENZO_SIDECAR_JAR=.../AndroidCompat-1.0-all.jar.
+          jar=$(ls -t Mihon.ExtensionsBridge.Net/Android.Compatibility.Layer/AndroidCompat/build/libs/*-all.jar | head -1)
+          cp "$jar" "$dest/AndroidCompat-1.0-all.jar"
+          # enjarify is checked in (pure Python, Apache-2.0); the sidecar's
+          # /convert shells out to `python3 -m enjarify.main` with this as cwd,
+          # so the nesting (enjarify/enjarify/main.py) matters.
+          rm -rf "$dest/enjarify"
+          cp -r Mihon.ExtensionsBridge.Net/tools/enjarify "$dest/enjarify"
+          find "$dest/enjarify" -name __pycache__ -type d -prune -exec rm -rf {} +
+
+      # ---- 3. Backend + OAuth proxy ---------------------------------------
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Publish backend (linux-x64)
+        # --self-contained false on purpose: the image installs
+        # aspnetcore-runtime-8.0, so bundling a second runtime only inflates
+        # the layer. This also matches build_docker.ps1.
+        run: |
+          dotnet publish RenzoBackend/RenzoBackend.csproj \
+            -c Release -r linux-x64 --self-contained false \
+            -p:PublishAot=false -p:PublishReadyToRun=false -p:DebugSymbols=false \
+            -o RenzoBackend/bin/linux/amd64
+
+      - name: Publish OAuth proxy
+        # entrypoint.sh launches /app/oauthproxy/RenzoOAuthProxy.dll on
+        # 127.0.0.1:5050 for AniList/MAL linking, and skips it with only a log
+        # line if absent — so this must be published into the backend output.
+        run: |
+          dotnet publish RenzoOAuthProxy/RenzoOAuthProxy.csproj \
+            -c Release -r linux-x64 --self-contained false \
+            -p:DebugSymbols=false \
+            -o RenzoBackend/bin/linux/amd64/oauthproxy
+
+      - name: Assert the build context is complete
+        # Everything above fails loudly except the OAuth proxy, and a missing
+        # sidecar jar is the difference between "a manga server" and "a manga
+        # server that supports no sources". Check before spending a push.
+        run: |
+          set -euo pipefail
+          test -s RenzoBackend/wwwroot.zip
+          test -s RenzoBackend/wwwroot.sha256
+          test -s RenzoBackend/sidecar/AndroidCompat-1.0-all.jar
+          test -d RenzoBackend/sidecar/enjarify/enjarify
+          test -s RenzoBackend/bin/linux/amd64/RenzoBackend.dll
+          test -s RenzoBackend/bin/linux/amd64/oauthproxy/RenzoOAuthProxy.dll
+          echo "build context OK"
+
+      # ---- 4. Image --------------------------------------------------------
+      - name: Log in to ${{ env.REGISTRY }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          # metadata-action lowercases this, which matters: the repo is
+          # Levitate0/Renzo-Shiori and GHCR paths must be lowercase.
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=${{ inputs.extra_tag }},enable=${{ inputs.extra_tag != '' }}
+            type=raw,value=latest,enable=${{ (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')) || inputs.tag_latest }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./RenzoBackend
+          file: ./RenzoBackend/Dockerfile
+          # amd64 ONLY, deliberately. The Dockerfile hardcodes
+          # RENZO_SIDECAR_LDPATH=/usr/lib/jvm/java-21-openjdk-amd64/lib, and
+          # SidecarProcessManager REPLACES LD_LIBRARY_PATH with it — so on
+          # arm64 it points at a directory that doesn't exist and JCEF loses
+          # libjawt.so. An arm64 image would push fine and fail at runtime,
+          # which is worse than not offering one. See docs/DOCKER.md for the
+          # one-line Dockerfile change that would unblock arm64.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Single-stage Dockerfile, so mode=max buys nothing over mode=min and
+          # exports far more into the 10GB/repo GHA cache.
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
+
+      - name: Summary
+        env:
+          # Via env, not inline ${{ }} in the script body: these are
+          # user-supplied on workflow_dispatch and would otherwise be shell
+          # injection on a runner holding packages:write.
+          BUILT_REF: ${{ inputs.ref || github.ref_name }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "## Image published"
+            echo
+            echo "**Ref:** \`$BUILT_REF\`  "
+            echo "**Platform:** \`linux/amd64\`"
+            echo
+            echo "### Tags"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
