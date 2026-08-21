@@ -384,7 +384,21 @@ namespace RenzoBackend.Services.Series
         {
             try
             {
-                Dictionary<string, (DateTime, Manga?, ParsedChapter?)> latestDates = await _db.LatestSeries.Where(a => a.MihonProviderId == mihonProviderId).ToDictionaryAsync(a => a.MihonId, a => (a.FetchDate, a.ToManga(), a.Chapters.OrderByDescending(b => b.Index).FirstOrDefault()), token).ConfigureAwait(false);
+                // AsNoTracking: this snapshot is read-only (it is only ever
+                // compared against — see the TryGetValue reads below) but it loads
+                // EVERY cached row for the provider and materializes each one's
+                // deserialized chapter list. Tracked, EF's ChangeTracker pins all
+                // of that for the lifetime of the job's scope, which is a large
+                // part of why the catalogue sweep grew the heap by gigabytes.
+                // Also pick the latest chapter by ParsedNumber rather than Index:
+                // Index is the source's own list position, and sources that return
+                // newest-first make the highest Index the OLDEST chapter (same bug
+                // fixed in the write path — see LatestChapterOf).
+                Dictionary<string, (DateTime, Manga?, ParsedChapter?)> latestDates = await _db.LatestSeries
+                    .AsNoTracking()
+                    .Where(a => a.MihonProviderId == mihonProviderId)
+                    .ToDictionaryAsync(a => a.MihonId, a => (a.FetchDate, a.ToManga(), LatestChapterOf(a.Chapters)), token)
+                    .ConfigureAwait(false);
                 ConcurrentDictionary<string, ComboSeries> newChaps = [];
                 int page = 1;
                 bool upToDate = false;
