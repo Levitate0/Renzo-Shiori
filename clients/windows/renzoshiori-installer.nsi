@@ -8,13 +8,13 @@ Name "${APPNAME}"
 OutFile "/export/Main/Renzo-out/RenzoShiori-Setup.exe"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
-Icon "/opt/zurg-stack/Rensaio/clients/windows/renzo.ico"
-UninstallIcon "/opt/zurg-stack/Rensaio/clients/windows/renzo.ico"
+Icon "/opt/zurg-stack/renzo-ecosystem/shiori/clients/windows/renzo.ico"
+UninstallIcon "/opt/zurg-stack/renzo-ecosystem/shiori/clients/windows/renzo.ico"
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
-!define MUI_ICON "/opt/zurg-stack/Rensaio/clients/windows/renzo.ico"
-!define MUI_UNICON "/opt/zurg-stack/Rensaio/clients/windows/renzo.ico"
+!define MUI_ICON "/opt/zurg-stack/renzo-ecosystem/shiori/clients/windows/renzo.ico"
+!define MUI_UNICON "/opt/zurg-stack/renzo-ecosystem/shiori/clients/windows/renzo.ico"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
