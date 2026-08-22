@@ -112,7 +112,18 @@ poll it and silently reload (deferring while the reader is open).
 
 ---
 
-## 3. Android client (`clients/android`)
+## 3. Android client (`clients/android`) — ARCHIVED 2026-08-21
+
+> **This section is retained for history only. Do not follow it.**
+>
+> `clients/android` is archived and ships to nobody — no APK has been attached
+> to a `Renzo-Shiori` release, and `build-release.sh` now exits non-zero. The
+> Android client is **Renzo Hub** (`/opt/zurg-stack/renzo-ecosystem/hub`),
+> which ships manga and anime as one app. See `clients/android/ARCHIVED.md`.
+>
+> The description below is also factually stale twice over: the tree was
+> rewritten from a WebView shell into a pure Compose app on 2026-08-01, and
+> this text was never updated.
 
 A remote-first WebView shell: it probes `/api/system/info/public`, then loads
 the server UI. Offline support is provided by a native `@JavascriptInterface`

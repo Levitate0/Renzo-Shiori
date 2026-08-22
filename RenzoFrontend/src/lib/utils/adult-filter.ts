@@ -20,7 +20,11 @@ import { useSyncExternalStore, useCallback } from "react";
 // work is about rather than how explicit it is.
 //
 // Kept in step with the server's AdultContentClassifier.cs and Renzo Hub's
-// AdultFilter.kt. All three change together.
+// feature-shiori AdultFilter.kt. All three change together — and note there is
+// a FOURTH copy, clients/android/.../AdultFilter.kt, in the archived standalone
+// Android client that ships to nobody. Commit 7387d46 updated this file, the
+// server and that archived copy but missed the Hub, which is the only client
+// users actually run; it went 5h30m with an out-of-date 18+ filter as a result.
 const ADULT_TAGS = new Set([
   // Ratings
   "hentai", "erotica", "erotic", "adult", "smut", "pornographic", "porn",

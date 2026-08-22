@@ -100,7 +100,7 @@ Renzo Shiori connects to sources through **Mihon (Tachiyomi) extensions** — Ma
 |---|----------|-------|
 | 🪟 | **RenzoShiori.exe** | Windows desktop app (WebView2) — see [Releases](https://github.com/Levitate0/Renzo-Shiori/releases) |
 | 🌐 | **Web app** | The web UI — dark & light themes, responsive, PWA-friendly |
-| 🤖 | **Android app** | Native Android build (`app.renzoshiori.client`) |
+| 🤖 | **Android app** | Ships in **Renzo Hub** — one app for manga and anime. The standalone `app.renzoshiori.client` build is archived and no longer released. |
 
 ---
 

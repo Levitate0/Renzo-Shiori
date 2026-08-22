@@ -3,6 +3,14 @@
 # Usage: SIGNING_DIR=/export/Main/Renzo-Apps/signing ./build-release.sh
 set -euo pipefail
 
+# --- ARCHIVED GUARD (2026-08-21) ------------------------------------------
+# Superseded by Renzo Hub. This tree ships to nobody. A marker file alone did
+# not stop commit 7387d46 from landing a fix here instead of the shipping
+# client, so the guard is mechanical. See ./ARCHIVED.md.
+# Remove this block ONLY if you are deliberately un-archiving the tree.
+echo "ARCHIVED: superseded by Renzo Hub. See ARCHIVED.md" >&2; exit 1
+# --------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
