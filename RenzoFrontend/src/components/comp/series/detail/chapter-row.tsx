@@ -158,12 +158,17 @@ export function ChapterRow({
       }
       aria-pressed={canSelect ? !!selected : undefined}
       className={cn(
-        "flex items-center gap-3 rounded-lg border border-border/40 bg-card/50 px-3 py-2.5",
+        "flex flex-wrap items-center gap-3 rounded-lg border border-border/40 bg-card/50 px-3 py-2.5",
         "transition-colors hover:bg-foreground/[0.03]",
         clickable && "cursor-pointer",
         selected && "border-primary/50 bg-primary/10 hover:bg-primary/15"
       )}
     >
+      {/* Icons and text as ONE group. basis-full makes it take the whole line
+          on a phone, so the action cluster wraps underneath instead of
+          squeezing the chapter title and the "from <source>" line into
+          ellipses; from sm up it goes back to sharing the row. */}
+      <div className="flex min-w-0 flex-1 basis-full items-center gap-3 sm:basis-auto">
       {/* Selection checkbox — only in multi-select mode */}
       {selecting && (
         selected ? (
@@ -232,10 +237,12 @@ export function ChapterRow({
         </div>
       </div>
 
+      </div>
+
       {/* Action cluster — clicks here must not trigger the row-open. Hidden in
           multi-select mode so the whole row is a selection target. */}
       {!selecting && (
-      <div className="flex items-center gap-1 shrink-0 sm:gap-2" onClick={(e) => e.stopPropagation()}>
+      <div className="flex w-full items-center justify-end gap-1 sm:w-auto sm:shrink-0 sm:gap-2" onClick={(e) => e.stopPropagation()}>
       {/* Save-offline (native apps only) — download this chapter to the device */}
       {onSaveOffline && (
         <Tooltip>
