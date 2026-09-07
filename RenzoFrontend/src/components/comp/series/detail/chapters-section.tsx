@@ -22,7 +22,6 @@ import {
   useRedownloadChapter,
   useSeriesChapters,
 } from "@/lib/api/hooks/useSeries";
-import { useSettings } from "@/lib/api/hooks/useSettings";
 import { readerService } from "@/lib/api/services/readerService";
 import { seriesService } from "@/lib/api/services/seriesService";
 import { cn } from "@/lib/utils";
@@ -76,14 +75,11 @@ export function ChaptersSection({
   const downloadAll = useDownloadAllChapters();
   const deleteDownloads = useDeleteDownloads();
   const { data: chapters, isLoading, isError } = useSeriesChapters(seriesId, true);
-  const { data: settings } = useSettings();
-  const readerEnabled = settings?.readerEnabled !== false;
 
   // Read states from the built-in reader (progress, completion, bookmarks)
   const { data: readerChapters } = useQuery({
     queryKey: ["reader", "chapters", seriesId],
     queryFn: () => readerService.getChapters(seriesId),
-    enabled: readerEnabled,
     staleTime: 30 * 1000,
   });
   const readStateByNumber = useMemo(() => {
@@ -633,7 +629,7 @@ export function ChaptersSection({
                       {!batch.active && <span className="tabular-nums opacity-80">({allDownloadedNumbers.length})</span>}
                     </button>
                   )}
-                  {readerEnabled && total > 0 && (
+                  {total > 0 && (
                     <button
                       type="button"
                       onClick={handleMarkAllRead}
@@ -649,7 +645,7 @@ export function ChaptersSection({
                       Mark all read
                     </button>
                   )}
-                  {readerEnabled && total > 0 && (
+                  {total > 0 && (
                     <button
                       type="button"
                       onClick={() => (selecting ? exitSelection() : setSelecting(true))}
@@ -721,7 +717,7 @@ export function ChaptersSection({
 
                     <div className="mx-1 h-4 w-px bg-border/60" />
 
-                    {readerEnabled && (
+                    
                       <>
                         <button
                           type="button"
@@ -742,7 +738,7 @@ export function ChaptersSection({
                           Mark unread
                         </button>
                       </>
-                    )}
+                    
                     {canManage && (
                       <button
                         type="button"
@@ -816,10 +812,10 @@ export function ChaptersSection({
                           canManage={canManage}
                           isPending={chapter.number != null && pending.has(chapter.number)}
                           onRedownload={handleRedownload}
-                          onRead={readerEnabled ? handleRead : undefined}
-                          onToggleRead={readerEnabled ? handleToggleRead : undefined}
+                          onRead={handleRead}
+                          onToggleRead={handleToggleRead}
                           readPending={chapter.number != null && readPending.has(chapter.number)}
-                          onToggleBookmark={readerEnabled ? handleToggleBookmark : undefined}
+                          onToggleBookmark={handleToggleBookmark}
                           bookmarkPending={chapter.number != null && bookmarkPending.has(chapter.number)}
                           readProgress={rs?.progress}
                           readCompleted={rs?.isCompleted}

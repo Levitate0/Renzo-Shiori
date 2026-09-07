@@ -157,10 +157,6 @@ public class EditableSettingsDto
 
     // --- Reader ---
 
-    /// <summary>Enables the built-in web reader (library reading + Browse preview).</summary>
-    [JsonPropertyName("readerEnabled")]
-    public bool ReaderEnabled { get; set; } = true;
-
     // --- Downloads ---
 
     /// <summary>

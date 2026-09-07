@@ -66,7 +66,6 @@ export interface Settings {
   smtpUseSsl: boolean;
   smtpFromAddress: string;
   /** Enables the built-in web reader (library reading + Browse preview). */
-  readerEnabled: boolean;
   /** Download every chapter, ignoring each series' start-point cutoff. */
   downloadAllChapters: boolean;
   /** Rolling library scan interval in hours (3-12). */

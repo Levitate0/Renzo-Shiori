@@ -416,7 +416,6 @@ namespace RenzoBackend.Services.Settings
                 SmtpPassword = settings.SmtpPassword,
                 SmtpUseSsl = settings.SmtpUseSsl,
                 SmtpFromAddress = settings.SmtpFromAddress,
-                ReaderEnabled = settings.ReaderEnabled,
                 DownloadAllChapters = settings.DownloadAllChapters,
                 LibraryScanIntervalHours = settings.LibraryScanIntervalHours,
             };
@@ -473,7 +472,6 @@ namespace RenzoBackend.Services.Settings
                 SmtpPassword = ed.SmtpPassword,
                 SmtpUseSsl = ed.SmtpUseSsl,
                 SmtpFromAddress = ed.SmtpFromAddress,
-                ReaderEnabled = ed.ReaderEnabled,
                 DownloadAllChapters = ed.DownloadAllChapters,
                 LibraryScanIntervalHours = ed.LibraryScanIntervalHours,
             };

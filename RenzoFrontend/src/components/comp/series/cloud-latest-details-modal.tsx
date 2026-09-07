@@ -23,7 +23,6 @@ import Image from 'next/image';
 import { type LatestSeriesInfo, InLibraryStatus } from '@/lib/api/types';
 import { useRouter } from 'next/navigation';
 import { BookOpen } from 'lucide-react';
-import { useSettings } from '@/lib/api/hooks/useSettings';
 import ReactCountryFlag from "react-country-flag";
 import { getCountryCodeForLanguage } from "@/lib/utils/language-country-mapping";
 import { DynamicTags } from "@/components/comp/series/add-series/steps/confirm-series-step";
@@ -52,8 +51,6 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [coverExpanded, setCoverExpanded] = React.useState(false);
   const router = useRouter();
-  const { data: settings } = useSettings();
-  const readerEnabled = settings?.readerEnabled !== false;
 
   // Preview reading: pages are fetched live from the source, nothing is stored.
   const handlePreviewRead = () => {
@@ -236,12 +233,10 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
                   View Source
                 </Button>
               )}
-              {readerEnabled && (
-                <Button variant="outline" className="gap-1" onClick={handlePreviewRead}>
-                  <BookOpen className="h-4 w-4" />
-                  Read
-                </Button>
-              )}
+              <Button variant="outline" className="gap-1" onClick={handlePreviewRead}>
+                <BookOpen className="h-4 w-4" />
+                Read
+              </Button>
               {item.inLibrary === InLibraryStatus.NotInLibrary && onAddSeries && (
                 <Button
                   className="gap-1"
@@ -354,12 +349,10 @@ export const CloudLatestDetailsModal: React.FC<CloudLatestDetailsModalProps> = (
               Add to Library
             </Button>
           )}
-          {readerEnabled && (
-            <Button variant="outline" className="w-full gap-1" onClick={handlePreviewRead}>
-              <BookOpen className="h-4 w-4" />
-              Read
-            </Button>
-          )}
+          <Button variant="outline" className="w-full gap-1" onClick={handlePreviewRead}>
+            <BookOpen className="h-4 w-4" />
+            Read
+          </Button>
           {item.url && (
             <Button
               variant="outline"

@@ -6,24 +6,21 @@ import { useQuery } from "@tanstack/react-query";
 import { BookOpen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { useSettings } from "@/lib/api/hooks/useSettings";
 import { readerService } from "@/lib/api/services/readerService";
 
 /**
  * Primary entry point into the built-in reader from a series page.
  * Picks up where the user left off: the first partially-read chapter,
  * else the first unread downloaded chapter, else the first downloaded one.
- * Renders nothing when the reader is off or no chapter is downloaded.
+ * Renders nothing when no chapter is downloaded.
  */
 export function ReadSeriesButton({ seriesId }: { seriesId: string }) {
   const router = useRouter();
-  const { data: settings } = useSettings();
-  const readerEnabled = settings?.readerEnabled !== false;
 
   const { data } = useQuery({
     queryKey: ["reader", "chapters", seriesId],
     queryFn: () => readerService.getChapters(seriesId),
-    enabled: readerEnabled && !!seriesId,
+    enabled: !!seriesId,
     staleTime: 30 * 1000,
   });
 
@@ -40,7 +37,7 @@ export function ReadSeriesButton({ seriesId }: { seriesId: string }) {
     return { chapter: readable[0]!, label: "Reread" };
   }, [data]);
 
-  if (!readerEnabled || !target) return null;
+  if (!target) return null;
 
   return (
     <Button
