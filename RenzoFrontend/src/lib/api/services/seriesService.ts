@@ -71,7 +71,7 @@ export const seriesService = {
    * @param keyword Optional keyword filter
    * @param genres Optional tag/genre filter; a row must carry every supplied tag (AND semantics)
    */
-  async getLatest(start: number, count: number, sourceId?: string, keyword?: string, genres?: string[]): Promise<LatestSeriesInfo[]> {
+  async getLatest(start: number, count: number, sourceId?: string, keyword?: string, genres?: string[], excludeGenres?: string[]): Promise<LatestSeriesInfo[]> {
     const params = new URLSearchParams({
       start: start.toString(),
       count: count.toString(),
@@ -90,6 +90,18 @@ export const seriesService = {
         const trimmed = g.trim();
         if (trimmed) {
           params.append('genre', trimmed);
+        }
+      }
+    }
+
+    // Negative tags. Sent as their own repeated param rather than a sigil-prefixed
+    // `genre` value ("-Ecchi"), because a tag is free text from a source and may
+    // legitimately begin with a hyphen.
+    if (excludeGenres && excludeGenres.length > 0) {
+      for (const g of excludeGenres) {
+        const trimmed = g.trim();
+        if (trimmed) {
+          params.append('excludeGenre', trimmed);
         }
       }
     }

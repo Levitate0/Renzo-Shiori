@@ -587,11 +587,11 @@ namespace RenzoBackend.Controllers
         [HttpGet("latest")]
         [ProducesResponseType(typeof(List<LatestSeriesDto>), 200)]
         [ProducesResponseType(500)]
-        public async Task<ActionResult<List<LatestSeriesDto>>> GetLatestAsync([FromQuery] int start, [FromQuery] int count, [FromQuery] string? sourceId = null, [FromQuery] string? keyword = null, [FromQuery(Name = "genre")] string[]? genre = null, [FromQuery] bool viewAll = false, CancellationToken token = default)
+        public async Task<ActionResult<List<LatestSeriesDto>>> GetLatestAsync([FromQuery] int start, [FromQuery] int count, [FromQuery] string? sourceId = null, [FromQuery] string? keyword = null, [FromQuery(Name = "genre")] string[]? genre = null, [FromQuery(Name = "excludeGenre")] string[]? excludeGenre = null, [FromQuery] bool viewAll = false, CancellationToken token = default)
         {
             try
             {
-                var result = await _queryService.GetLatestAsync(start, count, sourceId, keyword, genre, CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
+                var result = await _queryService.GetLatestAsync(start, count, sourceId, keyword, genre, excludeGenre, CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
                 await _thumb.PopulateThumbsAsync(result, "/api/image/", token).ConfigureAwait(false);
                 return Ok(result);
             }

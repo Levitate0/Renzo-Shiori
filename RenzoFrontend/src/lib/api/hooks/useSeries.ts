@@ -93,6 +93,7 @@ export const useSetProviderMatch = () => {
  * @param sourceId Optional source ID filter
  * @param keyword Optional keyword filter
  * @param genres Optional tag/genre filter; a row must carry every supplied tag (AND semantics)
+ * @param excludeGenres Optional negative tag filter; a row carrying ANY of these is dropped
  * @param enabled Whether the query should be enabled
  */
 export const useLatest = (
@@ -101,18 +102,25 @@ export const useLatest = (
   sourceId?: string,
   keyword?: string,
   genres?: string[],
+  excludeGenres?: string[],
   enabled = true
 ) => {
-  // Normalize the genre filter into a stable cache-key fragment so identical
-  // selections (order/case/whitespace aside) share a cache entry.
-  const genreKey = (genres ?? [])
-    .map((g) => g.trim().toLowerCase())
-    .filter((g) => g.length > 0)
-    .sort();
+  // Normalize each half of the tag filter into a stable cache-key fragment so
+  // identical selections (order/case/whitespace aside) share a cache entry.
+  // The two are SEPARATE key fragments on purpose: {include:[A]} and
+  // {exclude:[A]} are opposite queries, and flattening them into one list would
+  // collide them onto the same cache entry.
+  const normalizeKey = (tags?: string[]) =>
+    (tags ?? [])
+      .map((g) => g.trim().toLowerCase())
+      .filter((g) => g.length > 0)
+      .sort();
+  const genreKey = normalizeKey(genres);
+  const excludeGenreKey = normalizeKey(excludeGenres);
 
   return useQuery<LatestSeriesInfo[]>({
-    queryKey: ['series', 'latest', start, count, sourceId, keyword, genreKey],
-    queryFn: () => seriesService.getLatest(start, count, sourceId, keyword, genres),
+    queryKey: ['series', 'latest', start, count, sourceId, keyword, genreKey, excludeGenreKey],
+    queryFn: () => seriesService.getLatest(start, count, sourceId, keyword, genres, excludeGenres),
     enabled,
     staleTime: 2 * 60 * 1000, // 2 minutes - latest content changes frequently
     refetchInterval: 5 * 60 * 1000, // Auto-refetch every 5 minutes for fresh content

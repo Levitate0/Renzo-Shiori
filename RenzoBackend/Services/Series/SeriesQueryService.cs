@@ -412,26 +412,29 @@ namespace RenzoBackend.Services.Series
         /// <param name="sourceid">Optional source ID filter</param>
         /// <param name="keyword">Optional keyword filter</param>
         /// <param name="genres">Optional tag/genre filter; a row must carry every supplied tag (AND semantics)</param>
+        /// <param name="excludeGenres">Optional negative tag filter; a row carrying ANY of these is dropped. Applied
+        /// independently of <paramref name="genres"/>, so excluding alone is a valid filter.</param>
         /// <param name="requesterId">The requesting user's id — the "in library" badge reflects only their own series.</param>
         /// <param name="allowAll">True for an Owner-level requester viewing every library (in-library badge then matches any owner).</param>
         /// <param name="token">Cancellation token</param>
         /// <returns>List of latest series information</returns>
         public async Task<List<LatestSeriesDto>> GetLatestAsync(int start, int count, string? mihonProviderId,
-            string? keyword, IReadOnlyList<string>? genres, Guid requesterId, bool allowAll, CancellationToken token = default)
+            string? keyword, IReadOnlyList<string>? genres, IReadOnlyList<string>? excludeGenres,
+            Guid requesterId, bool allowAll, CancellationToken token = default)
         {
             // Keyword searches go to the full-catalog path: the cached feed only
             // contains series that appeared in a source's latest/popular listing,
             // so a plain LIKE over it misses everything older — instead we merge
             // the cached rows with a live search across the sources themselves.
             if (!string.IsNullOrWhiteSpace(keyword))
-                return await GetKeywordCatalogPageAsync(start, count, mihonProviderId, keyword, genres, requesterId, allowAll, token).ConfigureAwait(false);
+                return await GetKeywordCatalogPageAsync(start, count, mihonProviderId, keyword, genres, excludeGenres, requesterId, allowAll, token).ConfigureAwait(false);
 
             // Single-source browse (no keyword): the cache for a given source only
             // holds whatever its last scheduled latest/popular job pulled — often a
             // page or two — so a freshly added or thin source shows almost nothing.
             // Merge the cache with a live multi-page catalog fetch of that source.
             if (!string.IsNullOrEmpty(mihonProviderId))
-                return await GetSourceCatalogPageAsync(start, count, mihonProviderId, genres, requesterId, allowAll, token).ConfigureAwait(false);
+                return await GetSourceCatalogPageAsync(start, count, mihonProviderId, genres, excludeGenres, requesterId, allowAll, token).ConfigureAwait(false);
 
             // All-sources, no keyword: serve the aggregate cache immediately, and
             // (on the first page only) kick off a background sweep that pulls every
@@ -446,9 +449,11 @@ namespace RenzoBackend.Services.Series
 
             IQueryable<LatestSerieEntity> series;
 
-            // Normalize the incoming genre filter; null/empty (after trimming blanks)
-            // means "no tag filter".
+            // Normalize both halves of the tag filter; null/empty (after trimming
+            // blanks) means "no filter" for that half. They are independent — an
+            // exclude-only filter is valid and common ("everything except Ecchi").
             List<string>? normalizedGenres = NormalizeGenres(genres);
+            List<string>? normalizedExcludes = NormalizeGenres(excludeGenres);
 
             // Genre is a value-converted CSV column, so EF can't translate a
             // predicate over it. This used to stream FetchDate-desc rows and match
@@ -462,8 +467,8 @@ namespace RenzoBackend.Services.Series
             // it's FASTER, because IX_LatestSerie_FetchDate lets SQLite walk in
             // FetchDate order and stop as soon as the page is full instead of
             // materialising 20k entities (measured 2-15ms/page vs a 20k-row scan).
-            if (normalizedGenres != null)
-                series = ApplyGenreFilterSql(normalizedGenres);
+            if (normalizedGenres != null || normalizedExcludes != null)
+                series = ApplyGenreFilterSql(normalizedGenres, normalizedExcludes);
             else
                 series = _db.LatestSeries;
 
@@ -500,8 +505,9 @@ namespace RenzoBackend.Services.Series
         }
 
         /// <summary>
-        /// A LatestSeries query filtered to rows carrying EVERY supplied tag (AND
-        /// semantics), matched in SQL.
+        /// A LatestSeries query filtered to rows carrying EVERY tag in
+        /// <paramref name="include"/> (AND semantics) and NONE of the tags in
+        /// <paramref name="exclude"/>, matched in SQL. Either half may be null.
         ///
         /// Genre is persisted as a CSV string by a value converter, so the match is
         /// done by wrapping both sides in commas — <c>',Action,Romance,' LIKE '%,Action,%'</c>
@@ -512,20 +518,64 @@ namespace RenzoBackend.Services.Series
         ///
         /// Tags are passed as PARAMETERS, never interpolated; LIKE wildcards inside
         /// a tag are escaped so a tag containing % or _ can't widen the match.
+        ///
+        /// Two asymmetries between the halves, both load-bearing:
+        ///
+        /// 1. The <c>Genre IS NOT NULL AND Genre &lt;&gt; ''</c> guard applies only when
+        ///    there is something to INCLUDE. An untagged row cannot carry a wanted
+        ///    tag, but it equally cannot carry an unwanted one — so on an
+        ///    exclude-only filter it must survive. Keeping the guard unconditional
+        ///    would silently hide every untagged series behind "not Ecchi".
+        /// 2. Exclusions COALESCE Genre to '' before matching. In SQL
+        ///    <c>NULL NOT LIKE x</c> is NULL, not true, so a NULL Genre would fail
+        ///    the WHERE and drop the row — the same bug as (1), arriving by a
+        ///    different route and surviving (1)'s fix.
         /// </summary>
-        private IQueryable<LatestSerieEntity> ApplyGenreFilterSql(List<string> normalizedGenres)
+        private IQueryable<LatestSerieEntity> ApplyGenreFilterSql(List<string>? include, List<string>? exclude)
         {
-            var clauses = new List<string>(normalizedGenres.Count);
-            var args = new object[normalizedGenres.Count];
-            for (int i = 0; i < normalizedGenres.Count; i++)
+            int includeCount = include?.Count ?? 0;
+            int excludeCount = exclude?.Count ?? 0;
+            var clauses = new List<string>(includeCount + excludeCount);
+            var args = new List<object>(includeCount + excludeCount);
+
+            for (int i = 0; i < includeCount; i++)
             {
-                clauses.Add($"(',' || replace(\"Genre\", ', ', ',') || ',') LIKE ('%,' || {{{i}}} || ',%') ESCAPE '\\'");
-                args[i] = EscapeLike(normalizedGenres[i]);
+                clauses.Add($"(',' || replace(\"Genre\", ', ', ',') || ',') LIKE ('%,' || {{{args.Count}}} || ',%') ESCAPE '\\'");
+                args.Add(EscapeLike(include![i]));
+            }
+            for (int i = 0; i < excludeCount; i++)
+            {
+                clauses.Add($"(',' || replace(COALESCE(\"Genre\", ''), ', ', ',') || ',') NOT LIKE ('%,' || {{{args.Count}}} || ',%') ESCAPE '\\'");
+                args.Add(EscapeLike(exclude![i]));
             }
 
-            string sql = "SELECT * FROM \"LatestSeries\" WHERE \"Genre\" IS NOT NULL AND \"Genre\" <> '' AND "
-                         + string.Join(" AND ", clauses);
-            return _db.LatestSeries.FromSqlRaw(sql, args);
+            string where = string.Join(" AND ", clauses);
+            if (includeCount > 0)
+                where = "\"Genre\" IS NOT NULL AND \"Genre\" <> '' AND " + where;
+
+            return _db.LatestSeries.FromSqlRaw("SELECT * FROM \"LatestSeries\" WHERE " + where, args.ToArray());
+        }
+
+        /// <summary>
+        /// The in-memory twin of <see cref="ApplyGenreFilterSql"/>, for rows that
+        /// never went through SQL — live source results merged into a page. Kept
+        /// beside it deliberately: the two must agree, and a row that survives one
+        /// but not the other shows up as a result that flickers in and out as the
+        /// live fetch lands.
+        /// </summary>
+        private static bool MatchesTagFilter(IReadOnlyList<string>? rowGenres, List<string>? include, List<string>? exclude)
+        {
+            bool untagged = rowGenres == null || rowGenres.Count == 0;
+            // Untagged rows can satisfy an exclusion but never an inclusion.
+            if (untagged)
+                return include is not { Count: > 0 };
+
+            var rowSet = new HashSet<string>(rowGenres!.Select(g => g.Trim()), StringComparer.OrdinalIgnoreCase);
+            if (include is { Count: > 0 } && !include.All(rowSet.Contains))
+                return false;
+            if (exclude is { Count: > 0 } && exclude.Any(rowSet.Contains))
+                return false;
+            return true;
         }
 
         /// <summary>Escapes LIKE wildcards so a tag matches literally.</summary>
@@ -616,7 +666,8 @@ namespace RenzoBackend.Services.Series
         /// in a latest listing (old completed series, brand-new sources) are found.
         /// </summary>
         private async Task<List<LatestSeriesDto>> GetKeywordCatalogPageAsync(int start, int count,
-            string? mihonProviderId, string keyword, IReadOnlyList<string>? genres, Guid requesterId, bool allowAll, CancellationToken token)
+            string? mihonProviderId, string keyword, IReadOnlyList<string>? genres, IReadOnlyList<string>? excludeGenres,
+            Guid requesterId, bool allowAll, CancellationToken token)
         {
             keyword = keyword.Trim();
 
@@ -654,22 +705,14 @@ namespace RenzoBackend.Services.Series
             if (enabledForBrowse != null)
                 merged = merged.Where(m => m.MihonProviderId != null && enabledForBrowse.Contains(m.MihonProviderId)).ToList();
 
-            // Genre filter (AND semantics, same as the non-keyword path).
-            List<string>? wantedGenres = genres?
-                .Where(g => !string.IsNullOrWhiteSpace(g))
-                .Select(g => g.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (wantedGenres is { Count: > 0 })
-            {
-                merged = merged.Where(row =>
-                {
-                    if (row.Genre == null || row.Genre.Count == 0)
-                        return false;
-                    var rowSet = new HashSet<string>(row.Genre.Select(g => g.Trim()), StringComparer.OrdinalIgnoreCase);
-                    return wantedGenres.All(rowSet.Contains);
-                }).ToList();
-            }
+            // Tag filter, same semantics as the non-keyword path: carry every
+            // wanted tag, carry none of the unwanted ones. This whole path is
+            // in-memory (the merge of cached rows and a live source search), so
+            // there is no SQL half to keep in step here.
+            List<string>? wantedGenres = NormalizeGenres(genres);
+            List<string>? unwantedGenres = NormalizeGenres(excludeGenres);
+            if (wantedGenres != null || unwantedGenres != null)
+                merged = merged.Where(row => MatchesTagFilter(row.Genre, wantedGenres, unwantedGenres)).ToList();
 
             // Order by fuzzy relevance to the keyword, freshest first on ties.
             if (merged.Count > 0)
@@ -750,7 +793,8 @@ namespace RenzoBackend.Services.Series
         /// added source shows a full catalogue instead of just the last job's page.
         /// </summary>
         private async Task<List<LatestSeriesDto>> GetSourceCatalogPageAsync(int start, int count,
-            string mihonProviderId, IReadOnlyList<string>? genres, Guid requesterId, bool allowAll, CancellationToken token)
+            string mihonProviderId, IReadOnlyList<string>? genres, IReadOnlyList<string>? excludeGenres,
+            Guid requesterId, bool allowAll, CancellationToken token)
         {
             // Cached rows for this source. Without a tag filter we take the newest
             // LiveCatalogMaxRows and merge the live catalogue on top. WITH one, that
@@ -759,8 +803,9 @@ namespace RenzoBackend.Services.Series
             // in SQL across all of the source's rows instead (same reasoning as the
             // all-sources path above).
             List<string>? sourceGenres = NormalizeGenres(genres);
-            IQueryable<LatestSerieEntity> cached = sourceGenres != null
-                ? ApplyGenreFilterSql(sourceGenres)
+            List<string>? sourceExcludes = NormalizeGenres(excludeGenres);
+            IQueryable<LatestSerieEntity> cached = sourceGenres != null || sourceExcludes != null
+                ? ApplyGenreFilterSql(sourceGenres, sourceExcludes)
                 : _db.LatestSeries;
 
             List<LatestSeriesDto> merged = (await cached
@@ -789,16 +834,8 @@ namespace RenzoBackend.Services.Series
 
             // Cached rows came back already filtered; this still has to police the
             // LIVE rows merged in above, which never went through SQL.
-            if (sourceGenres != null)
-            {
-                merged = merged.Where(row =>
-                {
-                    if (row.Genre == null || row.Genre.Count == 0)
-                        return false;
-                    var rowSet = new HashSet<string>(row.Genre.Select(g => g.Trim()), StringComparer.OrdinalIgnoreCase);
-                    return sourceGenres.All(rowSet.Contains);
-                }).ToList();
-            }
+            if (sourceGenres != null || sourceExcludes != null)
+                merged = merged.Where(row => MatchesTagFilter(row.Genre, sourceGenres, sourceExcludes)).ToList();
 
             // Recently-updated first (real FetchDate from update jobs), then the
             // broader catalogue (seeded a year back in listing order) below.

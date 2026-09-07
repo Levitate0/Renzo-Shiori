@@ -13,6 +13,8 @@ import {
   SelectItem,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { Eye, EyeOff } from "lucide-react";
 import { PageLayout } from "@/components/comp/layout/page-layout";
 import { RibbonSlot } from "@/components/comp/layout/ribbon";
 import { OfflineLibraryGrid } from "@/components/comp/series/offline-library-grid";
@@ -81,7 +83,7 @@ export default function RootPage() {
   const [viewAllLibraries, setViewAllLibraries] = useState(false);
   const { data: library } = useLibrary(canOwner && viewAllLibraries);
   const { data: favoriteLists } = useFavorites();
-  const [hideAdult] = useHideAdult();
+  const [hideAdult, toggleHideAdult] = useHideAdult();
 
   // Favourites dropdown entries: each top-level tab followed by its indented
   // sub-lists. Selecting a tab shows its own series plus every sub-list's
@@ -432,6 +434,26 @@ export default function RootPage() {
               </Select>
             </div>
           )}
+
+          {/* 18+ visibility. Ported verbatim from Browse (cloud-latest/page.tsx)
+              so the same control does not grow two appearances; the shared
+              useHideAdult() state means toggling here is felt on both pages. */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleHideAdult}
+            aria-pressed={!hideAdult}
+            title={hideAdult ? "Adult (18+) titles are hidden" : "Adult (18+) titles are shown"}
+            className={`h-8 shrink-0 gap-1.5 px-2.5 text-xs ${
+              hideAdult
+                ? ""
+                : "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/15 dark:text-amber-400"
+            }`}
+          >
+            {hideAdult ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            <span className="hidden sm:inline">{hideAdult ? "18+ Hidden" : "18+ Shown"}</span>
+            <span className="sm:hidden">18+</span>
+          </Button>
 
           {/* Right cluster: sort, card size, add series */}
           <div className="ml-auto flex items-center gap-2 shrink-0">

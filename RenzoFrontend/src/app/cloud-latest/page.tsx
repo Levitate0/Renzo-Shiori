@@ -4,7 +4,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { getResponsiveCardDefault } from "@/lib/utils/responsive-card-default";
-import { Globe, Tag, X, Check, Search, Compass, Plus, Eye, EyeOff } from "lucide-react";
+import { Globe, Tag, X, Check, Minus, Search, Compass, Plus, Eye, EyeOff } from "lucide-react";
 import {
   Select,
   SelectTrigger,
@@ -77,6 +77,7 @@ const SESSION_KEYS = {
   cardWidth: "ren_cloud_cardWidth",
   search: "ren_cloud_search",
   genres: "ren_cloud_genres",
+  excludeGenres: "ren_cloud_exclude_genres",
 };
 
 // Read a value from sessionStorage, returning fallback when absent or empty.
@@ -86,10 +87,10 @@ function getSessionValue(key: string, fallback: string | null): string | null {
   return value !== null && value !== "" ? value : fallback;
 }
 
-function getSessionGenres(): string[] {
+function getSessionGenres(key: string = SESSION_KEYS.genres): string[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = sessionStorage.getItem(SESSION_KEYS.genres);
+    const raw = sessionStorage.getItem(key);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -124,6 +125,12 @@ export default function CloudLatestPage() {
   );
   const [cardWidth, setCardWidthState] = useState<string>(getSessionValue(SESSION_KEYS.cardWidth, getResponsiveCardDefault())!);
   const [selectedGenres, setSelectedGenresState] = useState<string[]>(getSessionGenres());
+  // Negative tags. A separate list rather than a sign carried on `selectedGenres`
+  // entries: tag names come from sources as free text, so there is no prefix that
+  // is safely not part of a real tag.
+  const [excludedGenres, setExcludedGenresState] = useState<string[]>(
+    getSessionGenres(SESSION_KEYS.excludeGenres)
+  );
   const [items, setItems] = useState<LatestSeriesInfo[]>([]);
   // The spotlight pool is derived from the FIRST page of results only — it
   // must not change as the user scrolls and more pages arrive. We snapshot
@@ -175,23 +182,62 @@ export default function CloudLatestPage() {
     [SESSION_KEYS.genres]
   );
 
-  const toggleGenre = useCallback(
-    (name: string) => {
-      setSelectedGenresState((prev) => {
-        const exists = prev.includes(name);
-        const next = exists ? prev.filter((g) => g !== name) : [...prev, name];
-        if (typeof window !== "undefined") {
-          sessionStorage.setItem(SESSION_KEYS.genres, JSON.stringify(next));
-        }
-        return next;
-      });
+  const setExcludedGenres = useCallback(
+    (next: string[]) => {
+      setExcludedGenresState(next);
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem(SESSION_KEYS.excludeGenres, JSON.stringify(next));
+      }
     },
-    [SESSION_KEYS.genres]
+    [SESSION_KEYS.excludeGenres]
+  );
+
+  /**
+   * A tag is in exactly one of three states, and clicking cycles it:
+   *
+   *   neutral  →  include (must have)  →  exclude (must not have)  →  neutral
+   *
+   * The two lists are kept mutually exclusive here rather than trusting callers,
+   * because "must have X and must not have X" is a filter that can only ever
+   * return nothing — the server would honour it faithfully and the user would
+   * see an empty page with no clue why.
+   */
+  const cycleGenre = useCallback(
+    (name: string) => {
+      const included = selectedGenres.includes(name);
+      const excluded = excludedGenres.includes(name);
+
+      if (!included && !excluded) {
+        setSelectedGenres([...selectedGenres, name]);
+      } else if (included) {
+        setSelectedGenres(selectedGenres.filter((g) => g !== name));
+        setExcludedGenres([...excludedGenres, name]);
+      } else {
+        setExcludedGenres(excludedGenres.filter((g) => g !== name));
+      }
+    },
+    [selectedGenres, excludedGenres, setSelectedGenres, setExcludedGenres]
+  );
+
+  /** Drop a tag back to neutral from whichever list it is in (the chip's ✕). */
+  const removeGenre = useCallback(
+    (name: string) => {
+      if (selectedGenres.includes(name)) {
+        setSelectedGenres(selectedGenres.filter((g) => g !== name));
+      }
+      if (excludedGenres.includes(name)) {
+        setExcludedGenres(excludedGenres.filter((g) => g !== name));
+      }
+    },
+    [selectedGenres, excludedGenres, setSelectedGenres, setExcludedGenres]
   );
 
   const clearGenres = useCallback(() => {
     setSelectedGenres([]);
-  }, [setSelectedGenres]);
+    setExcludedGenres([]);
+  }, [setSelectedGenres, setExcludedGenres]);
+
+  const activeTagCount = selectedGenres.length + excludedGenres.length;
 
   const { debouncedSearchTerm } = useSearch();
   const [hideAdult, toggleHideAdult] = useHideAdult();
@@ -229,8 +275,10 @@ export default function CloudLatestPage() {
   // Memoize a stable signature of selectedGenres so reset effect only fires
   // on actual content change (not array identity churn).
   const selectedGenresSignature = useMemo(
-    () => buildGenreKey(selectedGenres).join("|"),
-    [selectedGenres]
+    // "+" and "-" sides kept apart in the signature: swapping a tag from
+    // included to excluded must read as a different filter and reset paging.
+    () => `${buildGenreKey(selectedGenres).join("|")}!${buildGenreKey(excludedGenres).join("|")}`,
+    [selectedGenres, excludedGenres]
   );
 
   // Reset pagination when filters change (but NOT for card width changes)
@@ -253,6 +301,11 @@ export default function CloudLatestPage() {
     [selectedGenres]
   );
 
+  const excludeGenresArg = useMemo(
+    () => (excludedGenres.length > 0 ? excludedGenres : undefined),
+    [excludedGenres]
+  );
+
   // Fetch latest series data
   const { data: latestData, isLoading, error } = useLatest(
     currentPage * debouncedItemsPerPage,
@@ -260,6 +313,7 @@ export default function CloudLatestPage() {
     selectedSourceId ?? undefined,
     debouncedSearchTerm ?? undefined,
     genresArg,
+    excludeGenresArg,
     true
   );
 
@@ -309,12 +363,14 @@ export default function CloudLatestPage() {
       try {
         // Get fresh data from server for the first page only
         const refreshGenres = selectedGenres.length > 0 ? selectedGenres : undefined;
+        const refreshExcludes = excludedGenres.length > 0 ? excludedGenres : undefined;
         const freshLatestData = await seriesService.getLatest(
           0, // Always refresh first page
           debouncedItemsPerPage,
           selectedSourceId ?? undefined,
           debouncedSearchTerm ?? undefined,
-          refreshGenres
+          refreshGenres,
+          refreshExcludes
         );
 
         // Compare with previous data using memo-like logic
@@ -323,10 +379,14 @@ export default function CloudLatestPage() {
 
         if (hasChanges) {
           // Update the query cache with fresh data. The key shape MUST match
-          // useLatest's queryKey: ['series', 'latest', start, count, sourceId, keyword, genreKey]
+          // useLatest's queryKey:
+          // ['series', 'latest', start, count, sourceId, keyword, genreKey, excludeGenreKey]
+          // Miss a fragment and this writes to a key nothing reads — the refresh
+          // then silently does nothing while appearing to work.
           const genreKey = buildGenreKey(selectedGenres);
+          const excludeGenreKey = buildGenreKey(excludedGenres);
           queryClient.setQueryData(
-            ['series', 'latest', 0, debouncedItemsPerPage, selectedSourceId ?? undefined, debouncedSearchTerm ?? undefined, genreKey],
+            ['series', 'latest', 0, debouncedItemsPerPage, selectedSourceId ?? undefined, debouncedSearchTerm ?? undefined, genreKey, excludeGenreKey],
             freshLatestData
           );
 
@@ -345,7 +405,7 @@ export default function CloudLatestPage() {
     }, 60000); // Check every 60 seconds
 
     return () => clearInterval(interval);
-  }, [selectedSourceId, debouncedSearchTerm, debouncedItemsPerPage, selectedGenres, queryClient]);
+  }, [selectedSourceId, debouncedSearchTerm, debouncedItemsPerPage, selectedGenres, excludedGenres, queryClient]);
 
   // Store latest data for comparison on each update
   useEffect(() => {
@@ -559,10 +619,22 @@ export default function CloudLatestPage() {
   }, [tagPopoverOpen]);
 
   const tagButtonLabel = useMemo(() => {
-    if (selectedGenres.length === 0) return "Tags";
-    if (selectedGenres.length === 1) return `Tag: ${selectedGenres[0]!}`;
-    return `Tags · ${selectedGenres.length}`;
-  }, [selectedGenres]);
+    if (activeTagCount === 0) return "Tags";
+    // A lone tag still reads better named than counted, either way round.
+    if (activeTagCount === 1) {
+      return selectedGenres.length === 1
+        ? `Tag: ${selectedGenres[0]!}`
+        : `Not: ${excludedGenres[0]!}`;
+    }
+    // Both sides in play: show them separately, since "Tags · 4" would hide
+    // that three of them are exclusions.
+    if (selectedGenres.length > 0 && excludedGenres.length > 0) {
+      return `Tags · ${selectedGenres.length} −${excludedGenres.length}`;
+    }
+    return selectedGenres.length > 0
+      ? `Tags · ${selectedGenres.length}`
+      : `Not · ${excludedGenres.length}`;
+  }, [selectedGenres, excludedGenres, activeTagCount]);
 
   return (
     <>
@@ -643,9 +715,9 @@ export default function CloudLatestPage() {
             >
               <Tag className="h-4 w-4 opacity-70" />
               <span className="truncate max-w-[10rem]">{tagButtonLabel}</span>
-              {selectedGenres.length > 0 && (
+              {activeTagCount > 0 && (
                 <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-none text-primary-foreground">
-                  {selectedGenres.length}
+                  {activeTagCount}
                 </span>
               )}
             </Button>
@@ -688,26 +760,46 @@ export default function CloudLatestPage() {
                   ) : (
                     <ul className="flex flex-col">
                       {filteredGenres.map((g) => {
-                        const isChecked = selectedGenres.includes(g.name);
+                        const isIncluded = selectedGenres.includes(g.name);
+                        const isExcluded = excludedGenres.includes(g.name);
                         return (
                           <li key={g.name}>
                             <button
                               type="button"
+                              // Three states, so this is not a checkbox. "mixed"
+                              // is the only ARIA value for a third state, and it
+                              // is what a screen reader announces for exclusion.
                               role="checkbox"
-                              aria-checked={isChecked}
-                              onClick={() => toggleGenre(g.name)}
+                              aria-checked={isExcluded ? "mixed" : isIncluded}
+                              title={
+                                isIncluded
+                                  ? `Showing only series tagged ${g.name} — click to exclude instead`
+                                  : isExcluded
+                                    ? `Hiding series tagged ${g.name} — click to clear`
+                                    : `Show only series tagged ${g.name}`
+                              }
+                              onClick={() => cycleGenre(g.name)}
                               className="group flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
                             >
                               <span
                                 className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border ${
-                                  isChecked
+                                  isIncluded
                                     ? "border-primary bg-primary text-primary-foreground"
-                                    : "border-input bg-transparent"
+                                    : isExcluded
+                                      ? "border-destructive bg-destructive text-destructive-foreground"
+                                      : "border-input bg-transparent"
                                 }`}
                               >
-                                {isChecked && <Check className="h-3 w-3" />}
+                                {isIncluded && <Check className="h-3 w-3" />}
+                                {isExcluded && <Minus className="h-3 w-3" />}
                               </span>
-                              <span className="flex-1 truncate">{g.name}</span>
+                              <span
+                                className={`flex-1 truncate ${
+                                  isExcluded ? "text-muted-foreground line-through" : ""
+                                }`}
+                              >
+                                {g.name}
+                              </span>
                               <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
                                 {g.count}
                               </span>
@@ -719,10 +811,12 @@ export default function CloudLatestPage() {
                   )}
                 </div>
 
-                {selectedGenres.length > 0 && (
+                {activeTagCount > 0 && (
                   <div className="flex items-center justify-between border-t border-border/60 px-2 py-2">
                     <span className="text-xs text-muted-foreground">
-                      {selectedGenres.length} selected
+                      {selectedGenres.length > 0 && `${selectedGenres.length} included`}
+                      {selectedGenres.length > 0 && excludedGenres.length > 0 && " · "}
+                      {excludedGenres.length > 0 && `${excludedGenres.length} excluded`}
                     </span>
                     <Button
                       type="button"
@@ -795,11 +889,14 @@ export default function CloudLatestPage() {
         triggerButton={<span aria-hidden className="hidden" />}
       />
 
-      {selectedGenres.length > 0 && (
+      {activeTagCount > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
+          {/* Included first, then excluded. The two are visually distinct — a
+              struck-through name behind a minus — because a chip row that only
+              listed names would make "Romance" and "not Romance" identical. */}
           {selectedGenres.map((name) => (
             <Badge
-              key={name}
+              key={`in-${name}`}
               variant="secondary"
               className="group inline-flex items-center gap-1 rounded-full bg-secondary/70 px-2.5 py-0.5 text-xs font-normal text-secondary-foreground hover:bg-secondary"
             >
@@ -807,8 +904,26 @@ export default function CloudLatestPage() {
               <button
                 type="button"
                 aria-label={`Remove ${name}`}
-                onClick={() => toggleGenre(name)}
+                onClick={() => removeGenre(name)}
                 className="-mr-1 ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+          {excludedGenres.map((name) => (
+            <Badge
+              key={`ex-${name}`}
+              variant="secondary"
+              className="group inline-flex items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-2.5 py-0.5 text-xs font-normal text-destructive hover:bg-destructive/20"
+            >
+              <Minus className="h-3 w-3 shrink-0" aria-hidden />
+              <span className="truncate max-w-[12rem] line-through">{name}</span>
+              <button
+                type="button"
+                aria-label={`Stop excluding ${name}`}
+                onClick={() => removeGenre(name)}
+                className="-mr-1 ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-destructive/70 transition-colors hover:bg-background/40 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <X className="h-3 w-3" />
               </button>
