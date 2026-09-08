@@ -316,16 +316,20 @@ export function SeriesHero({
               </div>
             )}
 
-            {/* Description with Read more — expanded state scrolls in its own
-                box instead of growing freely. Some sources' descriptions are
-                a wall of scraped SEO copy hundreds of lines long; letting
-                that expand inline pushed the cover/chapters/everything below
-                it down the page instead of just growing a bit. */}
+            {/* Description with Read more.
+                Expanded means expanded: this used to drop the text into a
+                max-h-64 scroll box, so "Read more" showed the description in
+                full for a moment and then clipped it to a little more than it
+                had before — and the clipped version was all you ever got
+                afterwards. The original reason for the cap was that some
+                sources ship a wall of scraped SEO copy; that is handled by
+                collapsing back to three lines, not by making the expanded
+                state a second, smaller clip. */}
             {series.description && (
               <div className="max-w-[70ch]">
                 <p
                   className={`text-sm text-muted-foreground whitespace-pre-line ${
-                    expanded ? 'max-h-64 overflow-y-auto pr-2' : 'line-clamp-3'
+                    expanded ? '' : 'line-clamp-3'
                   }`}
                 >
                   {series.description}

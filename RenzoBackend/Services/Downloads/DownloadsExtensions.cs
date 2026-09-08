@@ -136,6 +136,15 @@ public static class DownloadsExtensions
             {
                 wanted = wanted.Where(c => c.ParsedNumber > serie.ContinueAfterChapter).ToList();
             }
+
+            // One source per chapter, decided by the per-series priority order
+            // rather than by whichever source's scan happened to run first.
+            // Every source asks this question about the same data, so exactly
+            // one of them keeps the chapter and the rest drop it here instead
+            // of racing to a queue key that silently discards the loser.
+            wanted = wanted
+                .Where(c => DownloadSourceSelector.IsPreferredDownloadSource(series, serie, c.ParsedNumber))
+                .ToList();
         }
 
         foreach (ParsedChapter c in skip_the_filter.ToList())

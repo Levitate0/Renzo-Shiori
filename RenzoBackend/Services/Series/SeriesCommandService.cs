@@ -1176,9 +1176,8 @@ namespace RenzoBackend.Services.Series
             if (owner == null || !owner.GetRedownloadFromHigherPrioritySources())
                 return 0;
 
-            bool Capable(SeriesProviderEntity p) =>
-                !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled
-                && !string.IsNullOrEmpty(p.MihonProviderId);
+            // Shared with the download-source choice — change one, change all.
+            bool Capable(SeriesProviderEntity p) => Downloads.DownloadSourceSelector.CanDownloadFrom(p);
 
             // Chapter numbers currently held on disk → best (lowest) Priority
             // among the sources holding a file for them.
@@ -1482,10 +1481,9 @@ namespace RenzoBackend.Services.Series
                 return new RedownloadResult(RedownloadOutcome.Paused);
 
             bool HasChapter(SeriesProviderEntity p) =>
-                p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber);
-            bool Capable(SeriesProviderEntity p) =>
-                !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled
-                && !string.IsNullOrEmpty(p.MihonProviderId);
+                Downloads.DownloadSourceSelector.HasChapter(p, chapterNumber);
+            // Shared with the download-source choice — change one, change all.
+            bool Capable(SeriesProviderEntity p) => Downloads.DownloadSourceSelector.CanDownloadFrom(p);
 
             SeriesProviderEntity? target;
             if (providerId.HasValue)
