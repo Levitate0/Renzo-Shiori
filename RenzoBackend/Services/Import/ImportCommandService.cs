@@ -423,7 +423,7 @@ public class ImportCommandService
                                         if (linked2.Count > 0)
                                         {
                                             AugmentedResponseDto augmented = await _searchCommand
-                                                .AugmentSeriesAsync(linked2, token)
+                                                .AugmentSeriesAsync(linked2, null, token)
                                                 .ConfigureAwait(false);
                                             List<ProviderSeriesDetails> series = augmented.Series;
                                             if (series.Count > 0)
@@ -636,7 +636,7 @@ public class ImportCommandService
                         if (linked.Count > 0)
                         {
                             AugmentedResponseDto augmented =
-                                await _searchCommand.AugmentSeriesAsync(linked, token).ConfigureAwait(false);
+                                await _searchCommand.AugmentSeriesAsync(linked, null, token).ConfigureAwait(false);
                             List<ProviderSeriesDetails> series = augmented.Series;
                             if (series.Count > 0)
                             {

@@ -32,6 +32,7 @@ namespace RenzoBackend.Services.Series
     {
         private readonly AppDbContext _db;
         private readonly SettingsService _settings;
+        private readonly UserContentPreferencesService _contentPrefs;
         private readonly ArchiveHelperService _archiveHelper;        private readonly SeriesProviderService _providerService;
 
         private readonly ILogger<SeriesCommandService> _logger;
@@ -56,11 +57,13 @@ namespace RenzoBackend.Services.Series
             HashCacheService hashCache,
             LockedChapterSupplementService lockedSupplement,
             IServiceScopeFactory scopeFactory,
-            Microsoft.Extensions.Caching.Memory.IMemoryCache memoryCache)
+            Microsoft.Extensions.Caching.Memory.IMemoryCache memoryCache,
+            UserContentPreferencesService contentPrefs)
         {
             _scopeFactory = scopeFactory;
             _db = db;
             _settings = settings;
+            _contentPrefs = contentPrefs;
             _archiveHelper = archiveHelper;
             _providerService = providerService;
             _logger = logger;
@@ -536,13 +539,23 @@ namespace RenzoBackend.Services.Series
                 }
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
 
-                bool downloadAllLatest = (await _settings.GetSettingsAsync(token).ConfigureAwait(false)).DownloadAllChapters;
+                // "Download all chapters" is the OWNER's preference now, so it is
+                // read per series rather than once for the whole sweep. Memoized
+                // per owner: this loop can cover thousands of series and they
+                // mostly share a handful of owners.
+                Dictionary<Guid, bool> downloadAllByOwner = [];
                 foreach (var u in toCheck)
                 {
                     Models.Database.SeriesEntity series = await _db.Series.Include(a => a.Sources)
                         .Where(a => a.Id == u.Item2.SeriesId).AsNoTracking().FirstAsync(token).ConfigureAwait(false);
                     if (!series.PauseDownloads)
                     {
+                        if (!downloadAllByOwner.TryGetValue(series.OwnerId, out bool downloadAllLatest))
+                        {
+                            downloadAllLatest = (await _contentPrefs.ForUserAsync(series.OwnerId, token).ConfigureAwait(false))
+                                .DownloadAllChapters;
+                            downloadAllByOwner[series.OwnerId] = downloadAllLatest;
+                        }
                         List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(u.Item2, u.Item1.Chapters, downloadAllLatest);
                         if (chaps.Count > 0)
                         {
@@ -893,8 +906,10 @@ namespace RenzoBackend.Services.Series
                 return JobResult.Success;
             }
 
-            SettingsDto appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-            bool downloadAll = appSettings.DownloadAllChapters
+            // The series OWNER's preference — this runs as a background job with
+            // no requesting user, and OwnerHasSiteLoginAsync below already asks
+            // the same question of the same person.
+            bool downloadAll = (await _contentPrefs.ForUserAsync(series.OwnerId, token).ConfigureAwait(false)).DownloadAllChapters
                 || _memoryCache.TryGetValue(DownloadAllFlagKey(series.Id), out _);
             bool allowLocked = await OwnerHasSiteLoginAsync(series.OwnerId, serie.Provider, token).ConfigureAwait(false);
             List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(serie, chapterData, downloadAll, allowLocked);

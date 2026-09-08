@@ -19,17 +19,20 @@ namespace RenzoBackend.Controllers
         private readonly SearchCommandService _searchCommandService;
         private readonly ThumbCacheService _thumbs;
         private readonly SettingsService _settings;
+        private readonly UserContentPreferencesService _contentPrefs;
 
         public SearchController(
             ILogger<SearchController> logger,
             SearchQueryService searchQueryService,
             SearchCommandService searchCommandService,
             ThumbCacheService thumbs,
-            SettingsService settingsService)
+            SettingsService settingsService,
+            UserContentPreferencesService contentPrefs)
         {
             _searchQueryService = searchQueryService;
             _searchCommandService = searchCommandService;
             _settings = settingsService;
+            _contentPrefs = contentPrefs;
             _thumbs = thumbs;
             _logger = logger;
         }
@@ -57,7 +60,7 @@ namespace RenzoBackend.Controllers
                     return BadRequest(new { error = "No series provided to augment" });
                 }
 
-                var augmentedSeries = await _searchCommandService.AugmentSeriesAsync(linkedSeries, token).ConfigureAwait(false);
+                var augmentedSeries = await _searchCommandService.AugmentSeriesAsync(linkedSeries, CurrentUserId, token).ConfigureAwait(false);
                 await _thumbs.PopulateThumbsAsync(augmentedSeries.Series, "/api/image/", token).ConfigureAwait(false);
                 return Ok(augmentedSeries);
             }
@@ -110,8 +113,9 @@ namespace RenzoBackend.Controllers
                 return BadRequest("Search keyword is required");
             }
             
+            // The searcher's own language order, not the server's.
             if (string.IsNullOrEmpty(languages))
-                languages = string.Join(',', (await _settings.GetSettingsAsync(token).ConfigureAwait(false)).PreferredLanguages);
+                languages = string.Join(',', (await _contentPrefs.ForUserAsync(CurrentUserId, token).ConfigureAwait(false)).PreferredLanguages);
 
             // Parse languages from comma-separated string
             var languageList = languages.Split(',')

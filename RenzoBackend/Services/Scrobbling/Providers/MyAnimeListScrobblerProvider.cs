@@ -25,12 +25,16 @@ public class MyAnimeListScrobblerProvider : ProxyScrobblerProvider
         IConfiguration configuration,
         ITokenStorageService tokenStorage,
         ScrobblerTokenProtector tokenProtector,
-        SettingsService settingsService)
+        SettingsService settingsService,
+        UserContentPreferencesService contentPrefs)
         : base(httpClientFactory, configuration, ScrobblerProvider.MyAnimeList, logger, tokenStorage, tokenProtector)
     {
         _apiHttpClient = httpClientFactory.CreateClient("Scrobbler_MAL");
         _settingsService = settingsService;
+        _contentPrefs = contentPrefs;
     }
+
+    private readonly UserContentPreferencesService _contentPrefs;
     private static ConcurrentDictionary<string, decimal> _dedupState = new();
 
     private readonly SettingsService _settingsService;
@@ -43,7 +47,10 @@ public class MyAnimeListScrobblerProvider : ProxyScrobblerProvider
         try
         {
             _apiHttpClient.ApplyBearerToken(_accessToken);
-            var nsfwParam = _settingsService.DirectSettings?.NsfwVisibility == NsfwVisibility.Show ? "&nsfw=true" : "";
+            // Whose 18+ preference? The person whose MAL account this is —
+            // _userId is set alongside the token in SetAccessToken.
+            var nsfwParam = (await _contentPrefs.ForUserAsync(_userId, token).ConfigureAwait(false))
+                .NsfwVisibility == NsfwVisibility.Show ? "&nsfw=true" : "";
             var response = await _apiHttpClient.GetAsync(
                 $"{ApiBase}/manga?q={Uri.EscapeDataString(ClampQuery(query))}&limit=25&fields=id,title,alternative_titles,main_picture,media_type,status,num_chapters,synopsis,mean,start_date{nsfwParam}",
                 token);

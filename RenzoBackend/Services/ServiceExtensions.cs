@@ -82,6 +82,7 @@ namespace RenzoBackend.Services
         public static IServiceCollection AddHelperServices(this IServiceCollection services)
         {
             services.TryAddScoped<SettingsService>();
+            services.TryAddScoped<UserContentPreferencesService>();
 
             services.AddScoped<IImageProvider, UrlImageProvider>();
             services.AddScoped<IImageProvider, ExtensionsImageProvider>();

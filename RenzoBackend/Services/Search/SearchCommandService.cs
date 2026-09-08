@@ -23,6 +23,7 @@ namespace RenzoBackend.Services.Search
     {
 
         private readonly SettingsService _settings;
+        private readonly Settings.UserContentPreferencesService _contentPrefs;
 
         private readonly AppDbContext _db;
         private readonly ILogger<SearchCommandService> _logger;
@@ -34,9 +35,11 @@ namespace RenzoBackend.Services.Search
             AppDbContext db,
             MihonBridgeService mihon,
             Series.SeriesCategoryResolver categoryResolver,
+            Settings.UserContentPreferencesService contentPrefs,
             ILogger<SearchCommandService> logger)
         {
             _settings = settings;
+            _contentPrefs = contentPrefs;
             _db = db;
             _logger = logger;
             _mihon = mihon;
@@ -49,7 +52,11 @@ namespace RenzoBackend.Services.Search
         /// <param name="linkedSeries">List of linked series to augment</param>
         /// <param name="token">Cancellation token</param>
         /// <returns>Augmented response with complete series information</returns>
-        public async Task<AugmentedResponseDto> AugmentSeriesAsync(List<LinkedSeriesDto> linkedSeries, CancellationToken token = default)
+        /// <param name="userId">
+        /// Whose language order to report back. Null for the background import
+        /// jobs, which have no requester — they get the server defaults.
+        /// </param>
+        public async Task<AugmentedResponseDto> AugmentSeriesAsync(List<LinkedSeriesDto> linkedSeries, Guid? userId, CancellationToken token = default)
         {
             if (linkedSeries == null || linkedSeries.Count == 0)
             {
@@ -287,7 +294,7 @@ namespace RenzoBackend.Services.Search
                     StorageFolderPath = appSettings.StorageFolder,
                     UseCategoriesForPath = appSettings.CategorizedFolders,
                     Categories = appSettings.Categories?.ToList() ?? [],
-                    PreferredLanguages = appSettings.PreferredLanguages.ToList(),
+                    PreferredLanguages = (await _contentPrefs.ForUserAsync(userId, token).ConfigureAwait(false)).PreferredLanguages.ToList(),
                     ExistingSeries = ProviderSeriesDetailsResults.Any(a => a.ExistingProvider),
                     DroppedSeries = droppedSeries.ToList()
                 };

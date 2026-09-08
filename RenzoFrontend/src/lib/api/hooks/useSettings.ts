@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { settingsService } from '@/lib/api/services/settingsService';
 import { setPublicApiUrl } from '@/lib/api/config';
-import { type Settings } from '@/lib/api/types';
+import { type Settings, type ContentPreferences } from '@/lib/api/types';
 
 export const useSettings = () => {
   return useQuery({
@@ -33,6 +33,28 @@ export const useUpdateSettings = () => {
       if (!data?.setPasswordUrl) {
         queryClient.invalidateQueries({ queryKey: ['settings'] });
       }
+    },
+  });
+};
+
+/** The calling user's own content preferences (language order, 18+, download-all). */
+export const useContentPreferences = () => {
+  return useQuery({
+    queryKey: ['settings', 'content-preferences'],
+    queryFn: () => settingsService.getContentPreferences(),
+  });
+};
+
+export const useUpdateContentPreferences = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (prefs: ContentPreferences) => settingsService.updateContentPreferences(prefs),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'content-preferences'] });
+      // Library/Browse filter by language and 18+, so their cached pages are
+      // stale the moment these change.
+      queryClient.invalidateQueries({ queryKey: ['series'] });
     },
   });
 };

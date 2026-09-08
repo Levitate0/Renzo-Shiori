@@ -28,9 +28,11 @@ import {
   useSettings,
   useAvailableLanguages,
   useUpdateSettings,
+  useContentPreferences,
+  useUpdateContentPreferences,
 } from "@/lib/api/hooks/useSettings";
 import { settingsService } from "@/lib/api/services/settingsService";
-import { type Settings, NsfwVisibility } from "@/lib/api/types";
+import { type Settings, type ContentPreferences, NsfwVisibility } from "@/lib/api/types";
 import { useToast } from "@/hooks/use-toast";
 import ReactCountryFlag from "react-country-flag";
 import {
@@ -200,19 +202,31 @@ interface SettingsSection {
   title: string;
   description: string;
   icon: React.ComponentType<{ className?: string }>;
-  component: React.ComponentType<{
-    localSettings: Settings;
-    setLocalSettings: (updater: (prev: Settings) => Settings) => void;
-  }>;
+  // Most sections edit the server-wide Settings blob. Content Preferences
+  // edits the caller's OWN preferences instead, so the slot holds either.
+  component:
+    | React.ComponentType<{
+        localSettings: Settings;
+        setLocalSettings: (updater: (prev: Settings) => Settings) => void;
+      }>
+    | React.ComponentType<{
+        localSettings: ContentPreferences;
+        setLocalSettings: (updater: (prev: ContentPreferences) => ContentPreferences) => void;
+      }>;
 }
 
 // Content Preferences Section
+// These three are PER USER. The section edits the caller's own preferences,
+// not the server-wide blob every other tab on this page writes — one person
+// changing their language order or 18+ visibility must not change anyone
+// else's. The server-wide values remain, as the defaults new accounts start
+// from and the answer background jobs get when there is no user.
 function ContentPreferencesSection({
   localSettings,
   setLocalSettings,
 }: {
-  localSettings: Settings;
-  setLocalSettings: (updater: (prev: Settings) => Settings) => void;
+  localSettings: ContentPreferences;
+  setLocalSettings: (updater: (prev: ContentPreferences) => ContentPreferences) => void;
 }) {
   const { data: availableLanguages = [] } = useAvailableLanguages();
   const sensors = useSensors(
@@ -1652,6 +1666,18 @@ export function SettingsManager({
   // Always call the hook, but conditionally use the data
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const updateSettingsMutation = useUpdateSettings();
+  // Per-user Content Preferences travel separately from the server-wide blob.
+  const { data: serverContentPrefs } = useContentPreferences();
+  const updateContentPrefsMutation = useUpdateContentPreferences();
+  const [contentPrefs, setContentPrefs] = React.useState<ContentPreferences | null>(null);
+  React.useEffect(() => {
+    if (serverContentPrefs) setContentPrefs(serverContentPrefs);
+  }, [serverContentPrefs]);
+  const handleContentPrefsUpdate = React.useCallback(
+    (updater: (prev: ContentPreferences) => ContentPreferences) =>
+      setContentPrefs((prev) => (prev ? updater(prev) : prev)),
+    [],
+  );
 
   // Memoize settings update handler
   const handleSettingsUpdate = React.useCallback(
@@ -1736,6 +1762,12 @@ export function SettingsManager({
       if (onSave) {
         onSave(localSettings);
       } else {
+        // Both halves of this page, in one Save. The per-user call goes first
+        // so a failure in the server-wide save can't leave the user believing
+        // their own preferences were stored.
+        if (contentPrefs) {
+          await updateContentPrefsMutation.mutateAsync(contentPrefs);
+        }
         const result = await updateSettingsMutation.mutateAsync(localSettings);
 
         // If the backend returned a set-password URL, redirect the user
@@ -1766,6 +1798,11 @@ export function SettingsManager({
 
   const activeSection =
     sectionsToShow.find((s) => s.id === activeSectionId) ?? sectionsToShow[0] ?? null;
+  // Narrowed at the call site: the union above is discriminated by section id.
+  const ServerSettingsComponent = activeSection?.component as React.ComponentType<{
+    localSettings: Settings;
+    setLocalSettings: (updater: (prev: Settings) => Settings) => void;
+  }>;
   const ActiveComponent = activeSection?.component;
 
   return (
@@ -1815,10 +1852,19 @@ export function SettingsManager({
               <CardTitle>{activeSection.title}</CardTitle>
               <CardDescription>{activeSection.description}</CardDescription>
             </CardHeader>
-            <ActiveComponent
-              localSettings={localSettings}
-              setLocalSettings={handleSettingsUpdate}
-            />
+            {activeSection.id === "content-preferences" ? (
+              contentPrefs ? (
+                <ContentPreferencesSection
+                  localSettings={contentPrefs}
+                  setLocalSettings={handleContentPrefsUpdate}
+                />
+              ) : null
+            ) : (
+              <ServerSettingsComponent
+                localSettings={localSettings}
+                setLocalSettings={handleSettingsUpdate}
+              />
+            )}
           </Card>
         )}
       </div>

@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api/client';
-import { type Settings } from '@/lib/api/types';
+import { type Settings, type ContentPreferences } from '@/lib/api/types';
 
 export interface SettingsUpdateResponse {
   message: string;
@@ -7,6 +7,19 @@ export interface SettingsUpdateResponse {
 }
 
 export const settingsService = {
+  /**
+   * The CALLING user's content preferences. Always fully populated — the server
+   * fills anything the user hasn't set from the server defaults, so callers
+   * never merge against the global settings themselves.
+   */
+  async getContentPreferences(): Promise<ContentPreferences> {
+    return apiClient.get<ContentPreferences>('/api/settings/content-preferences');
+  },
+
+  async updateContentPreferences(prefs: ContentPreferences): Promise<ContentPreferences> {
+    return apiClient.put<ContentPreferences>('/api/settings/content-preferences', prefs);
+  },
+
   async getSettings(): Promise<Settings> {
     const data = await apiClient.get<Settings>('/api/settings');
     return {

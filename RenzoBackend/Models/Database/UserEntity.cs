@@ -21,6 +21,22 @@ public class UserEntity
     /// </summary>
     public string? AvatarContentType { get; set; }
 
+    // ── Per-user content preferences ────────────────────────────────────
+    // NULL means "not set — inherit the server default", which is what makes
+    // this safe to add to a live install: every existing user keeps behaving
+    // exactly as the global setting says until they change something, and the
+    // global value stays meaningful as the default for new accounts.
+    // Background jobs that have no user still fall back to the same defaults.
+
+    /// <summary>Comma-separated language codes, most preferred first. NULL = inherit.</summary>
+    public string? PreferredLanguages { get; set; }
+
+    /// <summary>Stored as the <c>NsfwVisibility</c> enum's int value. NULL = inherit.</summary>
+    public int? NsfwVisibility { get; set; }
+
+    /// <summary>NULL = inherit.</summary>
+    public bool? DownloadAllChapters { get; set; }
+
     /// <summary>
     /// Nullable - users can exist without passwords when auth is disabled.
     /// </summary>

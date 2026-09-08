@@ -39,6 +39,7 @@ namespace RenzoBackend.Services.Search
         private readonly IMemoryCache _memoryCache;
         private readonly AppDbContext _db;
         private readonly Providers.ProviderPreferencesService _providerPreferences;
+        private readonly Settings.UserContentPreferencesService _contentPrefs;
         private readonly ILogger<SearchQueryService> _logger;
 
 
@@ -50,8 +51,10 @@ namespace RenzoBackend.Services.Search
             ThumbCacheService thumb,
             AppDbContext db,
             Providers.ProviderPreferencesService providerPreferences,
+            Settings.UserContentPreferencesService contentPrefs,
             ILogger<SearchQueryService> logger)
         {
+            _contentPrefs = contentPrefs;
             _mihon = mihon;
             _settings = settings;
             _providerCache = providerCache;
@@ -73,8 +76,10 @@ namespace RenzoBackend.Services.Search
         /// <returns>List of available search sources</returns>
         public async Task<List<SearchSourceDto>> GetAvailableSearchSourcesAsync(Guid userId, CancellationToken token = default)
         {
-            var settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-            var languages = settings.PreferredLanguages.ToList();
+            // This method is already user-scoped (which sources THEY enabled), so
+            // the language order it filters by is theirs too.
+            var languages = (await _contentPrefs.ForUserAsync(userId, token).ConfigureAwait(false))
+                .PreferredLanguages.ToList();
             if (languages.Count == 0)
             {
                 languages = ["en"]; // Default to English if no languages set

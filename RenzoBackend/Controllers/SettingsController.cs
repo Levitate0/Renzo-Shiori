@@ -34,6 +34,7 @@ namespace RenzoBackend.Controllers
     public class SettingsController : ControllerBase
     {
         private readonly SettingsService _settingsService;
+        private readonly UserContentPreferencesService _contentPrefs;
         private readonly AppDbContext _db;
         private readonly UserInviteService _userInviteService;
         private readonly EmailService _emailService;
@@ -41,16 +42,78 @@ namespace RenzoBackend.Controllers
 
         public SettingsController(
             SettingsService settingsService,
+            UserContentPreferencesService contentPrefs,
             AppDbContext db,
             UserInviteService userInviteService,
             EmailService emailService,
             ILogger<SettingsController> logger)
         {
             _settingsService = settingsService;
+            _contentPrefs = contentPrefs;
             _db = db;
             _userInviteService = userInviteService;
             _emailService = emailService;
             _logger = logger;
+        }
+
+        private bool TryGetUserId(out Guid userId)
+        {
+            if (HttpContext.Items["User"] is Models.Database.UserEntity user)
+            {
+                userId = user.Id;
+                return true;
+            }
+            userId = Guid.Empty;
+            return false;
+        }
+
+        /// <summary>
+        /// GET /api/settings/content-preferences
+        /// The CALLING user's content preferences, with anything they have not
+        /// set filled in from the server defaults — so this always answers with
+        /// the values actually in force for them, never a half-empty object the
+        /// caller has to merge itself.
+        /// </summary>
+        [HttpGet("content-preferences")]
+        [ProducesResponseType(typeof(ContentPreferencesDto), 200)]
+        public async Task<ActionResult<ContentPreferencesDto>> GetContentPreferences(CancellationToken token = default)
+        {
+            if (!TryGetUserId(out var userId))
+                return Unauthorized();
+
+            ContentPreferences p = await _contentPrefs.ForUserAsync(userId, token).ConfigureAwait(false);
+            return Ok(new ContentPreferencesDto
+            {
+                PreferredLanguages = p.PreferredLanguages,
+                NsfwVisibility = p.NsfwVisibility,
+                DownloadAllChapters = p.DownloadAllChapters,
+            });
+        }
+
+        /// <summary>
+        /// PUT /api/settings/content-preferences
+        /// Saves the CALLING user's content preferences. These are personal —
+        /// no permission level is involved, and one user's choice never changes
+        /// what anyone else sees.
+        /// </summary>
+        [HttpPut("content-preferences")]
+        [ProducesResponseType(typeof(ContentPreferencesDto), 200)]
+        public async Task<ActionResult<ContentPreferencesDto>> PutContentPreferences(
+            [FromBody] ContentPreferencesDto body, CancellationToken token = default)
+        {
+            if (!TryGetUserId(out var userId))
+                return Unauthorized();
+
+            await _contentPrefs.SaveAsync(userId, body.PreferredLanguages, body.NsfwVisibility,
+                body.DownloadAllChapters, token).ConfigureAwait(false);
+
+            ContentPreferences p = await _contentPrefs.ForUserAsync(userId, token).ConfigureAwait(false);
+            return Ok(new ContentPreferencesDto
+            {
+                PreferredLanguages = p.PreferredLanguages,
+                NsfwVisibility = p.NsfwVisibility,
+                DownloadAllChapters = p.DownloadAllChapters,
+            });
         }
 
         /// <summary>

@@ -63,7 +63,7 @@ public class ImportQueryService
         RenzoBackend.Models.Database.ImportEntity? import = await _db.Imports.FirstOrDefaultAsync(a => a.Path == path, token).ConfigureAwait(false);
         if (import == null)
             return null;
-        AugmentedResponseDto augmented = await _searchCommand.AugmentSeriesAsync(linked, token).ConfigureAwait(false);
+        AugmentedResponseDto augmented = await _searchCommand.AugmentSeriesAsync(linked, null, token).ConfigureAwait(false);
         if (augmented.Series.Count > 0)
         {
             import.Series = augmented.Series;

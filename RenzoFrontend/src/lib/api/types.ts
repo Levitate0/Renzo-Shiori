@@ -1059,3 +1059,14 @@ export interface UpdateFeedItem {
   /** True when the current user has finished this chapter (newChapter items only). */
   read?: boolean;
 }
+
+/**
+ * One user's Content Preferences. Personal, not server-wide: what you set here
+ * changes only what YOU see. A GET always comes back fully populated — anything
+ * you have not set is filled in from the server defaults.
+ */
+export interface ContentPreferences {
+  preferredLanguages: string[];
+  nsfwVisibility: NsfwVisibility;
+  downloadAllChapters: boolean;
+}
