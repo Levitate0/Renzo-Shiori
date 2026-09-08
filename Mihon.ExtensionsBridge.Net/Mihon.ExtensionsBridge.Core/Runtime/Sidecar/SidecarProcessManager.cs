@@ -17,6 +17,23 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// <summary>Directory holding the bundled enjarify python package (for /convert).</summary>
         public string? EnjarifyDir { get; set; } = Environment.GetEnvironmentVariable("RENZO_ENJARIFY_DIR");
         public bool DisableJcef { get; set; } = Environment.GetEnvironmentVariable("RENZO_SIDECAR_NO_JCEF") == "1";
+
+        /// <summary>How often the watchdog probes /health. 0 disables the watchdog.</summary>
+        public int WatchdogIntervalSeconds { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_WATCHDOG_SECONDS"), out var w) ? w : 15;
+
+        /// <summary>
+        /// Consecutive failed probes before a LIVE process is treated as wedged
+        /// and killed. Default 4 x 15s = one minute unresponsive, comfortably
+        /// inside the 3-minute request timeout callers wait on, and far longer
+        /// than any healthy /health call.
+        /// </summary>
+        public int WatchdogFailuresBeforeRestart { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_WATCHDOG_FAILURES"), out var f) ? f : 4;
+
+        /// <summary>Per-probe timeout. /health does nothing but answer, so this is generous.</summary>
+        public int WatchdogProbeTimeoutSeconds { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_WATCHDOG_PROBE_SECONDS"), out var t) ? t : 10;
     }
 
     /// <summary>
@@ -34,6 +51,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         private Process? _proc;
         private volatile bool _ready;
         private int _generation;
+        private readonly CancellationTokenSource _watchdogCts = new();
+        private Task? _watchdog;
+        private int _consecutiveRestarts;
 
         /// <summary>
         /// Bumped every time the JVM is (re)started. A restarted sidecar has NO
@@ -75,8 +95,148 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 int generation = Interlocked.Increment(ref _generation);
                 _ready = true;
                 _logger.LogInformation("Sidecar ready on 127.0.0.1:{Port} (generation {Generation}).", _opts.Port, generation);
+                StartWatchdog();
             }
             finally { _startLock.Release(); }
+        }
+
+        /// <summary>
+        /// Force-restarts the JVM. Unlike <see cref="EnsureStartedAsync"/> this does
+        /// NOT return early when the process is alive — a wedged sidecar is alive,
+        /// which is exactly the case that needs killing.
+        /// </summary>
+        public async Task RestartAsync(string reason, CancellationToken token = default)
+        {
+            _logger.LogWarning("Restarting sidecar: {Reason}.", reason);
+            await _startLock.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                _ready = false;
+                Process? old = _proc;
+                if (old is { HasExited: false })
+                {
+                    // entireProcessTree: JCEF spawns jcef_helper children, and they
+                    // outlive a bare kill of the JVM — that is the helper leak that
+                    // has taken this host into swap before.
+                    try { old.Kill(entireProcessTree: true); } catch (Exception e) { _logger.LogWarning(e, "Killing the sidecar failed; starting a new one anyway."); }
+                    try { await old.WaitForExitAsync(token).ConfigureAwait(false); } catch { /* best effort */ }
+                }
+                _proc = null;
+            }
+            finally { _startLock.Release(); }
+
+            // Outside the lock: EnsureStartedAsync takes it itself. It also bumps
+            // Generation, which is what makes ExtensionManager drop the interops
+            // pointing at sources the new JVM has never loaded.
+            await EnsureStartedAsync(token).ConfigureAwait(false);
+        }
+
+        private void StartWatchdog()
+        {
+            if (_opts.WatchdogIntervalSeconds <= 0 || _watchdog is { IsCompleted: false })
+                return;
+            _watchdog = Task.Run(() => WatchdogLoopAsync(_watchdogCts.Token));
+        }
+
+        /// <summary>
+        /// Keeps the sidecar alive, because nothing else does.
+        ///
+        /// Two distinct failures, and the second is the one that hurts:
+        ///
+        ///  * DEAD — the JVM exited. `proc.Exited` only cleared a flag and logged;
+        ///    nothing restarted it, so the sidecar stayed down until something
+        ///    happened to build a new extension interop. Every source request in
+        ///    between failed.
+        ///  * WEDGED — the process is alive and accepting connections but never
+        ///    answers. Callers then block for the full 3-minute HTTP timeout, one
+        ///    after another, and the symptom is not an error: Add Series simply
+        ///    reports "No results found" while Browse looks fine, because Browse
+        ///    is reading cached rows and never touches the sidecar at all.
+        ///
+        /// Only the second needs a probe; a wedged process passes every liveness
+        /// check there is. Restarting costs a re-load of the extensions actually
+        /// used next, which is cheap next to a server that answers nothing.
+        /// </summary>
+        private async Task WatchdogLoopAsync(CancellationToken token)
+        {
+            TimeSpan interval = TimeSpan.FromSeconds(_opts.WatchdogIntervalSeconds);
+            int failures = 0;
+
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(interval, token).ConfigureAwait(false);
+
+                    // A start/restart is in flight — say nothing, probe nothing.
+                    if (_startLock.CurrentCount == 0)
+                        continue;
+
+                    if (_proc is null or { HasExited: true })
+                    {
+                        if (!_ready && _proc is null)
+                            continue; // never started, or deliberately disposed
+                        failures = 0;
+                        await RestartWithBackoffAsync("process is not running", token).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (!_ready)
+                        continue; // still coming up
+
+                    using var probe = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    probe.CancelAfter(TimeSpan.FromSeconds(_opts.WatchdogProbeTimeoutSeconds));
+                    bool healthy;
+                    try { healthy = await Client.HealthAsync(probe.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (!token.IsCancellationRequested) { healthy = false; }
+
+                    if (healthy)
+                    {
+                        if (failures > 0)
+                            _logger.LogInformation("Sidecar answered again after {Failures} failed probe(s).", failures);
+                        failures = 0;
+                        _consecutiveRestarts = 0;
+                        continue;
+                    }
+
+                    failures++;
+                    _logger.LogWarning("Sidecar /health probe failed ({Failures}/{Limit}).", failures, _opts.WatchdogFailuresBeforeRestart);
+                    if (failures >= _opts.WatchdogFailuresBeforeRestart)
+                    {
+                        failures = 0;
+                        await RestartWithBackoffAsync(
+                            $"unresponsive for ~{_opts.WatchdogIntervalSeconds * _opts.WatchdogFailuresBeforeRestart}s", token)
+                            .ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception e)
+                {
+                    // The watchdog must never be the thing that dies.
+                    _logger.LogError(e, "Sidecar watchdog iteration failed; continuing.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Restarts, backing off when it keeps happening. A sidecar that cannot
+        /// stay up — a bad extension, no memory — would otherwise be relaunched
+        /// every minute forever, and each launch costs a JVM and a JCEF init.
+        /// </summary>
+        private async Task RestartWithBackoffAsync(string reason, CancellationToken token)
+        {
+            int n = Interlocked.Increment(ref _consecutiveRestarts);
+            if (n > 1)
+            {
+                TimeSpan wait = TimeSpan.FromSeconds(Math.Min(300, 15 * Math.Pow(2, Math.Min(n - 1, 5))));
+                _logger.LogWarning("Sidecar has restarted {Count} times without a healthy period; waiting {Wait} before trying again.", n, wait);
+                await Task.Delay(wait, token).ConfigureAwait(false);
+            }
+            try { await RestartAsync(reason, token).ConfigureAwait(false); }
+            catch (Exception e) { _logger.LogError(e, "Sidecar restart failed; the watchdog will try again."); }
         }
 
         private Task StartProcessAsync(CancellationToken token)
@@ -144,6 +304,11 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 
         public async ValueTask DisposeAsync()
         {
+            // Stop the watchdog FIRST, or it races the shutdown kill below and
+            // relaunches a JVM the app is in the middle of tearing down.
+            try { _watchdogCts.Cancel(); } catch { /* best effort */ }
+            try { if (_watchdog != null) await _watchdog.ConfigureAwait(false); } catch { /* best effort */ }
+            _watchdogCts.Dispose();
             try { if (_proc is { HasExited: false }) { _proc.Kill(entireProcessTree: true); await _proc.WaitForExitAsync().ConfigureAwait(false); } }
             catch { /* best effort */ }
             _http.Dispose();
