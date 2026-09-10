@@ -30,6 +30,7 @@ public class ChapterDownload : DownloadSummaryBase, IBridgeItemInfo
 
     public int Retries { get; set; }
 
+
     private string _storagePath = string.Empty;
     public string StoragePath
     {

@@ -45,6 +45,7 @@ namespace RenzoBackend.Services.Downloads
         private readonly ThumbCacheService _thumb;
         private readonly Series.VComicsContentService _vcomics;
         private readonly SiteAuth.SiteAuthService _siteAuth;
+        private readonly IServiceScopeFactory _scopeFactory;
         private static readonly KeyedAsyncLock _lock = new KeyedAsyncLock();
 
         public DownloadCommandService(
@@ -60,8 +61,10 @@ namespace RenzoBackend.Services.Downloads
             HashCacheService hashCache,
             ThumbCacheService thumb,
             Series.VComicsContentService vcomics,
-            SiteAuth.SiteAuthService siteAuth)
+            SiteAuth.SiteAuthService siteAuth,
+            IServiceScopeFactory scopeFactory)
         {
+            _scopeFactory = scopeFactory;
             _siteAuth = siteAuth;
             _vcomics = vcomics;
             _mihon = mihon;
@@ -714,7 +717,16 @@ namespace RenzoBackend.Services.Downloads
 
             if (download.Retries > appSettings.ChapterDownloadFailRetries)
             {
-                _logger.LogWarning("Max retries reached for chapter {ChapterNumber} of series {SeriesTitle} from {ProviderName}. Giving up.", download.Chapter.ChapterNumber, download.Title, download.ProviderName);
+                // This source is spent. Before giving up on the chapter, step down
+                // to the next enabled source that has it: a chapter that is broken
+                // on the top-priority source (missing pages, a dead CDN, a bad
+                // upload) is usually fine on the next one, and the whole point of
+                // downloading from a single chosen source is that the fallback is
+                // a RESPONSE to failure rather than a race everyone runs up front.
+                if (await TryStepDownToNextSourceAsync(download, token).ConfigureAwait(false))
+                    return JobResult.Handled;
+
+                _logger.LogWarning("Max retries reached for chapter {ChapterNumber} of series {SeriesTitle} from {ProviderName}, and no other enabled source has it. Giving up.", download.Chapter.ChapterNumber, download.Title, download.ProviderName);
                 return JobResult.Failed;
             }
 
@@ -722,6 +734,83 @@ namespace RenzoBackend.Services.Downloads
             DateTime nextTime = DateTime.UtcNow.Add(appSettings.ChapterDownloadFailRetryTime);
             await _jobManagementService.ScheduleJobAsync(JobType.Download, download, nextTime, "Downloads", key, groupKey, download.SeriesId.ToString(), Priority.Normal, download.Retries, token).ConfigureAwait(false);
             return JobResult.Handled;
+        }
+
+        /// <summary>
+        /// Hands a chapter whose retries are spent to the NEXT enabled source that
+        /// holds it, in the same priority order the initial choice used.
+        ///
+        /// This is the other half of "download from one source only". Choosing a
+        /// single source up front is what stops the same chapter being fetched from
+        /// four places at once; without a fallback it also means one bad upload on
+        /// the top source — missing pages, a dead CDN — loses the chapter entirely.
+        /// The chapter steps down only when the source it was given to has actually
+        /// failed, so the extra download is paid for once, on demand, rather than
+        /// speculatively.
+        ///
+        /// The walk is POSITIONAL and carries no state: it resumes from where the
+        /// failed source sits in the ordering and only ever moves forward. Picking
+        /// "the best source that is not the one that just failed" would instead
+        /// bounce between the top two forever, each bounce costing a full retry
+        /// budget.
+        /// </summary>
+        private async Task<bool> TryStepDownToNextSourceAsync(ChapterDownload download, CancellationToken token)
+        {
+            decimal number = download.Chapter.ParsedNumber;
+
+            Models.Database.SeriesEntity? series = await _db.Series.Include(s => s.Sources)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.Id == download.SeriesId, token).ConfigureAwait(false);
+            if (series == null)
+                return false;
+
+            if (series.PauseDownloads)
+                return false; // pause is authoritative; do not quietly start elsewhere
+
+            // EVERY source, ordered exactly as DownloadSourceSelector orders them —
+            // including ones that cannot serve this chapter, because the failed
+            // source's position has to be found in the same list the walk advances
+            // through.
+            List<SeriesProviderEntity> ordered = series.Sources
+                .OrderBy(p => p.Priority)
+                .ThenByDescending(p => p.IsStorage)
+                .ThenBy(p => p.Id)
+                .ToList();
+
+            int from = ordered.FindIndex(p => p.Id == download.SeriesProviderId);
+
+            SeriesProviderEntity? next = ordered
+                .Skip(from + 1)   // from == -1 (row deleted) starts at the top, which is right: that source is gone
+                .FirstOrDefault(p => DownloadSourceSelector.CanDownloadFrom(p)
+                    && DownloadSourceSelector.HasChapter(p, number));
+
+            if (next == null)
+                return false;
+
+            _logger.LogInformation(
+                "Chapter {ChapterNumber} of '{SeriesTitle}' failed on {Failed}; stepping down to the next enabled source {Next} (priority {Priority}).",
+                number, download.Title, download.ProviderName, next.Provider, next.Priority);
+
+            // RedownloadChapterAsync re-fetches the source's live chapter list, so
+            // the retry uses a fresh URL rather than the dead one that just failed,
+            // and falls back to the stored chapter row when the source has dropped
+            // the entry. Resolved through a scope because SeriesCommandService
+            // depends on THIS service — taking it as a constructor dependency would
+            // be a cycle.
+            using IServiceScope scope = _scopeFactory.CreateScope();
+            var seriesCommand = scope.ServiceProvider.GetRequiredService<Series.SeriesCommandService>();
+            Series.RedownloadResult result = await seriesCommand
+                .RedownloadChapterAsync(download.SeriesId, number, next.Id, token).ConfigureAwait(false);
+
+            if (result.Outcome != Series.RedownloadOutcome.Queued)
+            {
+                _logger.LogWarning(
+                    "Step-down for chapter {ChapterNumber} of '{SeriesTitle}' to {Next} did not queue ({Outcome}).",
+                    number, download.Title, next.Provider, result.Outcome);
+                return false;
+            }
+
+            return true;
         }
     }
 }

@@ -22,6 +22,14 @@ namespace RenzoBackend.Services.Downloads;
 /// Deciding here rather than at enqueue time keeps it race-free: every source's
 /// scan asks the same question about the same data and only one of them can
 /// answer "me", so there is nothing to collapse, replace, or roll back.
+///
+/// Exactly one source is chosen, and it is simply the best enabled one that has
+/// the chapter. Failure is not anticipated here — if that source cannot deliver
+/// (missing pages, a dead CDN, a bad upload) the chapter steps down to the next
+/// enabled source once its retries are spent, in
+/// <c>DownloadCommandService.TryStepDownToNextSourceAsync</c>. The extra
+/// download is then paid for once, on demand, instead of every source racing
+/// speculatively.
 /// </summary>
 public static class DownloadSourceSelector
 {
@@ -36,12 +44,6 @@ public static class DownloadSourceSelector
     /// <summary>Does this source hold (know about) the chapter?</summary>
     public static bool HasChapter(SeriesProviderEntity p, decimal number) =>
         p.Chapters.Any(c => !c.IsDeleted && c.Number == number);
-
-    /// <summary>
-    /// Currently fetching successfully. ConsecutiveErrorCount is reset to 0 on
-    /// every successful fetch, so this self-heals rather than needing a timeout.
-    /// </summary>
-    public static bool IsHealthy(SeriesProviderEntity p) => p.ConsecutiveErrorCount == 0;
 
     /// <summary>
     /// True when <paramref name="candidate"/> is the source that should download
@@ -64,13 +66,17 @@ public static class DownloadSourceSelector
         // could exclude itself, every other source could be unaware of the
         // chapter, and nobody would ever download it.
         //
-        // A higher-priority source only displaces the candidate if it is
-        // HEALTHY. One that is erroring cannot be relied on to fetch anything,
-        // and letting it win would park the chapter behind a broken source
-        // indefinitely — the queue has no step-down fallback to rescue it.
+        // The best ENABLED source wins outright, healthy or not. An earlier
+        // version skipped sources that were currently erroring, because a broken
+        // top source would otherwise park the chapter forever; that is no longer
+        // true. DownloadCommandService.TryStepDownToNextSourceAsync hands the
+        // chapter to the next source once this one's retries are spent, so
+        // failure is handled by falling back rather than by second-guessing the
+        // user's priority order up front — where "skipped for being unhealthy"
+        // is invisible and looks like the order being ignored.
         List<SeriesProviderEntity> contenders = series.Sources
             .Where(p => p.Id == candidate.Id
-                || (CanDownloadFrom(p) && IsHealthy(p) && HasChapter(p, number)))
+                || (CanDownloadFrom(p) && HasChapter(p, number)))
             .ToList();
 
         SeriesProviderEntity? best = contenders
