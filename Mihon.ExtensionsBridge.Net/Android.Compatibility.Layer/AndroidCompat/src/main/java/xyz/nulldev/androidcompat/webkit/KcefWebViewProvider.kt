@@ -224,8 +224,28 @@ class KcefWebViewProvider(
         // idle for five minutes is abandoned by definition. MAX_LIVE is the second
         // bound: past it, reap the least-recently-used regardless of age.
         private const val IDLE_TTL_MS = 5 * 60 * 1000L
-        private const val MAX_LIVE = 16
         private const val REAP_INTERVAL_MS = 30_000L
+
+        /**
+         * Live browsers allowed at once.
+         *
+         * Each one costs roughly a quarter of a gigabyte: measured on the live
+         * container, 33 jcef_helper processes held 8.3 GB — more than the .NET
+         * app (4.5 GB) and this JVM (1.4 GB) put together, and 14.2 GB of a
+         * 16 GB cap between them. The backend then grew into the remainder and
+         * the runtime aborted with "Out of memory", which Docker turned into a
+         * restart loop.
+         *
+         * 16 was never demand-driven: the catalogue sweep that opens most of
+         * these runs FOUR sources concurrently (SeriesQueryService's fan-out
+         * gate), so a ceiling of 16 simply let abandoned browsers accumulate to
+         * four times the working set before anything reclaimed them. 8 still
+         * leaves headroom over that gate while halving the footprint.
+         *
+         * Override with RENZO_KCEF_MAX_LIVE to tune without a rebuild.
+         */
+        private val MAX_LIVE: Int =
+            System.getenv("RENZO_KCEF_MAX_LIVE")?.toIntOrNull()?.coerceIn(2, 64) ?: 8
 
         /** provider -> last time it was created or used. */
         private val liveProviders = ConcurrentHashMap<KcefWebViewProvider, Long>()
