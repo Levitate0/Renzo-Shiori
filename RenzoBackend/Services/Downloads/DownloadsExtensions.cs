@@ -142,9 +142,9 @@ public static class DownloadsExtensions
             // Every source asks this question about the same data, so exactly
             // one of them keeps the chapter and the rest drop it here instead
             // of racing to a queue key that silently discards the loser.
-            wanted = wanted
-                .Where(c => DownloadSourceSelector.IsPreferredDownloadSource(series, serie, c.ParsedNumber))
-                .ToList();
+            DownloadSourceSelector.PreferredSourceLookup preferred =
+                DownloadSourceSelector.Prepare(series, serie);
+            wanted = wanted.Where(c => preferred.Keeps(c.ParsedNumber)).ToList();
         }
 
         foreach (ParsedChapter c in skip_the_filter.ToList())

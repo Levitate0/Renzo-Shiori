@@ -46,45 +46,87 @@ public static class DownloadSourceSelector
         p.Chapters.Any(c => !c.IsDeleted && c.Number == number);
 
     /// <summary>
-    /// True when <paramref name="candidate"/> is the source that should download
-    /// <paramref name="number"/> for this series.
+    /// Precomputes everything the per-chapter decision needs, ONCE per scan.
+    ///
+    /// The obvious shape — ask per chapter, scanning every source's chapter list
+    /// each time — is quadratic, and with "Download all chapters" enabled the
+    /// input is not "the new chapters" but EVERY chapter of every series. On a
+    /// library of a few thousand series that is billions of decimal comparisons
+    /// and a list allocation per chapter, per sweep. Building the lookup once
+    /// turns each decision into a walk of the sources with O(1) set probes.
     /// </summary>
-    public static bool IsPreferredDownloadSource(SeriesEntity series, SeriesProviderEntity candidate, decimal number)
+    public static PreferredSourceLookup Prepare(SeriesEntity series, SeriesProviderEntity candidate) =>
+        new(series, candidate);
+
+    /// <summary>
+    /// The prepared answer to "should <c>candidate</c> download chapter N of this
+    /// series?" — see <see cref="Prepare"/>.
+    /// </summary>
+    public sealed class PreferredSourceLookup
     {
-        // A storage source is the on-disk copy, not a competitor for a download.
-        if (candidate.IsStorage)
+        private readonly bool _always;
+        private readonly bool _never;
+        private readonly Guid _candidateId;
+        private readonly List<(Guid Id, HashSet<decimal> Numbers)> _ordered = [];
+
+        internal PreferredSourceLookup(SeriesEntity series, SeriesProviderEntity candidate)
+        {
+            _candidateId = candidate.Id;
+
+            // A storage source is the on-disk copy, not a competitor for a download.
+            if (candidate.IsStorage)
+            {
+                _always = true;
+                return;
+            }
+
+            // Disabled or uninstalled sources do not download, full stop — the
+            // caller may still be scanning one to keep its chapter list current.
+            if (!CanDownloadFrom(candidate))
+            {
+                _never = true;
+                return;
+            }
+
+            foreach (SeriesProviderEntity p in series.Sources
+                .Where(p => p.Id == candidate.Id || CanDownloadFrom(p))
+                .OrderBy(p => p.Priority)
+                .ThenByDescending(p => p.IsStorage)
+                .ThenBy(p => p.Id))
+            {
+                // The candidate never needs its own set: it is offering the
+                // chapter right now, which is what makes it a holder.
+                HashSet<decimal> numbers = p.Id == candidate.Id
+                    ? []
+                    : p.Chapters
+                        .Where(c => !c.IsDeleted && c.Number.HasValue)
+                        .Select(c => c.Number!.Value)
+                        .ToHashSet();
+                _ordered.Add((p.Id, numbers));
+            }
+        }
+
+        /// <summary>True when this scan's source is the one that should download the chapter.</summary>
+        public bool Keeps(decimal number)
+        {
+            if (_always) return true;
+            if (_never) return false;
+
+            // The list is in the winning order, so the FIRST source that either is
+            // the candidate or holds the chapter is the winner outright.
+            //
+            // The candidate is treated as a holder even though its own Chapters row
+            // may not exist yet — the scan that discovered this chapter has not been
+            // persisted. Without that it could exclude itself, every other source
+            // could be unaware of the chapter, and nobody would download it.
+            foreach ((Guid id, HashSet<decimal> numbers) in _ordered)
+            {
+                if (id == _candidateId)
+                    return true;
+                if (numbers.Contains(number))
+                    return false;
+            }
             return true;
-
-        // Disabled or uninstalled sources do not download, full stop — the
-        // caller may still be scanning one to keep its chapter list current.
-        if (!CanDownloadFrom(candidate))
-            return false;
-
-        // The candidate is offering this chapter RIGHT NOW, so it counts as a
-        // holder even though its own Chapters row may not exist yet — the scan
-        // that discovered it has not been persisted. Without this the candidate
-        // could exclude itself, every other source could be unaware of the
-        // chapter, and nobody would ever download it.
-        //
-        // The best ENABLED source wins outright, healthy or not. An earlier
-        // version skipped sources that were currently erroring, because a broken
-        // top source would otherwise park the chapter forever; that is no longer
-        // true. DownloadCommandService.TryStepDownToNextSourceAsync hands the
-        // chapter to the next source once this one's retries are spent, so
-        // failure is handled by falling back rather than by second-guessing the
-        // user's priority order up front — where "skipped for being unhealthy"
-        // is invisible and looks like the order being ignored.
-        List<SeriesProviderEntity> contenders = series.Sources
-            .Where(p => p.Id == candidate.Id
-                || (CanDownloadFrom(p) && HasChapter(p, number)))
-            .ToList();
-
-        SeriesProviderEntity? best = contenders
-            .OrderBy(p => p.Priority)
-            .ThenByDescending(p => p.IsStorage)
-            .ThenBy(p => p.Id)   // stable, so every source's scan agrees
-            .FirstOrDefault();
-
-        return best == null || best.Id == candidate.Id;
+        }
     }
 }
