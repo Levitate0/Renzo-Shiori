@@ -34,6 +34,21 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// <summary>Per-probe timeout. /health does nothing but answer, so this is generous.</summary>
         public int WatchdogProbeTimeoutSeconds { get; set; } =
             int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_WATCHDOG_PROBE_SECONDS"), out var t) ? t : 10;
+
+        /// <summary>
+        /// Recycle the sidecar once its embedded browsers have left this many
+        /// helper processes behind. 0 disables the check.
+        ///
+        /// JCEF does not reliably reap its Chromium children: destroying a
+        /// WebView unregisters the provider but its ~12 helper processes can
+        /// survive, so the count climbs without the live-provider cap ever being
+        /// exceeded — measured at 90 helpers with a cap of FOUR browsers, and
+        /// the container hit its pid ceiling with memory still half free.
+        /// Killing the sidecar's process TREE is the one reclaim that works on
+        /// a leak we do not otherwise control.
+        /// </summary>
+        public int WatchdogMaxHelperProcesses { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_MAX_HELPERS"), out var h) ? h : 60;
     }
 
     /// <summary>
@@ -196,6 +211,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                             _logger.LogInformation("Sidecar answered again after {Failures} failed probe(s).", failures);
                         failures = 0;
                         _consecutiveRestarts = 0;
+                        // Answering, but leaking Chromium children. Left alone
+                        // these exhaust the container's pid allowance and the
+                        // runtime aborts on a failed thread creation — which
+                        // reports as "Out of memory" and is not.
+                        int helpers = CountHelperProcesses();
+                        if (_opts.WatchdogMaxHelperProcesses > 0 && helpers > _opts.WatchdogMaxHelperProcesses)
+                        {
+                            await RestartWithBackoffAsync(
+                                $"{helpers} leaked browser helper processes (limit {_opts.WatchdogMaxHelperProcesses})", token)
+                                .ConfigureAwait(false);
+                        }
                         continue;
                     }
 
@@ -301,6 +327,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         }
 
         private static int SafeExit(Process p) { try { return p.ExitCode; } catch { return -1; } }
+
+        /// <summary>Live jcef_helper processes — the leak's visible form.</summary>
+        private int CountHelperProcesses()
+        {
+            try { return Process.GetProcessesByName("jcef_helper").Length; }
+            catch (Exception e)
+            {
+                _logger.LogDebug(e, "Could not count browser helper processes.");
+                return 0; // never let a failed count trigger a restart
+            }
+        }
 
         public async ValueTask DisposeAsync()
         {

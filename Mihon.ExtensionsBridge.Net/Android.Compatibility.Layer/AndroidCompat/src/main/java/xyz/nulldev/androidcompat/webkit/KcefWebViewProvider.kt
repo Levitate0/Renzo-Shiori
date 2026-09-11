@@ -243,9 +243,21 @@ class KcefWebViewProvider(
          * leaves headroom over that gate while halving the footprint.
          *
          * Override with RENZO_KCEF_MAX_LIVE to tune without a rebuild.
+         *
+         * 4, not 8: each live browser turns out to cost ~12 PROCESSES, not the
+         * 2 originally assumed — there is no zygote to fork from, so every
+         * Chromium child is standalone. Measured on the live container, 8
+         * browsers reached 99 jcef_helper processes carrying ~3,100 threads,
+         * and the container hit its 4,000-pid ceiling (3,977) with memory still
+         * at only 10.5G of 16G. Thread creation then failed, the runtime threw
+         * OutOfMemoryException and aborted printing "Out of memory." — which
+         * reads as a heap problem and is not one.
+         *
+         * 4 matches the catalogue sweep's own concurrency gate, so it is the
+         * real working set rather than a guess.
          */
         private val MAX_LIVE: Int =
-            System.getenv("RENZO_KCEF_MAX_LIVE")?.toIntOrNull()?.coerceIn(2, 64) ?: 8
+            System.getenv("RENZO_KCEF_MAX_LIVE")?.toIntOrNull()?.coerceIn(2, 64) ?: 4
 
         /** provider -> last time it was created or used. */
         private val liveProviders = ConcurrentHashMap<KcefWebViewProvider, Long>()

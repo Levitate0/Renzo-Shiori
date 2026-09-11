@@ -40,10 +40,15 @@ ENV RENZO_SIDECAR_JAVA=java \
 # None of the three knew about the other two, so each default is set here
 # relative to the whole:
 #
-#   RENZO_KCEF_MAX_LIVE   Embedded Chromium instances kept alive, ~250MB each.
-#                         The catalogue sweep that opens most of them runs FOUR
-#                         sources at a time, so 8 is already double the working
-#                         set; the old 16 just let abandoned ones pile up.
+#   RENZO_KCEF_MAX_LIVE   Embedded Chromium instances kept alive. The cost that
+#                         matters is PROCESSES, not bytes: each browser carries
+#                         ~12 of them (no zygote to fork from) and ~31 threads
+#                         apiece. At 8 browsers that measured 99 helper
+#                         processes and ~3,100 threads, and the container hit
+#                         its 4,000-pid ceiling with memory still at 10.5G of
+#                         16G — thread creation failed and the runtime aborted
+#                         with a message that reads like a heap problem. 4
+#                         matches the catalogue sweep's own concurrency gate.
 #   RENZO_SIDECAR_XMX     The extension JVM's ceiling — unchanged, but stated
 #                         here so the budget is readable in one place.
 #   DOTNET_GCHeapHardLimitPercent
@@ -57,7 +62,8 @@ ENV RENZO_SIDECAR_JAVA=java \
 #
 # All three are plain env vars: override any of them at `docker run` without
 # rebuilding.
-ENV RENZO_KCEF_MAX_LIVE=8 \
+ENV RENZO_KCEF_MAX_LIVE=4 \
+    RENZO_SIDECAR_MAX_HELPERS=60 \
     RENZO_SIDECAR_XMX=1500m \
     DOTNET_GCHeapHardLimitPercent=0x32
 COPY ./scripts/entrypoint.sh /app/entrypoint.sh
