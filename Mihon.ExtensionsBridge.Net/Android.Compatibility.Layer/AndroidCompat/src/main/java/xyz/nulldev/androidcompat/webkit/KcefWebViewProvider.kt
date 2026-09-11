@@ -131,6 +131,24 @@ class KcefWebViewProvider(
 
     private var cefClient: CefClient? = null
     private var browser: CefBrowser? = null
+
+    /**
+     * Chromium child processes this provider caused to exist.
+     *
+     * CEF does not reliably reap them. `CefBrowser.close(true)` is asynchronous
+     * and returns long before the renderer exits — and under the off-screen
+     * (windowless) rendering this provider uses, with no window to drive the
+     * close, it frequently never exits at all. The processes stay alive,
+     * sleeping, holding ~31 threads each, and the container reaches its pid
+     * ceiling while memory is still half free.
+     *
+     * Nothing upstream can be changed here: the leak is inside JCEF, and the
+     * WebViews come from precompiled extension JARs. So ownership is recorded
+     * on this side — the helper PIDs that appeared while THIS provider was
+     * creating its browser — and [destroy] kills whatever is still alive after
+     * CEF has had its chance.
+     */
+    private val ownedHelperPids = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
     private var messageRouter: CefMessageRouter? = null
     private val renderHandler = HeadlessRenderHandler()
     private val viewDelegate = KcefViewDelegate()
@@ -279,6 +297,67 @@ class KcefWebViewProvider(
                 isDaemon = true
                 name = "kcef-webview-reaper"
                 start()
+            }
+        }
+
+        /**
+         * Browser creation is serialised so a provider can attribute the helper
+         * processes that appear to ITSELF. Creation is milliseconds; page loads
+         * (the slow part) stay fully concurrent.
+         */
+        private val browserCreationLock = Any()
+
+        /** How long CEF gets to exit a closed browser's processes before we do. */
+        private const val HELPER_KILL_GRACE_MS = 5_000L
+
+        private val helperKiller: java.util.concurrent.ScheduledExecutorService =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "kcef-helper-killer").apply { isDaemon = true }
+            }
+
+        /** PIDs of the live Chromium child processes, read straight from /proc. */
+        private fun helperPids(): MutableSet<Long> {
+            val pids = HashSet<Long>()
+            try {
+                val procDirs = java.io.File("/proc").listFiles() ?: return pids
+                for (dir in procDirs) {
+                    if (!dir.isDirectory) continue
+                    val pid = dir.name.toLongOrNull() ?: continue
+                    val comm = try {
+                        java.io.File(dir, "comm").readText().trim()
+                    } catch (t: Throwable) {
+                        continue // process exited between listing and reading
+                    }
+                    if (comm == "jcef_helper") pids.add(pid)
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not enumerate browser helper processes", t)
+            }
+            return pids
+        }
+
+        /**
+         * Force-exits helper processes CEF left behind.
+         *
+         * Shells out to kill(1) rather than using ProcessHandle: this module
+         * compiles against the Android API surface, where java.lang.ProcessHandle
+         * does not exist.
+         */
+        private fun killHelpers(pids: Collection<Long>) {
+            if (pids.isEmpty()) return
+            var killed = 0
+            for (pid in pids) {
+                try {
+                    if (!java.io.File("/proc/$pid").exists()) continue // already gone
+                    val proc = Runtime.getRuntime().exec(arrayOf("kill", "-9", pid.toString()))
+                    proc.waitFor()
+                    killed++
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Could not force-exit browser helper $pid", t)
+                }
+            }
+            if (killed > 0) {
+                Log.w(TAG, "Force-exited $killed browser helper process(es) CEF did not reap")
             }
         }
 
@@ -433,29 +512,83 @@ class KcefWebViewProvider(
         return cefClient ?: throw IllegalStateException("JCEF client is not initialized")
     }
 
+    /**
+     * Creates a browser and records the Chromium child processes it spawned, so
+     * [destroy] can force-exit any CEF fails to reap. Serialised on
+     * [browserCreationLock] purely so the before/after PID diff belongs to this
+     * provider and not to one racing alongside it.
+     */
+    private fun createBrowserTracked(block: CefClient.() -> CefBrowser): CefBrowser =
+        synchronized(browserCreationLock) {
+            val before = helperPids()
+            val created = requireClient().block()
+            ownedHelperPids.addAll(helperPids() - before)
+            created
+        }
+
     private fun createBrowserForUrl(url: String): CefBrowser =
-        requireClient()
-            .createBrowser(url, true, false)
-            .apply {
+        createBrowserTracked {
+            createBrowser(url, true, false).apply {
                 createImmediately()
                 ensureInitialSize()
             }
+        }
 
     private fun createBrowserWithHtml(html: String): CefBrowser =
-        requireClient()
-            .createBrowser(BLANK_URI, true, false)
-            .apply {
+        createBrowserTracked {
+            createBrowser(BLANK_URI, true, false).apply {
                 createImmediately()
                 ensureInitialSize()
                 val encoded = Base64.getEncoder().encodeToString(html.toByteArray(StandardCharsets.UTF_8))
                 loadURL("data:text/html;base64,$encoded")
             }
+        }
 
     private fun shutdownBrowser() {
         browser?.let {
             it.close(true)
         }
         browser = null
+    }
+
+    /**
+     * Point the EXISTING browser at [url], creating one only on first use.
+     *
+     * Every navigation used to close the browser and build a new one, and each
+     * CefBrowser forks its own jcef_helper renderer. CEF's close is
+     * asynchronous and the renderer routinely outlived it, so a single
+     * long-lived WebView leaked one helper process PER PAGE LOAD.
+     *
+     * That leak was invisible to the live-provider reaper below, which only
+     * ever saw one provider no matter how many pages it had loaded — which is
+     * why raising or lowering MAX_LIVE never moved the helper count, and why
+     * the container kept reaching its pid ceiling with memory half free.
+     *
+     * Navigating in place forks nothing: the renderer is reused for the life of
+     * the WebView and dies with it. Request headers and POST bodies still
+     * apply, because [initialRequestData] is consumed by the request handler on
+     * the next request rather than baked into browser construction.
+     */
+    private fun navigateTo(url: String) {
+        val existing = browser
+        if (existing != null) {
+            touch()
+            existing.loadURL(url)
+        } else {
+            browser = createBrowserForUrl(url)
+        }
+    }
+
+    /** As [navigateTo], for inline HTML. */
+    private fun navigateToHtml(html: String) {
+        val existing = browser
+        if (existing != null) {
+            touch()
+            val encoded = Base64.getEncoder().encodeToString(html.toByteArray(StandardCharsets.UTF_8))
+            existing.loadURL("data:text/html;base64,$encoded")
+        } else {
+            browser = createBrowserWithHtml(html)
+        }
     }
 
     private fun CefBrowser.ensureInitialSize() {
@@ -1434,6 +1567,15 @@ class KcefWebViewProvider(
         cefClient = null
         evalCallbacks.clear()
         renderHandler.clear()
+
+        // CEF gets a grace period to do this itself; whatever is still alive
+        // after it is a leak, and is force-exited. Off the calling thread so a
+        // destroy() from inside an extension never blocks on it.
+        val owned = ownedHelperPids.toList()
+        ownedHelperPids.clear()
+        if (owned.isNotEmpty()) {
+            helperKiller.schedule({ killHelpers(owned) }, HELPER_KILL_GRACE_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
     }
 
     override fun setNetworkAvailable(networkUp: Boolean): Unit = throw RuntimeException("Stub!")
@@ -1456,10 +1598,9 @@ class KcefWebViewProvider(
         loadUrl: String,
         additionalHttpHeaders: Map<String, String>,
     ) {
-        shutdownBrowser()
         chromeClient.onProgressChanged(view, 0)
         initialRequestData = InitialRequestData(additionalHttpHeaders = additionalHttpHeaders)
-        browser = createBrowserForUrl(loadUrl)
+        navigateTo(loadUrl)
         Log.d(TAG, "Page loaded at URL $loadUrl")
     }
 
@@ -1471,10 +1612,9 @@ class KcefWebViewProvider(
         url: String,
         postData: ByteArray,
     ) {
-        shutdownBrowser()
         chromeClient.onProgressChanged(view, 0)
         initialRequestData = InitialRequestData(myPostData = postData)
-        browser = createBrowserForUrl(url)
+        navigateTo(url)
         Log.d(TAG, "Page posted at URL $url")
     }
 
@@ -1493,17 +1633,14 @@ class KcefWebViewProvider(
         encoding: String,
         historyUrl: String?,
     ) {
-        shutdownBrowser()
         chromeClient.onProgressChanged(view, 0)
 
-        browser =
-            (
-                baseUrl?.let { url ->
-                    urlHttpMapping[url.trimEnd('/')] = data
-                    createBrowserForUrl(url)
-                }
-                    ?: createBrowserWithHtml(data)
-            )
+        if (baseUrl != null) {
+            urlHttpMapping[baseUrl.trimEnd('/')] = data
+            navigateTo(baseUrl)
+        } else {
+            navigateToHtml(data)
+        }
         Log.d(TAG, "Page loaded from data at base URL $baseUrl")
     }
 
