@@ -306,6 +306,10 @@ public class ReaderPreviewService
         @"(requires?\s+purchase|must\s+purchase|purchased?\s+this\s+chapter|log\s*in\s+via\s+webview|unlock\s+to\s+read|coins?\s+to\s+read|premium\s+chapter|chapter\s+locked|coins?\s+required)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    /// <summary>Cache slot for "the sources said this chapter is paid".</summary>
+    private static string LockedKey(Guid seriesId, decimal chapterNumber) =>
+        $"lib:locked:{seriesId}:{chapterNumber}";
+
     private static bool IsPurchaseError(Exception ex)
     {
         for (Exception? e = ex; e != null; e = e.InnerException)
@@ -319,8 +323,14 @@ public class ReaderPreviewService
         List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, forceRefresh, refreshChapterList, token).ConfigureAwait(false);
         if (pages == null)
             return null;
-        // Zero pages means the source withheld them — a paid/locked chapter.
-        return new PreviewPagesDto { PageCount = pages.Count, Locked = pages.Count == 0 };
+        // Locked is what the sources SAID, not merely "no pages arrived". An empty
+        // result with no paywall evidence is a failed read: reporting it as paid
+        // tells someone to buy a chapter that is free and that they may already
+        // be able to open a minute later.
+        bool locked = pages.Count == 0
+            && _cache.TryGetValue(LockedKey(seriesId, chapterNumber), out bool l)
+            && l;
+        return new PreviewPagesDto { PageCount = pages.Count, Locked = locked };
     }
 
     public async Task<(Stream? stream, string contentType)> GetLibraryStreamPageImageAsync(Guid seriesId, decimal chapterNumber, int pageIndex, Guid? userId = null, CancellationToken token = default)
@@ -678,6 +688,12 @@ public class ReaderPreviewService
         List<Page>? pages = null;
         Guid? winner = null;
         bool anyResolved = false;
+        // Why no pages came back, kept apart. TryGetPagesFromSourceAsync already
+        // distinguishes them — null for a timeout/exception, an EMPTY list only
+        // when the source explicitly said "requires purchase" — and collapsing
+        // the two is what told people a free chapter was paid.
+        bool anyWithheld = false;
+        bool anyFailed = false;
         // First source that served a page list even if its images didn't probe OK —
         // a last resort so a single-source read is never worse than before.
         List<Page>? servedPages = null;
@@ -693,8 +709,16 @@ public class ReaderPreviewService
             (_, ISourceInterop src, ParsedChapter chapter) = resolved.Value;
 
             List<Page>? attempt = await TryGetPagesFromSourceAsync(src, chapter, provider, userId, token).ConfigureAwait(false);
-            if (attempt == null || attempt.Count == 0)
-                continue; // empty (locked) or failed on this source — try the next one
+            if (attempt == null)
+            {
+                anyFailed = true;
+                continue; // timed out or errored — says nothing about whether it is paid
+            }
+            if (attempt.Count == 0)
+            {
+                anyWithheld = true;
+                continue; // the source said "requires purchase" — real paywall evidence
+            }
 
             if (servedPages == null) { servedPages = attempt; servedWinner = provider.Id; }
 
@@ -729,8 +753,17 @@ public class ReaderPreviewService
         if (!anyResolved)
             return null;
 
-        // A source resolved but none served pages → withheld/locked everywhere.
+        // A source resolved but none served pages. Whether that is a paywall or a
+        // bad afternoon is the difference between "buy this" and "try again", so
+        // record which it was for the caller.
         pages ??= new List<Page>();
+        _cache.Set(
+            LockedKey(seriesId, chapterNumber),
+            // Paid only when a source actually SAID so. If every source merely
+            // failed — a timeout, a Cloudflare challenge, the extension host
+            // restarting mid-read — the chapter is unread, not unpaid.
+            pages.Count == 0 && anyWithheld && !anyFailed,
+            CacheTtl);
 
         // Remember which source served the pages so image fetches use the same one.
         if (winner != null)
