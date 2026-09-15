@@ -46,6 +46,15 @@ namespace RenzoBackend.Services.Downloads
         private readonly Series.VComicsContentService _vcomics;
         private readonly SiteAuth.SiteAuthService _siteAuth;
         private readonly IServiceScopeFactory _scopeFactory;
+
+        /// <summary>
+        /// Below this, a series' typical length is not a usable reference — a
+        /// 4-page-per-chapter webtoon must never have its chapters rejected.
+        /// </summary>
+        private const int ShortChapterReferenceFloor = 8;
+
+        /// <summary>Downloaded chapters needed before the median means anything.</summary>
+        private const int ShortChapterMinSamples = 3;
         private static readonly KeyedAsyncLock _lock = new KeyedAsyncLock();
 
         public DownloadCommandService(
@@ -196,6 +205,36 @@ namespace RenzoBackend.Services.Downloads
                     ch.MihonProviderId, ch.Chapter.ParsedNumber, ch.Title);
                 return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
             }
+            // A source can list a chapter with a single page — typically the
+            // scanlator's own banner — and nothing above notices, because it is
+            // neither an error nor zero pages. The chapter then downloads
+            // "successfully" and the reader shows one advert where twenty pages
+            // should be.
+            //
+            // Retrying that source cannot help: its listing is not flaky, it is
+            // wrong. So hand the chapter straight to the next source in priority
+            // order rather than spending a retry budget first.
+            //
+            // The reference is the series' OWN chapters, so this costs no extra
+            // source calls: a page list a quarter the length of what this series
+            // normally runs to is not a short chapter, it is a broken listing.
+            // Genuinely short extras survive — six pages against a median of
+            // twenty is above the threshold.
+            int typical = await TypicalPageCountAsync(ch.SeriesId, token).ConfigureAwait(false);
+            if (typical >= ShortChapterReferenceFloor && ch.Pages.Count <= Math.Max(2, typical / 4))
+            {
+                _logger.LogWarning(
+                    "Provider {Provider} listed only {Pages} page(s) for chapter {Chapter} of '{Title}', against a series typical of {Typical} — treating as an incomplete listing and trying the next source.",
+                    provider, ch.Pages.Count, ch.Chapter.ParsedNumber, ch.Title, typical);
+                if (await TryStepDownToNextSourceAsync(ch, token).ConfigureAwait(false))
+                    return JobResult.Handled;
+                // Nowhere else to go: a banner is still better than nothing, and
+                // the chapter stays visibly short rather than silently absent.
+                _logger.LogWarning(
+                    "No other enabled source has chapter {Chapter} of '{Title}'; downloading the short listing anyway.",
+                    ch.Chapter.ParsedNumber, ch.Title);
+            }
+
             ch.PageCount = ch.Pages.Count;
             downloadSummary = ch.ToDownloadSummary();
             downloadSummary.PageCount = ch.PageCount;
@@ -754,6 +793,41 @@ namespace RenzoBackend.Services.Downloads
         /// bounce between the top two forever, each bounce costing a full retry
         /// budget.
         /// </summary>
+        /// <summary>
+        /// Median page count across this series' already-downloaded chapters —
+        /// what a chapter of this series normally runs to.
+        ///
+        /// Median, not mean: one 200-page omnibus or one banner-only chapter
+        /// would drag an average far enough to make the check useless in the
+        /// direction that matters.
+        /// </summary>
+        private async Task<int> TypicalPageCountAsync(Guid seriesId, CancellationToken token)
+        {
+            try
+            {
+                List<SeriesProviderEntity> providers = await _db.SeriesProviders
+                    .Where(p => p.SeriesId == seriesId)
+                    .AsNoTracking()
+                    .ToListAsync(token).ConfigureAwait(false);
+
+                List<int> counts = providers
+                    .SelectMany(p => p.Chapters)
+                    .Where(c => !c.IsDeleted && !string.IsNullOrEmpty(c.Filename) && c.PageCount > 0)
+                    .Select(c => c.PageCount!.Value)
+                    .OrderBy(n => n)
+                    .ToList();
+
+                if (counts.Count < ShortChapterMinSamples)
+                    return 0; // too little history to judge — never block on a guess
+                return counts[counts.Count / 2];
+            }
+            catch (Exception e)
+            {
+                _logger.LogDebug(e, "Could not compute a typical page count for series {SeriesId}.", seriesId);
+                return 0;
+            }
+        }
+
         private async Task<bool> TryStepDownToNextSourceAsync(ChapterDownload download, CancellationToken token)
         {
             decimal number = download.Chapter.ParsedNumber;
