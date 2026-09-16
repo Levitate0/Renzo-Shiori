@@ -43,7 +43,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 throw new System.IO.FileNotFoundException("APK not found for sidecar load.", apkPath);
             // Convert next to the APK; the sidecar shares this filesystem (same container).
             _jarPath = System.IO.Path.Combine(baseDir, System.IO.Path.GetFileNameWithoutExtension(entry.Apk.FileName) + ".sidecar.jar");
-            string className = entry.Extension.Package + entry.ClassName;
+            string className = Runtime.ExtensionClassName.Resolve(entry.Extension.Package, entry.ClassName);
 
             try
             {

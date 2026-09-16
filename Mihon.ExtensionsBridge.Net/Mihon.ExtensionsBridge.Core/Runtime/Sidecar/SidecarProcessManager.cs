@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Mihon.ExtensionsBridge.Models.Abstractions;
+using Mihon.ExtensionsBridge.Core.Extensions;
 
 namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 {
@@ -107,12 +108,54 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 await StartProcessAsync(token).ConfigureAwait(false);
                 await WaitHealthyAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
                 await Client.SetupAsync(dataRoot, tempRoot, token).ConfigureAwait(false);
+                await PushNetworkSettingsAsync(token).ConfigureAwait(false);
                 int generation = Interlocked.Increment(ref _generation);
                 _ready = true;
                 _logger.LogInformation("Sidecar ready on 127.0.0.1:{Port} (generation {Generation}).", _opts.Port, generation);
                 StartWatchdog();
             }
             finally { _startLock.Release(); }
+        }
+
+        /// <summary>
+        /// Re-applies the app's network settings (FlareSolverr/Cloudflare bypass, SOCKS
+        /// proxy) to a freshly started JVM.
+        ///
+        /// A new sidecar process starts from the Kotlin defaults in
+        /// <c>SettingsConfig.Settings</c>, where <c>flareSolverrEnabled</c> is FALSE —
+        /// the settings the user saved live on THIS side, in preferences.json, and the
+        /// JVM has never seen them. Until this ran on startup the only thing that ever
+        /// pushed them was the user saving the settings page, so every watchdog recycle
+        /// turned the Cloudflare bypass back off and every Cloudflare-protected source
+        /// failed with "Cloudflare bypass currently disabled" until someone happened to
+        /// re-save settings.
+        ///
+        /// Best-effort by design: a sidecar that is up but unconfigured is still far
+        /// more useful than no sidecar, so a failure here is logged and start proceeds.
+        /// Called with <see cref="_startLock"/> HELD — it must never call back into
+        /// <see cref="EnsureStartedAsync"/>, which takes the same non-reentrant lock.
+        /// </summary>
+        private async Task PushNetworkSettingsAsync(CancellationToken token)
+        {
+            try
+            {
+                var prefs = await _folder.LoadPreferencesAsync(token).ConfigureAwait(false);
+                var settings = SidecarNetworkSettings.Build(prefs);
+                if (settings.Count == 0)
+                {
+                    _logger.LogInformation("No saved network preferences to push to the sidecar; it keeps its defaults.");
+                    return;
+                }
+
+                await Client.ConfigAsync(settings, token).ConfigureAwait(false);
+                _logger.LogInformation(
+                    "Pushed network settings to the sidecar (FlareSolverr enabled: {FlareSolverr}).",
+                    settings.TryGetValue("flareSolverrEnabled", out var on) ? on : "unset");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to push network settings to the sidecar; it keeps its defaults (Cloudflare bypass will be OFF).");
+            }
         }
 
         /// <summary>

@@ -192,24 +192,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
             {
                 try
                 {
-                    var settings = new Dictionary<string, object?>();
-                    if (prefs.FlareSolverr != null)
-                    {
-                        settings["flareSolverrEnabled"] = prefs.FlareSolverr.Enabled.ToString().ToLowerInvariant();
-                        settings["flareSolverrUrl"] = prefs.FlareSolverr.Url ?? "http://127.0.0.1:8189";
-                        settings["flareSolverrTimeout"] = prefs.FlareSolverr.Timeout.ToString();
-                        settings["flareSolverrSessionName"] = prefs.FlareSolverr.SessionName;
-                        settings["flareSolverrSessionTtl"] = prefs.FlareSolverr.SessionTtl.ToString();
-                        settings["flareSolverrAsResponseFallback"] = prefs.FlareSolverr.AsResponseFallback.ToString().ToLowerInvariant();
-                    }
-                    if (prefs.SocksProxy != null)
-                    {
-                        settings["socksProxyEnabled"] = prefs.SocksProxy.Enabled.ToString().ToLowerInvariant();
-                        settings["socksProxyHost"] = prefs.SocksProxy.Host ?? "";
-                        settings["socksProxyPort"] = prefs.SocksProxy.Port == 0 ? "" : prefs.SocksProxy.Port.ToString();
-                        settings["socksProxyUsername"] = prefs.SocksProxy.Username;
-                        settings["socksProxyPassword"] = prefs.SocksProxy.Password;
-                    }
+                    // Same map the sidecar gets on every (re)start — see
+                    // SidecarNetworkSettings, which exists so these two cannot drift.
+                    var settings = Runtime.Sidecar.SidecarNetworkSettings.Build(prefs);
                     if (settings.Count > 0)
                     {
                         await sidecar.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);

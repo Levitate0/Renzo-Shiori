@@ -56,7 +56,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
             _jarPath = jarPath;
             Name = entry.Name;
             Version = entry.Extension.Version;
-            string className = entry.Extension.Package + entry.ClassName;
+            string className = ExtensionClassName.Resolve(entry.Extension.Package, entry.ClassName);
             var list = new List<ISourceInterop>();
             // Load the extension's main class through a child-first loader whose PARENT is the
             // compat runtime's own classloader (the assembly that owns eu.kanade.tachiyomi.source.*).
