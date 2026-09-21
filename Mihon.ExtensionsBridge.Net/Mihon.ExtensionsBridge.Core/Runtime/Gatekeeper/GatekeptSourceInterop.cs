@@ -30,10 +30,22 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Gatekeeper
         public int VersionId => _inner.VersionId;
         public bool SupportsLatest => _inner.SupportsLatest;
 
+        // Chapters and details both land on extensions-lib's getMangaUpdate, which
+        // throws if two calls for the SAME manga overlap. See PerMangaLock: the
+        // per-manga lock is taken BEFORE the gate, and that order must not be
+        // reversed. Two different series on one source still run in parallel.
         public async Task<List<ParsedChapter>> GetChaptersAsync(Manga manga, CancellationToken token = default)
-        { await _gate.EnterAsync(token); try { return await _inner.GetChaptersAsync(manga, token).ConfigureAwait(false); } finally { _gate.Exit(); } }
+        {
+            using var _ = await PerMangaLock.AcquireAsync(_inner.Id, manga?.Url, token).ConfigureAwait(false);
+            await _gate.EnterAsync(token);
+            try { return await _inner.GetChaptersAsync(manga, token).ConfigureAwait(false); } finally { _gate.Exit(); }
+        }
         public async Task<ParsedManga> GetDetailsAsync(Manga manga, CancellationToken token = default)
-        { await _gate.EnterAsync(token); try { return await _inner.GetDetailsAsync(manga, token).ConfigureAwait(false); } finally { _gate.Exit(); } }
+        {
+            using var _ = await PerMangaLock.AcquireAsync(_inner.Id, manga?.Url, token).ConfigureAwait(false);
+            await _gate.EnterAsync(token);
+            try { return await _inner.GetDetailsAsync(manga, token).ConfigureAwait(false); } finally { _gate.Exit(); }
+        }
         public async Task<ContentTypeStream> DownloadUrlAsync(string url, CancellationToken token = default)
         { await _gate.EnterAsync(token); try { return await _inner.DownloadUrlAsync(url, token).ConfigureAwait(false); } finally { _gate.Exit(); } }
         public async Task<ContentTypeStream> GetPageImageAsync(Page page, CancellationToken token = default)
