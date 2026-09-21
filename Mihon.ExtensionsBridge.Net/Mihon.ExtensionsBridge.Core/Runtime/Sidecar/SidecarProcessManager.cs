@@ -166,6 +166,18 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public async Task RestartAsync(string reason, CancellationToken token = default)
         {
             _logger.LogWarning("Restarting sidecar: {Reason}.", reason);
+            // Bump the generation BEFORE the kill, not only when the replacement is
+            // ready. Everything holding a cached interop checks this to decide
+            // whether its source ids still exist, and a restart takes several
+            // seconds: bumping only on the way back up left a window where callers
+            // happily took a cached interop pointing at the process we had already
+            // killed, and got "Source <id> not loaded". That window was measured at
+            // 2-9 seconds per recycle, ~11 recycles a day, and is the second cause
+            // of the reader answering 404 on a chapter it could stream.
+            //
+            // Bumping twice per restart (here and again in EnsureStartedAsync) is
+            // harmless — this is a change detector, not a count.
+            Interlocked.Increment(ref _generation);
             await _startLock.WaitAsync(token).ConfigureAwait(false);
             try
             {
