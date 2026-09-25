@@ -1,4 +1,4 @@
-﻿using RenzoBackend.Extensions;
+using RenzoBackend.Extensions;
 using RenzoBackend.Migration;
 using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.Auth;
@@ -84,6 +84,9 @@ namespace RenzoBackend.Services
             services.TryAddScoped<SettingsService>();
             services.TryAddScoped<UserContentPreferencesService>();
 
+            // Singleton: clearance is cached PER HOST and single-flighted, which
+            // only works if every image request shares one instance.
+            services.AddSingleton<Services.Images.CloudflareClearanceService>();
             services.AddScoped<IImageProvider, UrlImageProvider>();
             services.AddScoped<IImageProvider, ExtensionsImageProvider>();
             services.AddScoped<IImageProvider, StorageImageProvider>();
