@@ -117,6 +117,36 @@ namespace RenzoBackend.Services.Background
                 await db.Database.MigrateAsync(cancellationToken).ConfigureAwait(false);
                 await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false);
                 //await db.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=5000;", cancellationToken).ConfigureAwait(false);
+
+                // Keep the query planner's statistics current.
+                //
+                // Without sqlite_stat1 SQLite guesses selectivity, and on a big
+                // LatestSeries it guesses catastrophically: for the Browse feed
+                // ("newest first, restricted to enabled sources") it chose
+                // IX_LatestSerie_MihonProviderId and then sorted EVERY matching row
+                // in a temp B-tree to return forty. Measured on a real 560k-row
+                // catalogue: 2.385s for one page, against 0.0006s once the planner
+                // had stats and walked IX_LatestSerie_FetchDate instead. That is
+                // what made Browse time out and answer 500 — the table had simply
+                // grown past the point where the guess survived.
+                //
+                // analysis_limit samples rather than reading every index entry, so
+                // this stays in the low hundreds of milliseconds even on a 6GB
+                // database; PRAGMA optimize then re-analyses only the tables whose
+                // statistics have actually gone stale, and is a no-op when none
+                // have. Cheap enough to run on every start, which also means a
+                // database restored or copied from elsewhere gets stats promptly.
+                try
+                {
+                    await db.Database.ExecuteSqlRawAsync("PRAGMA analysis_limit=1000;", cancellationToken).ConfigureAwait(false);
+                    await db.Database.ExecuteSqlRawAsync("PRAGMA optimize;", cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Stale statistics make queries slow, never wrong — so this is
+                    // never worth failing a startup over.
+                    _logger.LogWarning(ex, "Could not refresh SQLite query-planner statistics.");
+                }
                 await _fixes.FixThumbnailsOfSeriesWithMissingThumbnailsAsync(cancellationToken).ConfigureAwait(false);
 
                 // One-time backfill: per-user library separation. Every pre-existing

@@ -1,4 +1,4 @@
-﻿using RenzoBackend.Data;
+using RenzoBackend.Data;
 using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.Jobs.Models;
 using RenzoBackend.Services.Settings;
@@ -25,9 +25,41 @@ namespace RenzoBackend.Services.Daily
             _logger.LogInformation("Starting daily maintenance tasks...");
             await CreateBackupAsync(token).ConfigureAwait(false);
             await CleanupOldCompletedEnqueueAsync(token).ConfigureAwait(false);
+            await RefreshQueryPlannerStatisticsAsync(token).ConfigureAwait(false);
             _logger.LogInformation("Daily maintenance tasks completed.");
             return JobResult.Success;
 
+        }
+
+        /// <summary>
+        /// Re-analyses tables whose query-planner statistics have gone stale.
+        ///
+        /// Startup does this too, but this server runs for weeks at a time and the
+        /// catalogue grows the whole while — statistics that were right on Monday
+        /// describe a much smaller table by Friday. When they drift far enough the
+        /// planner picks the wrong index for the Browse feed and sorts the entire
+        /// LatestSeries table in a temp B-tree to return one page: measured at
+        /// 2.385s per page on a 560k-row catalogue, against 0.0006s with current
+        /// statistics. That is slow enough for the client to give up, which is what
+        /// made Browse return 500.
+        ///
+        /// analysis_limit samples instead of reading every index entry, and
+        /// PRAGMA optimize only re-analyses what has actually changed, so this is
+        /// milliseconds in the normal case.
+        /// </summary>
+        public async Task RefreshQueryPlannerStatisticsAsync(CancellationToken token = default)
+        {
+            try
+            {
+                await _db.Database.ExecuteSqlRawAsync("PRAGMA analysis_limit=1000;", token).ConfigureAwait(false);
+                await _db.Database.ExecuteSqlRawAsync("PRAGMA optimize;", token).ConfigureAwait(false);
+                _logger.LogInformation("Refreshed SQLite query-planner statistics.");
+            }
+            catch (Exception e)
+            {
+                // Stale statistics make queries slow, never wrong.
+                _logger.LogWarning(e, "Failed to refresh SQLite query-planner statistics.");
+            }
         }
 
         public async Task CreateBackupAsync(CancellationToken token = default)
