@@ -3,6 +3,7 @@ using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.Jobs.Models;
 using RenzoBackend.Services.Settings;
 using Microsoft.EntityFrameworkCore;
+using RenzoBackend.Extensions;
 
 namespace RenzoBackend.Services.Daily
 {
@@ -26,9 +27,68 @@ namespace RenzoBackend.Services.Daily
             await CreateBackupAsync(token).ConfigureAwait(false);
             await CleanupOldCompletedEnqueueAsync(token).ConfigureAwait(false);
             await RefreshQueryPlannerStatisticsAsync(token).ConfigureAwait(false);
+            await RequeueUnlockedChaptersAsync(token).ConfigureAwait(false);
             _logger.LogInformation("Daily maintenance tasks completed.");
             return JobResult.Success;
 
+        }
+
+        /// <summary>
+        /// Puts unlocked-but-never-queued chapters back in line for download.
+        ///
+        /// A coin-gated chapter is created with ShouldDownload = false, on purpose.
+        /// When it later becomes free — or is purchased — the unlock path clears
+        /// IsLocked; before this existed, nothing ever set ShouldDownload back, so
+        /// the chapter stayed readable and permanently un-downloaded. 313 chapters
+        /// were sitting in that state when this was written.
+        ///
+        /// The unlock path now handles this as it happens; this sweep exists for
+        /// the ones already stranded, and for any unlock that happens somewhere
+        /// that does not go through it.
+        ///
+        /// The test is the same one every writer of the flag uses: wanted unless
+        /// it sits below the provider's cutoff. Chapters that are still locked, or
+        /// already downloaded, are left alone — so this cannot resurrect anything
+        /// the user deliberately skipped by moving that cutoff.
+        /// </summary>
+        public async Task RequeueUnlockedChaptersAsync(CancellationToken token = default)
+        {
+            try
+            {
+                List<Models.Database.SeriesProviderEntity> providers =
+                    await _db.SeriesProviders.ToListAsync(token).ConfigureAwait(false);
+
+                int requeued = 0;
+                foreach (Models.Database.SeriesProviderEntity provider in providers)
+                {
+                    bool touched = false;
+                    foreach (Models.Chapter chapter in provider.Chapters)
+                    {
+                        if (chapter.IsDeleted || chapter.IsLocked || chapter.ShouldDownload)
+                            continue;
+                        if (!string.IsNullOrEmpty(chapter.Filename))
+                            continue;
+                        if (provider.ContinueAfterChapter != null && provider.ContinueAfterChapter >= chapter.Number)
+                            continue;
+
+                        chapter.ShouldDownload = true;
+                        touched = true;
+                        requeued++;
+                    }
+                    if (touched)
+                        _db.Touch(provider, x => x.Chapters);
+                }
+
+                if (requeued > 0)
+                {
+                    await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                    _logger.LogInformation("Queued {Count} unlocked chapter(s) that had never been marked for download.", requeued);
+                }
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "Failed to re-queue unlocked chapters.");
+            }
         }
 
         /// <summary>

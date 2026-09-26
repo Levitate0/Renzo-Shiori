@@ -408,6 +408,40 @@ public class ReaderPreviewService
     /// and in the user's priority order. Streaming tries them in order so a
     /// failing/locked/slow source falls through to the next instead of failing the read.
     /// </summary>
+    /// <summary>
+    /// Explains a "no capable provider" 404. Only runs on that path, so the extra
+    /// query costs nothing in the normal case.
+    /// </summary>
+    private async Task LogNoCapableProviderAsync(Guid seriesId, decimal chapterNumber, CancellationToken token)
+    {
+        try
+        {
+            SeriesEntity? series = await _db.Series.Include(x => x.Sources).AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == seriesId, token).ConfigureAwait(false);
+            if (series == null)
+            {
+                _logger.LogWarning("Stream: ch {Chapter} 404s — series {SeriesId} does not exist.", chapterNumber, seriesId);
+                return;
+            }
+
+            int total = series.Sources.Count;
+            int remote = series.Sources.Count(p =>
+                !p.IsUnknown && !p.IsLocal && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId));
+            int listing = series.Sources.Count(p => p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber));
+
+            _logger.LogWarning(
+                "Stream: ch {Chapter} of \"{Title}\" ({SeriesId}) 404s — no capable source. " +
+                "{Total} source(s), {Remote} usable remotely, {Listing} listing this chapter. " +
+                "A usable source that does not list the chapter means the chapter list is stale; " +
+                "scan the series or let its source refresh.",
+                chapterNumber, series.Title, seriesId, total, remote, listing);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Stream: ch {Chapter} of series {SeriesId} 404s; could not describe why.", chapterNumber, seriesId);
+        }
+    }
+
     private async Task<List<SeriesProviderEntity>> GetCapableProvidersAsync(Guid seriesId, decimal chapterNumber, CancellationToken token)
     {
         SeriesEntity? series = await _db.Series.Include(s => s.Sources).AsNoTracking()
@@ -643,6 +677,31 @@ public class ReaderPreviewService
             if (cha == null || !cha.IsLocked)
                 return;
             cha.IsLocked = false;
+
+            // Unlocking has to put the chapter back in line for download.
+            //
+            // A coin-gated chapter is CREATED with ShouldDownload = false, on
+            // purpose — there is no sense queueing something the source will
+            // refuse. Nothing ever set it back, so a chapter that later became
+            // free (or was purchased) was readable and permanently un-downloaded:
+            // it just sat there, never queued by anything.
+            //
+            // The condition is the same one every other writer of this flag uses
+            // (SeriesExtensions): download it unless it sits below the provider's
+            // cutoff. Already-downloaded chapters keep their file and are left
+            // alone.
+            if (!cha.ShouldDownload && string.IsNullOrEmpty(cha.Filename))
+            {
+                bool wanted = provider!.ContinueAfterChapter == null || provider.ContinueAfterChapter < cha.Number;
+                if (wanted)
+                {
+                    cha.ShouldDownload = true;
+                    _logger.LogInformation(
+                        "Chapter {Chapter} of provider {Provider} unlocked — queued for download.",
+                        chapterNumber, provider.Provider);
+                }
+            }
+
             _db.Touch(provider!, p => p.Chapters);
             await _db.SaveChangesAsync(token).ConfigureAwait(false);
         }
@@ -680,7 +739,16 @@ public class ReaderPreviewService
 
         List<SeriesProviderEntity> providers = await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
         if (providers.Count == 0)
+        {
+            // This is one of the two ways the reader answers 404 for a chapter, and
+            // both used to return null in silence — so "it 404s sometimes" left
+            // nothing in the log to work from. Say which case it was and what the
+            // series actually has, because the answer is usually either "no source
+            // lists this chapter" (a stale chapter list) or "every source is
+            // local/uninstalled/unknown".
+            await LogNoCapableProviderAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
             return null;
+        }
 
         // Try each permanent source in turn; the first that actually serves pages
         // wins. A source that times out, errors, or withholds a paid chapter falls
@@ -751,7 +819,13 @@ public class ReaderPreviewService
 
         // No source could even resolve the chapter → genuinely not found.
         if (!anyResolved)
+        {
+            _logger.LogWarning(
+                "Stream: ch {Chapter} of series {SeriesId} 404s — none of the {Count} capable source(s) could resolve it ({Providers}).",
+                chapterNumber, seriesId, providers.Count,
+                string.Join(", ", providers.Select(p => p.Provider)));
             return null;
+        }
 
         // A source resolved but none served pages. Whether that is a paywall or a
         // bad afternoon is the difference between "buy this" and "try again", so
