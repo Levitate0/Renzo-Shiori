@@ -110,11 +110,64 @@ namespace RenzoBackend.Services.Background
             }
         }
 
+        /// <summary>
+        /// Frees the slot of a job that has been Running past the deadline.
+        ///
+        /// The deadline on the job task is not enough on its own, because
+        /// cancellation is COOPERATIVE: a job blocked somewhere that never checks
+        /// its token simply ignores it. Measured directly — twelve jobs sat at 24
+        /// minutes against a 20-minute deadline without a single one being
+        /// abandoned. A provider gets one download slot, so each of those blocked
+        /// its source outright, and the only thing that ever cleared them was a
+        /// restart (StartupAsync resets Running rows).
+        ///
+        /// So the ROW is reclaimed whether or not the task ever returns. The
+        /// orphaned task may still be sitting there, but it is producing nothing;
+        /// the worst case is one chapter downloaded twice, against a source that
+        /// would otherwise be blocked indefinitely.
+        /// </summary>
+        private async Task ReclaimStuckJobsAsync(JobManagementService jobManagement, QueueSettings queueSettings,
+            ConcurrentDictionary<string, byte> runningJobsInQueue, CancellationToken stoppingToken)
+        {
+            DateTime cutoff = DateTime.UtcNow - MaxJobDuration;
+            List<EnqueueEntity> stuck = await jobManagement.QueuedJobs
+                .Where(j => j.Queue == queueSettings.Name.ToString()
+                            && j.Status == QueueStatus.Running
+                            && j.StartedDate != null
+                            && j.StartedDate < cutoff)
+                .ToListAsync(stoppingToken).ConfigureAwait(false);
+            if (stuck.Count == 0)
+                return;
+
+            foreach (EnqueueEntity job in stuck)
+            {
+                runningJobsInQueue.TryRemove(job.Id.ToString(), out _);
+                await jobManagement.QueuedJobs.Where(j => j.Id == job.Id)
+                    .ExecuteUpdateAsync(u => u
+                        .SetProperty(j => j.Status, QueueStatus.Waiting)
+                        .SetProperty(j => j.StartedDate, (DateTime?)null)
+                        .SetProperty(j => j.RetryCount, job.RetryCount + 1)
+                        // A short delay, so a job that wedges every time cannot
+                        // spin the queue.
+                        .SetProperty(j => j.ScheduledDate, DateTime.UtcNow.AddMinutes(5)),
+                        stoppingToken).ConfigureAwait(false);
+            }
+
+            _logger.LogWarning(
+                "Reclaimed {Count} job slot(s) in queue {Queue} held by jobs Running past {Minutes} minutes ({Groups}).",
+                stuck.Count, queueSettings.Name, MaxJobDuration.TotalMinutes,
+                string.Join(", ", stuck.Select(j => j.GroupKey).Distinct()));
+        }
+
         private async Task ProcessQueueAsync(JobManagementService jobManagement, QueueSettings queueSettings, 
             CancellationToken stoppingToken)
         {
             var queueName = queueSettings.Name;
             var runningJobsInQueue = _runningJobs.GetOrAdd(queueName, _ => new ConcurrentDictionary<string, byte>());
+
+            // Before anything else, take back slots held by jobs that are never
+            // going to finish — otherwise the checks below see a full queue.
+            await ReclaimStuckJobsAsync(jobManagement, queueSettings, runningJobsInQueue, stoppingToken).ConfigureAwait(false);
 
             // Check available slots outside lock first (quick exit optimization)
             if (runningJobsInQueue.Count >= queueSettings.MaxThreads)
