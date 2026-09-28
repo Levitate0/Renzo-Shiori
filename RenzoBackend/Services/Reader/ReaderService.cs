@@ -237,18 +237,42 @@ public class ReaderService
 
     private async Task<string?> ResolveArchivePathAsync(Guid seriesId, string filename, CancellationToken token)
     {
+        // Every failure here becomes a bare 404 on an already-DOWNLOADED chapter,
+        // and all three used to return null in silence — so "it 404s sometimes"
+        // had nothing behind it in the log. The three cases want different
+        // answers, so they are reported apart: a missing series, a filename the
+        // series does not own, or a file that is simply not on disk (the usual
+        // one — the database says downloaded but the library moved underneath it,
+        // or the mount was not there when it was written).
         SeriesEntity? series = await _db.Series.Include(s => s.Sources)
             .AsNoTracking().FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
         if (series == null)
+        {
+            _logger.LogWarning("Reader: 404 for {Filename} — series {SeriesId} does not exist.", filename, seriesId);
             return null;
+        }
         // The filename must belong to the series — never trust it as a raw path.
         bool known = series.Sources.SelectMany(p => p.Chapters)
             .Any(c => c.Filename != null && c.Filename.Equals(filename, StringComparison.OrdinalIgnoreCase));
         if (!known || filename.Contains("..") || filename.Contains('/') || filename.Contains('\\'))
+        {
+            _logger.LogWarning(
+                "Reader: 404 for \"{Filename}\" — not a chapter file of \"{Title}\" ({SeriesId}). " +
+                "Usually a stale filename in the client after a rename or re-download.",
+                filename, series.Title, seriesId);
             return null;
+        }
         var settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
         string path = Path.Combine(settings.StorageFolder, series.StoragePath, filename);
-        return File.Exists(path) ? path : null;
+        if (File.Exists(path))
+            return path;
+
+        _logger.LogWarning(
+            "Reader: 404 for \"{Filename}\" of \"{Title}\" — the database says it is downloaded but the file is not on disk ({Path}). " +
+            "Series folder exists: {FolderExists}.",
+            filename, series.Title, path,
+            Directory.Exists(Path.Combine(settings.StorageFolder, series.StoragePath)));
+        return null;
     }
 
     private static List<ZipArchiveEntry> GetSortedImageEntries(ZipArchive zip)
