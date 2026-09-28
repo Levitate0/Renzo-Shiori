@@ -55,8 +55,13 @@ public static class DownloadSourceSelector
     /// and a list allocation per chapter, per sweep. Building the lookup once
     /// turns each decision into a walk of the sources with O(1) set probes.
     /// </summary>
-    public static PreferredSourceLookup Prepare(SeriesEntity series, SeriesProviderEntity candidate) =>
-        new(series, candidate);
+    public static PreferredSourceLookup Prepare(SeriesEntity series, SeriesProviderEntity candidate, bool downloadAll = false) =>
+        new(series, candidate, series.PrioritizeFreeChapters, downloadAll);
+
+    /// <summary>Is this source's copy of the chapter paywalled?</summary>
+    public static bool HasChapterLocked(SeriesProviderEntity p, decimal number) =>
+        p.Chapters.Any(c => !c.IsDeleted && c.Number == number
+            && (c.IsLocked || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(c.Name)));
 
     /// <summary>
     /// The prepared answer to "should <c>candidate</c> download chapter N of this
@@ -66,12 +71,19 @@ public static class DownloadSourceSelector
     {
         private readonly bool _always;
         private readonly bool _never;
+        private readonly bool _preferFree;
+        private readonly bool _downloadAll;
+        private readonly decimal? _candidateCutoff;
         private readonly Guid _candidateId;
+        private readonly HashSet<decimal> _candidateLocked = [];
         private readonly List<(Guid Id, HashSet<decimal> Numbers)> _ordered = [];
 
-        internal PreferredSourceLookup(SeriesEntity series, SeriesProviderEntity candidate)
+        internal PreferredSourceLookup(SeriesEntity series, SeriesProviderEntity candidate, bool preferFree, bool downloadAll)
         {
             _candidateId = candidate.Id;
+            _preferFree = preferFree;
+            _downloadAll = downloadAll;
+            _candidateCutoff = candidate.ContinueAfterChapter;
 
             // A storage source is the on-disk copy, not a competitor for a download.
             if (candidate.IsStorage)
@@ -96,18 +108,58 @@ public static class DownloadSourceSelector
             {
                 // The candidate never needs its own set: it is offering the
                 // chapter right now, which is what makes it a holder.
+                // "Prioritize free chapters": a source only counts as HOLDING the
+                // chapter when its copy is free. A paywalled copy therefore stops
+                // blocking the sources below it, which is the whole point — the
+                // chapter arrives from wherever it is actually readable instead of
+                // waiting on the top source to unlock.
+                // A source only HOLDS a chapter if it would actually download it.
+                //
+                // Each source carries its own ContinueAfterChapter cutoff, and the
+                // download path drops anything at or below it. Counting such a
+                // chapter as "held" made the top source claim it and then refuse
+                // it, while every source below was told to stand down — so the
+                // chapter was never downloaded by anyone. Real case: EZmanga at
+                // priority 0 with a cutoff of 61 claimed chapters 59 and 60, which
+                // MangaFire (cutoff 58) had and would have taken; both stayed
+                // missing indefinitely, with no error anywhere.
+                bool AboveCutoff(Models.Chapter c) =>
+                    downloadAll || p.ContinueAfterChapter == null || c.Number > p.ContinueAfterChapter;
+
+                bool Holds(Models.Chapter c) =>
+                    !c.IsDeleted && c.Number.HasValue
+                    && AboveCutoff(c)
+                    && !(preferFree && (c.IsLocked
+                        || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(c.Name)));
+
                 HashSet<decimal> numbers = p.Id == candidate.Id
                     ? []
-                    : p.Chapters
-                        .Where(c => !c.IsDeleted && c.Number.HasValue)
-                        .Select(c => c.Number!.Value)
-                        .ToHashSet();
+                    : p.Chapters.Where(Holds).Select(c => c.Number!.Value).ToHashSet();
                 _ordered.Add((p.Id, numbers));
+
+                // The candidate's own paywalled chapters, so it can stand aside for
+                // a free copy further down.
+                if (preferFree && p.Id == candidate.Id)
+                {
+                    foreach (Models.Chapter c in p.Chapters)
+                    {
+                        if (!c.IsDeleted && c.Number.HasValue && (c.IsLocked
+                            || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(c.Name)))
+                        {
+                            _candidateLocked.Add(c.Number.Value);
+                        }
+                    }
+                }
             }
         }
 
         /// <summary>True when this scan's source is the one that should download the chapter.</summary>
-        public bool Keeps(decimal number)
+        /// <param name="number">The chapter number.</param>
+        /// <param name="lockedHere">
+        /// Whether the candidate's own copy is paywalled. Only consulted with
+        /// "Prioritize free chapters" on, and only to let it stand aside.
+        /// </param>
+        public bool Keeps(decimal number, bool lockedHere = false)
         {
             if (_always) return true;
             if (_never) return false;
@@ -122,7 +174,20 @@ public static class DownloadSourceSelector
             foreach ((Guid id, HashSet<decimal> numbers) in _ordered)
             {
                 if (id == _candidateId)
+                {
+                    // Below this source's own cutoff: it is going to drop the
+                    // chapter anyway, so it must not claim it. Standing aside is
+                    // what lets a source further down actually fetch it.
+                    if (!_downloadAll && _candidateCutoff != null && number <= _candidateCutoff)
+                        continue;
+                    // Paywalled here and "prefer free" is on: keep walking, and let
+                    // a lower-priority source that has it free take it. If none
+                    // does, the loop falls through and this source downloads it
+                    // anyway — preferring free is not refusing to download.
+                    if (_preferFree && (lockedHere || _candidateLocked.Contains(number)))
+                        continue;
                     return true;
+                }
                 if (numbers.Contains(number))
                     return false;
             }

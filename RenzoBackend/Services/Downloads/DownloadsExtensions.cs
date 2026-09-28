@@ -43,6 +43,13 @@ public static class DownloadsExtensions
         }
         return downloads;
     }
+    /// <summary>
+    /// How long a chapter that failed on a paywall is left alone before it is
+    /// tried again. Twice a day: often enough that a purchase lands on its own,
+    /// rare enough that unowned chapters stop monopolising the download slots.
+    /// </summary>
+    private static readonly TimeSpan PaywallRetryInterval = TimeSpan.FromHours(12);
+
 
     public static List<ChapterDownload> GenerateDownloadsFromChapterData(this RenzoBackend.Models.Database.SeriesEntity series, SeriesProviderEntity serie, List<ParsedChapter>? chapterData, bool downloadAll = false, bool allowLocked = false)
     {
@@ -80,6 +87,30 @@ public static class DownloadsExtensions
                 wanted = wanted.Where(a =>
                     !RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(a.ParsedName) &&
                     !RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(a.Name)).ToList();
+            }
+            else
+            {
+                // With a site login the paid chapters ARE queued — the account may
+                // own them. For the ones it does not, that was a permanent loop:
+                // queue, fail on the paywall, reschedule, repeat. A provider has one
+                // download slot, so a handful of unowned chapters starved everything
+                // behind them (2,248 paywall failures in a day, 2,134 from one
+                // source, against 15 completed downloads).
+                //
+                // So: a chapter already known paywalled waits out a backoff before
+                // it is tried again. It is still retried — a chapter bought later
+                // has to arrive on its own — just twice a day instead of constantly.
+                // Anything that shows the chapter is no longer paid clears the stamp
+                // and it queues immediately, so a purchase the user actually reads
+                // is not made to wait.
+                DateTime lockedRetryBefore = DateTime.UtcNow - PaywallRetryInterval;
+                wanted = wanted.Where(a =>
+                {
+                    Models.Chapter? stored = serie.Chapters.FirstOrDefault(c => c.Number == a.ParsedNumber);
+                    if (stored is not { IsLocked: true, LockedCheckedAt: not null })
+                        return true;
+                    return stored.LockedCheckedAt < lockedRetryBefore;
+                }).ToList();
             }
 
             // Per-series option: skip fractional ".5"-style sub-chapters (often
@@ -143,8 +174,14 @@ public static class DownloadsExtensions
             // one of them keeps the chapter and the rest drop it here instead
             // of racing to a queue key that silently discards the loser.
             DownloadSourceSelector.PreferredSourceLookup preferred =
-                DownloadSourceSelector.Prepare(series, serie);
-            wanted = wanted.Where(c => preferred.Keeps(c.ParsedNumber)).ToList();
+                DownloadSourceSelector.Prepare(series, serie, downloadAll);
+            // The incoming name carries lock markers the stored row may not have
+            // yet (this scan has not been persisted), so pass it through — the
+            // lookup already knows about the source's PERSISTED locked chapters.
+            wanted = wanted.Where(c => preferred.Keeps(
+                c.ParsedNumber,
+                RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(c.ParsedName)
+                    || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(c.Name))).ToList();
         }
 
         foreach (ParsedChapter c in skip_the_filter.ToList())

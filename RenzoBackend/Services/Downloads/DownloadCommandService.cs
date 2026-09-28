@@ -727,11 +727,17 @@ namespace RenzoBackend.Services.Downloads
                 {
                     if (!string.Equals(provRow.Provider, download.ProviderName, StringComparison.OrdinalIgnoreCase))
                         continue;
-                    foreach (Models.Chapter c in provRow.Chapters.Where(c => c.Number == number && !c.IsLocked))
+                    foreach (Models.Chapter c in provRow.Chapters.Where(c => c.Number == number))
                     {
+                        // Stamp EVERY attempt, not only the first: the stamp is what
+                        // paces the retries, so an already-locked chapter must have
+                        // it refreshed or it would be re-attempted forever.
+                        c.LockedCheckedAt = DateTime.UtcNow;
+                        changed = true;
+                        if (c.IsLocked)
+                            continue;
                         c.IsLocked = true;
                         c.ShouldDownload = false;
-                        changed = true;
                     }
                     if (changed)
                         _db.Entry(provRow).Property(p => p.Chapters).IsModified = true;

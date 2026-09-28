@@ -401,6 +401,7 @@ public static class SeriesExtensions
             Category = ModelExtensions.CategoryFromPath(series.StoragePath, settings),
             Nsfw = series.Nsfw,
             HideDecimalChapters = series.HideDecimalChapters,
+            PrioritizeFreeChapters = series.PrioritizeFreeChapters,
             IsNsfw = series.Nsfw
                      || AdultContentClassifier.IsAdult(series.Genre)
                      || (series.Sources?.Any(s => AdultContentClassifier.IsAdult(s.Genre)) ?? false)

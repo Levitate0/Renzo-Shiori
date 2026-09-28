@@ -281,6 +281,7 @@ namespace RenzoBackend.Services.Series
             dbSeries.PauseDownloads = series.PausedDownloads;
             dbSeries.Nsfw = series.Nsfw;
             dbSeries.HideDecimalChapters = series.HideDecimalChapters;
+            dbSeries.PrioritizeFreeChapters = series.PrioritizeFreeChapters;
             
             // When series gets paused, clear any queued waiting downloads so they're recalculated on resume
             if (series.PausedDownloads && !wasPaused)
@@ -839,6 +840,12 @@ namespace RenzoBackend.Services.Series
                                     if (existing.IsLocked != st.IsLocked)
                                     {
                                         existing.IsLocked = st.IsLocked;
+                                        // Going free ends the paywall backoff: the
+                                        // chapter should queue on this scan, not wait
+                                        // out the remainder of an interval that exists
+                                        // only to pace retries against a paywall.
+                                        if (!st.IsLocked)
+                                            existing.LockedCheckedAt = null;
                                         changed = true;
                                     }
                                     // The title captured at discovery keeps whatever lock
@@ -1173,7 +1180,12 @@ namespace RenzoBackend.Services.Series
             if (series.OwnerId == Guid.Empty)
                 return 0;
             UserEntity? owner = await _db.Users.FirstOrDefaultAsync(u => u.Id == series.OwnerId, token).ConfigureAwait(false);
-            if (owner == null || !owner.GetRedownloadFromHigherPrioritySources())
+            // "Prioritize free chapters" implies this pass for the series that have
+            // it on, regardless of the user-wide setting: standing aside for a free
+            // copy is only half the deal — the other half is coming back for the
+            // preferred source's copy once it is free there too. The locked-chapter
+            // skip below is what makes "once it is free" the trigger.
+            if (owner == null || !(owner.GetRedownloadFromHigherPrioritySources() || series.PrioritizeFreeChapters))
                 return 0;
 
             // Shared with the download-source choice — change one, change all.

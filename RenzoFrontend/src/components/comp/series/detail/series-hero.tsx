@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pause, Play, CheckCircle2, Check, Trash2, FolderOpen, Copy, RefreshCw, MoreHorizontal, Hash, Search } from "lucide-react";
+import { Pause, Play, CheckCircle2, Check, Trash2, FolderOpen, Copy, RefreshCw, MoreHorizontal, Hash, Search, Unlock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -153,6 +153,8 @@ export interface SeriesHeroProps {
   onSetCategory?: (category: string | null) => void;
   /** Current state of the hide-decimal-chapters toggle. */
   hideDecimalChapters?: boolean;
+  prioritizeFreeChapters?: boolean;
+  onPrioritizeFreeToggle?: () => void;
   /** Toggle hiding fractional ".5" sub-chapters for this series. */
   onToggleHideDecimal?: () => void;
 }
@@ -178,6 +180,8 @@ export function SeriesHero({
   onDelete,
   onSetCategory,
   hideDecimalChapters,
+  prioritizeFreeChapters,
+  onPrioritizeFreeToggle,
   onToggleHideDecimal,
 }: SeriesHeroProps) {
   const [expanded, setExpanded] = useState(false);
@@ -380,6 +384,29 @@ export function SeriesHero({
                 <Button variant="default" onClick={onPauseToggle} className="px-0 w-9 sm:w-auto sm:px-4">
                   <Pause className="h-4 w-4 sm:mr-2" />
                   <span className="hidden sm:inline">Pause Downloads</span>
+                </Button>
+              )}
+
+              {/* Prioritize free chapters — deliberately a first-class toolbar
+                  control rather than a "More" menu item: it changes which source
+                  a chapter is fetched from, which is something the user wants to
+                  see the state of at a glance, not go hunting for. */}
+              {canManageDownloads && onPrioritizeFreeToggle && (
+                <Button
+                  variant={prioritizeFreeChapters ? "default" : "outline"}
+                  onClick={onPrioritizeFreeToggle}
+                  aria-pressed={!!prioritizeFreeChapters}
+                  title={
+                    prioritizeFreeChapters
+                      ? "Taking each chapter from the highest-priority source that has it FREE, then re-downloading from the preferred source once it is free there too."
+                      : "Prefer a free copy from a lower-priority source over a paywalled one."
+                  }
+                  className="px-0 w-9 sm:w-auto sm:px-4"
+                >
+                  <Unlock className={`h-4 w-4 sm:mr-2 ${prioritizeFreeChapters ? "" : "opacity-70"}`} />
+                  <span className="hidden sm:inline">
+                    {prioritizeFreeChapters ? "Prioritizing Free" : "Prioritize Free"}
+                  </span>
                 </Button>
               )}
 

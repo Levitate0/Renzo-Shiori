@@ -541,6 +541,7 @@ export interface BaseSeriesInfo {
   isNsfw?: boolean;
   /** Hide fractional ".5"-style sub-chapters (dupe/promo pages) from list + downloads. */
   hideDecimalChapters?: boolean;
+  prioritizeFreeChapters?: boolean;
   category?: string;
 }
 

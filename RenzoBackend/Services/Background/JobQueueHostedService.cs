@@ -33,6 +33,13 @@ namespace RenzoBackend.Services.Background
         // each tick guarantees every group eventually lands inside the window.
         private readonly ConcurrentDictionary<JobQueues, int> _groupRotation = new();
 
+        /// <summary>
+        /// Hard ceiling on a single job. Generous — a big chapter over a slow
+        /// source is legitimately minutes — but finite, so a job that will never
+        /// finish cannot hold its group's only slot indefinitely.
+        /// </summary>
+        private static readonly TimeSpan MaxJobDuration = TimeSpan.FromMinutes(20);
+
         public JobQueueHostedService(IServiceScopeFactory scopeFactory, ILogger<JobQueueHostedService> logger,
             JobsSettings settings)
         {
@@ -206,15 +213,46 @@ namespace RenzoBackend.Services.Background
             
             using var scope = _scopeFactory.CreateScope();
             var jobExecution = scope.ServiceProvider.GetRequiredService<JobExecutionService>();
-            
+
+            // Every job gets a deadline.
+            //
+            // A source call is individually bounded (SourceTimeout), but the JOB
+            // around them was not, and a job that never returns holds its group's
+            // slot forever. With one download slot per provider that is not a
+            // slowdown, it is a permanent block: twelve jobs were found sitting
+            // Running for 2h48m — since the moment the container started — while
+            // 8,263 chapters waited behind them and nothing was logged, because
+            // hanging is not an error. This is the "queue wedges, only a restart
+            // clears it" behaviour, and the restart only cleared it because
+            // StartupAsync resets Running rows.
+            //
+            // The deadline turns a hang into an ordinary failure: the slot is
+            // released and the job retries like any other.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            deadline.CancelAfter(MaxJobDuration);
+
             try
             {
                 //_logger.LogInformation("Starting job {Key} in queue {queueName}", job.Key, queueName);
                 
                 JobInfo jobInfo = new JobInfo(job.Id, job.JobType, job.Key, job.GroupKey, job.JobParameters);
-                JobResult result = await jobExecution.ExecuteJobAsync(jobInfo, stoppingToken).ConfigureAwait(false);
+                JobResult result = await jobExecution.ExecuteJobAsync(jobInfo, deadline.Token).ConfigureAwait(false);
                 
                 await HandleJobResultAsync(job, result, queueName, stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            {
+                // The deadline fired, not a shutdown. Treat it as a failure so the
+                // job is retried rather than silently abandoned.
+                _logger.LogWarning(
+                    "Job {Key} ({Group}) in queue {queueName} exceeded {Minutes} minutes and was abandoned so its slot could be reused.",
+                    job.Key, job.GroupKey, queueName, MaxJobDuration.TotalMinutes);
+                try
+                {
+                    await HandleJobFailureAsync(job, queueSettings, stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { }
+                catch (ObjectDisposedException) { }
             }
             catch (OperationCanceledException)
             {

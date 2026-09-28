@@ -27,6 +27,23 @@ public class Chapter : ChapterDescriptorBase
     /// their logged-in session actually owns it.
     /// </summary>
     public bool IsLocked { get; set; }
+    /// <summary>
+    /// When a download last failed on this chapter's paywall (UTC).
+    ///
+    /// Owning a site login for a source means its paid chapters ARE queued —
+    /// the account may well have bought them. For the ones it has NOT bought
+    /// that turned into a permanent loop: queue, fail "Log in via Webview and
+    /// purchased this chapter to read", reschedule 30 minutes later, forever.
+    /// Measured at 2,248 such failures in one day, 2,134 of them from a single
+    /// source, and because a provider only gets ONE download slot that loop was
+    /// what starved every other chapter behind it.
+    ///
+    /// Stamping the attempt lets the queue leave the chapter alone for a while
+    /// instead of never retrying (a chapter bought later must still arrive) or
+    /// retrying constantly. Cleared the moment anything shows it is no longer
+    /// paid, so a purchase is not made to wait out the backoff.
+    /// </summary>
+    public DateTime? LockedCheckedAt { get; set; }
     public int? PageCount { get; set; }
     public string? Filename { get; set; }
     public List<string> Pages { get; set; } = [];

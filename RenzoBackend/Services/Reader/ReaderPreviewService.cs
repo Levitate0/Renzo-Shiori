@@ -677,6 +677,11 @@ public class ReaderPreviewService
             if (cha == null || !cha.IsLocked)
                 return;
             cha.IsLocked = false;
+            // The reader just proved this chapter is readable, so the paywall
+            // backoff no longer applies — it should queue on the next scan
+            // rather than waiting out an interval meant for chapters we cannot
+            // open at all.
+            cha.LockedCheckedAt = null;
 
             // Unlocking has to put the chapter back in line for download.
             //

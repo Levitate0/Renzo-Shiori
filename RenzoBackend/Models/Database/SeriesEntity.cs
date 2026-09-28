@@ -84,6 +84,21 @@ namespace RenzoBackend.Models.Database
         public bool HideDecimalChapters { get; set; }
 
         /// <summary>
+        /// Prefer a source that has the chapter FREE over a higher-priority source
+        /// that has it paywalled.
+        ///
+        /// Off (the default), priority alone decides, so a chapter that is
+        /// coin-gated on the top source simply does not download until it is
+        /// unlocked there — even when a source one rung down is giving it away.
+        /// On, a locked chapter makes its source step aside for the next one that
+        /// holds it free, and the chapter is re-downloaded from the preferred
+        /// source later, once that source has it free too. The free copy is
+        /// something to read in the meantime, not a permanent downgrade.
+        /// </summary>
+        [JsonPropertyName("prioritizeFreeChapters")]
+        public bool PrioritizeFreeChapters { get; set; }
+
+        /// <summary>
         /// The raw media-type reported by the external scrobbler this series is
         /// matched to (e.g. MAL <c>media_type</c>: manga / manhwa / manhua / novel,
         /// or Kitsu manga_type). Populated on auto-/confirmed match. This is an

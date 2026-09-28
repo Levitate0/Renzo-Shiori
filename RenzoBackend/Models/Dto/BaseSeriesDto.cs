@@ -1,4 +1,4 @@
-﻿using System.Text.Json.Serialization;
+using System.Text.Json.Serialization;
 using RenzoBackend.Extensions;
 using RenzoBackend.Models.Enums;
 using RenzoBackend.Models.Abstractions;
@@ -75,6 +75,10 @@ public class BaseSeriesDto : IThumb
     /// <summary>Hide fractional ".5"-style sub-chapters from the list/downloads.</summary>
     [JsonPropertyName("hideDecimalChapters")]
     public bool HideDecimalChapters { get; set; }
+
+    /// <summary>Prefer a free copy from a lower-priority source over a paywalled one. See SeriesEntity.</summary>
+    [JsonPropertyName("prioritizeFreeChapters")]
+    public bool PrioritizeFreeChapters { get; set; }
 
     /// <summary>
     /// Computed 18+ detection: manual override OR adult rating tags on the

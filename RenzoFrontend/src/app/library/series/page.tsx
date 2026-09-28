@@ -167,7 +167,7 @@ function SeriesPageContent() {
   
   // Helper function that allows updating with an explicit pausedDownloads value
   // (and optionally an explicit manual-18+ value; ...series carries it otherwise)
-  const updateSeriesWithPausedDownloads = async (overridePausedDownloads: boolean, overrideNsfw?: boolean, overrideHideDecimal?: boolean) => {
+  const updateSeriesWithPausedDownloads = async (overridePausedDownloads: boolean, overrideNsfw?: boolean, overrideHideDecimal?: boolean, overridePrioritizeFree?: boolean) => {
     if (!series || isDeleting) return;
 
     try {
@@ -177,6 +177,7 @@ function SeriesPageContent() {
         pausedDownloads: overridePausedDownloads,
         nsfw: overrideNsfw ?? series.nsfw ?? false,
         hideDecimalChapters: overrideHideDecimal ?? series.hideDecimalChapters ?? false,
+        prioritizeFreeChapters: overridePrioritizeFree ?? series.prioritizeFreeChapters ?? false,
         providers: series.providers.map(provider => {
           const switches = providerSwitches[provider.id];
           const fromChapterValue = providerFromChapters[provider.id];
@@ -952,6 +953,13 @@ function SeriesPageContent() {
     void updateSeriesWithPausedDownloads(pausedDownloads, undefined, !(series?.hideDecimalChapters ?? false));
   };
 
+  // Prefer a free copy from a lower-priority source over a paywalled one, and
+  // come back for the preferred source's copy once it is free there too.
+  const handlePrioritizeFreeToggle = () => {
+    void updateSeriesWithPausedDownloads(
+      pausedDownloads, undefined, undefined, !(series?.prioritizeFreeChapters ?? false));
+  };
+
   // Move the series into a different category folder (physical relocation).
   const handleSetCategory = async (category: string | null) => {
     if (!seriesId) return;
@@ -1386,6 +1394,8 @@ function SeriesPageContent() {
         onDelete={handleDeleteSeriesClick}
         onSetCategory={handleSetCategory}
         hideDecimalChapters={series.hideDecimalChapters ?? false}
+        prioritizeFreeChapters={series.prioritizeFreeChapters ?? false}
+        onPrioritizeFreeToggle={handlePrioritizeFreeToggle}
         onToggleHideDecimal={handleHideDecimalToggle}
       />
 
