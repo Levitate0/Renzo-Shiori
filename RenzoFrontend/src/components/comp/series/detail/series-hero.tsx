@@ -387,6 +387,29 @@ export function SeriesHero({
                 </Button>
               )}
 
+              {/* Hide decimal chapters — a saved per-series setting, so it reads
+                  as an on/off control with visible state rather than a command
+                  buried in a menu (it used to be a "More" item, where nothing
+                  showed whether it was currently on). */}
+              {canEditSeries && onToggleHideDecimal && (
+                <Button
+                  variant={hideDecimalChapters ? "default" : "outline"}
+                  onClick={() => onToggleHideDecimal()}
+                  aria-pressed={!!hideDecimalChapters}
+                  title={
+                    hideDecimalChapters
+                      ? "Sub-chapters (.5) are hidden from this series' chapter list, reader and downloads."
+                      : "Hide sub-chapters (.5) from this series' chapter list, reader and downloads."
+                  }
+                  className="px-0 w-9 sm:w-auto sm:px-4"
+                >
+                  <Hash className={`h-4 w-4 sm:mr-2 ${hideDecimalChapters ? "" : "opacity-70"}`} />
+                  <span className="hidden sm:inline">
+                    {hideDecimalChapters ? "Decimals Hidden" : "Hide Decimals"}
+                  </span>
+                </Button>
+              )}
+
               {/* Prioritize free chapters — deliberately a first-class toolbar
                   control rather than a "More" menu item: it changes which source
                   a chapter is fetched from, which is something the user wants to
@@ -459,12 +482,6 @@ export function SeriesHero({
                       <DropdownMenuItem onSelect={() => onNsfwToggle()} className="gap-2">
                         <span className={`text-xs font-semibold tracking-tight ${nsfw ? 'text-red-500' : ''}`}>18+</span>
                         {nsfw ? "Unmark as 18+" : "Mark as 18+"}
-                      </DropdownMenuItem>
-                    )}
-                    {canEditSeries && onToggleHideDecimal && (
-                      <DropdownMenuItem onSelect={() => onToggleHideDecimal()} className="gap-2">
-                        <Hash className={`h-4 w-4 ${hideDecimalChapters ? 'text-primary' : ''}`} />
-                        {hideDecimalChapters ? "Show decimal chapters (.5)" : "Hide decimal chapters (.5)"}
                       </DropdownMenuItem>
                     )}
                     {canEditSeries && onSetCategory && categories.length > 0 && (
