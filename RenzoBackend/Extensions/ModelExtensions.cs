@@ -517,7 +517,30 @@ namespace RenzoBackend.Extensions
                 string? chapterUrl = rows
                     .Select(r => r.Chapter.Url)
                     .FirstOrDefault(u => !string.IsNullOrEmpty(u));
-                bool locked = !downloaded && rows.Any(r => r.Chapter.IsLocked || IsLockedChapterName(r.Chapter.Name));
+                // Locked means "no source will give me this", not "some source
+                // wants money for it". ANY-source was the old test, and it marked a
+                // chapter paid whenever a single source paywalled it — even with
+                // another source offering the very same chapter free. Reported as a
+                // free chapter showing up as paid, and it is also what the
+                // per-series "prioritize free chapters" option exists to exploit:
+                // if a free copy is reachable, this chapter is not locked.
+                static bool LockedOn(Models.Chapter c) =>
+                    c.IsLocked || IsLockedChapterName(c.Name);
+
+                // Judged on the sources that can actually be fetched from: a free
+                // copy on a DISABLED or uninstalled source is not reachable, so it
+                // must not clear the badge either. Falls back to every row when no
+                // usable source carries the chapter, which keeps a locked-only
+                // chapter from a now-disabled source still reading as locked.
+                var lockRows = rows
+                    .Where(r => remoteCapable.Any(p => p.Id == r.Provider.Id))
+                    .ToList();
+                if (lockRows.Count == 0)
+                    lockRows = rows;
+
+                bool locked = !downloaded
+                    && lockRows.Count > 0
+                    && lockRows.All(r => LockedOn(r.Chapter));
 
                 List<ChapterSourceDto> available = remoteCapable
                     .Where(p => p.Chapters.Any(c => !c.IsDeleted && c.Number == g.Key))

@@ -94,9 +94,22 @@ public class ReaderService
             var any = withFile.Chapter != null ? withFile : g.First();
             ChapterReadState? st = states.FirstOrDefault(s => s.ChapterNumber == g.Key);
             bool downloaded = withFile.Chapter != null;
-            // Paid/locked chapter (source marks the title) not downloaded yet — the
-            // reader shows a purchase screen instead of trying to stream empty pages.
-            bool locked = !downloaded && g.Any(x => RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(x.Chapter.Name));
+            // Paid/locked chapter not downloaded yet — the reader shows a purchase
+            // screen instead of trying to stream empty pages.
+            //
+            // ALL, not ANY: the chapter is only unreachable when every source that
+            // carries it paywalls it. Asking ANY marked a free chapter paid the
+            // moment a single source wanted money for it, and the reader then
+            // offered to buy something another source was giving away. Matches
+            // ToChapterDetailList — the two feed the same badge (Hub ORs them
+            // together), so they have to agree or the stricter one wins silently.
+            //
+            // IsLocked is consulted as well as the title: the title marker is how
+            // some sources signal it, the flag is how the rest do, and only looking
+            // at the title missed every source of the second kind.
+            bool locked = !downloaded && g.Any() && g.All(x =>
+                x.Chapter.IsLocked
+                || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(x.Chapter.Name));
             string? url = g.Select(x => x.Chapter.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
             chapters.Add(new ReaderChapterDto
             {
@@ -268,11 +281,69 @@ public class ReaderService
             return path;
 
         _logger.LogWarning(
-            "Reader: 404 for \"{Filename}\" of \"{Title}\" — the database says it is downloaded but the file is not on disk ({Path}). " +
-            "Series folder exists: {FolderExists}.",
+            "Reader: \"{Filename}\" of \"{Title}\" is recorded as downloaded but is not on disk ({Path}). " +
+            "Series folder exists: {FolderExists}. Clearing the record so it can be re-fetched.",
             filename, series.Title, path,
             Directory.Exists(Path.Combine(settings.StorageFolder, series.StoragePath)));
+
+        // Don't just 404. A chapter the database calls downloaded, whose file has
+        // gone, is a dead end for the reader: the client asks for the FILE (never
+        // the stream, because the chapter list says it is downloaded) and gets a
+        // bare 404 every time, for good.
+        //
+        // Clearing the stale filename makes the chapter read as not-downloaded
+        // again, which is what it actually is — so the reader falls back to
+        // streaming it and the ordinary download machinery queues it afresh.
+        await ForgetMissingChapterFileAsync(series.Id, filename, token).ConfigureAwait(false);
         return null;
+    }
+
+    /// <summary>
+    /// Drops the Filename of a chapter whose archive is gone, so the app stops
+    /// believing it holds a file it does not.
+    ///
+    /// Deliberately only clears the pointer: the chapter row, its read state and
+    /// everything else stay exactly as they were. Best-effort — failing to tidy
+    /// up must never turn a missing page into a failed request.
+    /// </summary>
+    private async Task ForgetMissingChapterFileAsync(Guid seriesId, string filename, CancellationToken token)
+    {
+        try
+        {
+            List<SeriesProviderEntity> providers = await _db.SeriesProviders
+                .Where(p => p.SeriesId == seriesId)
+                .ToListAsync(token).ConfigureAwait(false);
+
+            bool changed = false;
+            foreach (SeriesProviderEntity provider in providers)
+            {
+                bool touched = false;
+                foreach (Models.Chapter chapter in provider.Chapters)
+                {
+                    if (chapter.Filename == null ||
+                        !chapter.Filename.Equals(filename, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    chapter.Filename = null;
+                    chapter.DownloadDate = null;
+                    // Put it back in line, subject to the usual cutoff.
+                    if (provider.ContinueAfterChapter == null || provider.ContinueAfterChapter < chapter.Number)
+                        chapter.ShouldDownload = true;
+                    touched = true;
+                }
+                if (touched)
+                {
+                    _db.Entry(provider).Property(p => p.Chapters).IsModified = true;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Reader: couldn't clear the stale filename for \"{Filename}\".", filename);
+        }
     }
 
     private static List<ZipArchiveEntry> GetSortedImageEntries(ZipArchive zip)
