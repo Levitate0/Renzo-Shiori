@@ -1,4 +1,4 @@
-﻿using RenzoBackend.Data;
+using RenzoBackend.Data;
 using RenzoBackend.Extensions;
 using RenzoBackend.Migration;
 using RenzoBackend.Models.Database;
@@ -147,6 +147,7 @@ namespace RenzoBackend.Services.Background
                     // never worth failing a startup over.
                     _logger.LogWarning(ex, "Could not refresh SQLite query-planner statistics.");
                 }
+                await RepairWindowsUnsafeStoragePathsAsync(db, settings, cancellationToken).ConfigureAwait(false);
                 await _fixes.FixThumbnailsOfSeriesWithMissingThumbnailsAsync(cancellationToken).ConfigureAwait(false);
 
                 // One-time backfill: per-user library separation. Every pre-existing
@@ -468,6 +469,145 @@ namespace RenzoBackend.Services.Background
             {
                 _logger.LogError(ex, "Error starting Startup Hosted Service");
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// Renames series folders whose names contain characters Windows cannot put
+        /// in a path, and repoints the database at the new name.
+        ///
+        /// Chapter FILES have always been safe: they go through
+        /// InvalidPathCharacterMap, which swaps each illegal character for a
+        /// lookalike (':' becomes U+0589, and so on). Series FOLDERS are safe too
+        /// when BuildStoragePath names them — but a path adopted from a disk scan is
+        /// taken exactly as found, so a folder created outside the app, or by an
+        /// older version, keeps whatever it was called.
+        ///
+        /// On Linux that merely looks odd: a folder "Series: Subtitle" holding files
+        /// named "Series։ Subtitle …". On Windows the folder cannot exist at all, so
+        /// the library is unopenable there. Fixing it in the image rather than by
+        /// hand is the point — anyone who already has such a folder gets it
+        /// corrected on upgrade, including Windows users who would otherwise never
+        /// get the library to load.
+        ///
+        /// Conservative by construction: runs only when storage is actually mounted,
+        /// never overwrites an existing folder, and leaves the database alone
+        /// whenever the rename does not happen. Doing nothing is always the safe
+        /// outcome, so every failure path takes it.
+        /// </summary>
+        /// <summary>
+        /// The smallest change that makes one path segment legal on Windows.
+        ///
+        /// Deliberately NOT MakeFolderNameSafe, which is the right transform for
+        /// NAMING a new folder but too broad for renaming an existing one: it also
+        /// trims leading spaces and collapses "..." to an ellipsis, neither of which
+        /// Windows objects to. Renaming a user's library folder is worth doing to
+        /// make the library openable; it is not worth doing for tidiness, and a dry
+        /// run against a real library showed the broader transform moving a folder
+        /// purely because its name began with a space.
+        ///
+        /// So: swap the characters Windows forbids, and drop TRAILING dots and
+        /// spaces (Windows silently strips those, which turns the stored path into
+        /// one that can never be matched). Nothing else.
+        /// </summary>
+        private static string WindowsSafeSegment(string segment)
+        {
+            string result = segment;
+            foreach (KeyValuePair<string, string> kvp in FileSystemExtensions.InvalidPathCharacterMap)
+                result = result.Replace(kvp.Key, kvp.Value);
+            return result.TrimEnd(' ', '.');
+        }
+
+        private async Task RepairWindowsUnsafeStoragePathsAsync(AppDbContext db, SettingsDto settings, CancellationToken token)
+        {
+            try
+            {
+                // Same mount guard VerifyAllSeries uses: with storage absent every
+                // path looks wrong, and renaming on that basis would be a mess to
+                // undo.
+                if (string.IsNullOrEmpty(settings.StorageFolder)
+                    || !Directory.Exists(settings.StorageFolder)
+                    || !Directory.EnumerateFileSystemEntries(settings.StorageFolder).Any())
+                {
+                    return;
+                }
+
+                List<SeriesEntity> all = await db.Series.ToListAsync(token).ConfigureAwait(false);
+                int renamed = 0;
+                int skipped = 0;
+
+                foreach (SeriesEntity series in all)
+                {
+                    if (string.IsNullOrWhiteSpace(series.StoragePath))
+                        continue;
+
+                    // '/' separates segments and must survive; everything else in the
+                    // map is illegal WITHIN a segment.
+                    string[] parts = series.StoragePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                    string safePath = string.Join('/', parts.Select(WindowsSafeSegment));
+                    if (string.Equals(safePath, series.StoragePath, StringComparison.Ordinal))
+                        continue;
+
+                    string original = series.StoragePath;
+                    string from = Path.Combine(settings.StorageFolder, original.SanitizeDirectory());
+                    string to = Path.Combine(settings.StorageFolder, safePath.SanitizeDirectory());
+
+                    if (!Directory.Exists(from))
+                    {
+                        // Nothing on disk under the old name. If the new name is
+                        // already there, the move happened before and only the
+                        // database lagged — just repoint it.
+                        if (Directory.Exists(to))
+                        {
+                            series.StoragePath = safePath;
+                            renamed++;
+                        }
+                        continue;
+                    }
+
+                    if (Directory.Exists(to))
+                    {
+                        // Both exist — merging two libraries is not something to
+                        // attempt unattended.
+                        _logger.LogWarning(
+                            "Not renaming '{From}' to '{To}' for Windows compatibility: both folders exist. Merge them by hand, then restart.",
+                            original, safePath);
+                        skipped++;
+                        continue;
+                    }
+
+                    try
+                    {
+                        string? parent = Path.GetDirectoryName(to);
+                        if (!string.IsNullOrEmpty(parent))
+                            Directory.CreateDirectory(parent);
+                        Directory.Move(from, to);
+                        series.StoragePath = safePath;
+                        renamed++;
+                        _logger.LogInformation(
+                            "Renamed series folder for Windows compatibility: '{From}' -> '{To}'.", original, safePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Leave the database pointing at the folder that still
+                        // exists; the library keeps working exactly as it does now.
+                        _logger.LogWarning(ex,
+                            "Couldn't rename series folder '{From}' to '{To}'; leaving it as it is.", original, safePath);
+                        skipped++;
+                    }
+                }
+
+                if (renamed > 0)
+                {
+                    await db.SaveChangesAsync(token).ConfigureAwait(false);
+                    _logger.LogInformation(
+                        "Windows-safe path repair: {Renamed} series folder(s) renamed, {Skipped} left alone.",
+                        renamed, skipped);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Windows-safe path repair failed; no folders were changed.");
             }
         }
 
