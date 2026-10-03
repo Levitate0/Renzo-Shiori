@@ -294,34 +294,57 @@ public class ReaderService
         // Clearing the stale filename makes the chapter read as not-downloaded
         // again, which is what it actually is — so the reader falls back to
         // streaming it and the ordinary download machinery queues it afresh.
-        await ForgetMissingChapterFileAsync(series.Id, filename, token).ConfigureAwait(false);
+        await ForgetMissingChapterFilesAsync(series, token).ConfigureAwait(false);
         return null;
     }
 
     /// <summary>
-    /// Drops the Filename of a chapter whose archive is gone, so the app stops
-    /// believing it holds a file it does not.
+    /// Reconciles the whole series against what is actually on disk, dropping the
+    /// Filename of every chapter whose archive is gone.
     ///
-    /// Deliberately only clears the pointer: the chapter row, its read state and
-    /// everything else stay exactly as they were. Best-effort — failing to tidy
-    /// up must never turn a missing page into a failed request.
+    /// Series-wide rather than just the chapter that was asked for: these go
+    /// missing in batches, not one at a time — one series had 117 chapters
+    /// recorded as downloaded with 3 files present — and healing them one per
+    /// open would make the user walk into 117 separate failures to clear it.
+    /// One directory listing settles the lot.
+    ///
+    /// Only ever clears the POINTER; the chapter row, its read state and
+    /// everything else stay as they are. Guarded on the series folder being
+    /// present: if the library is not mounted every file looks missing, and
+    /// wiping the download state of a whole library because of a mount race is
+    /// the one outcome worse than a 404 (see the same guard on VerifyAllSeries).
+    /// Best effort — failing to tidy up must never turn a missing page into a
+    /// failed request.
     /// </summary>
-    private async Task ForgetMissingChapterFileAsync(Guid seriesId, string filename, CancellationToken token)
+    private async Task ForgetMissingChapterFilesAsync(SeriesEntity series, CancellationToken token)
     {
         try
         {
+            var settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            string folder = Path.Combine(settings.StorageFolder, series.StoragePath);
+            if (!Directory.Exists(folder))
+            {
+                _logger.LogWarning(
+                    "Reader: not reconciling \"{Title}\" — its folder {Folder} is not there at all, which looks like storage being unavailable rather than chapters being gone.",
+                    series.Title, folder);
+                return;
+            }
+
+            var present = new HashSet<string>(
+                Directory.EnumerateFiles(folder).Select(Path.GetFileName)!,
+                StringComparer.OrdinalIgnoreCase);
+
             List<SeriesProviderEntity> providers = await _db.SeriesProviders
-                .Where(p => p.SeriesId == seriesId)
+                .Where(p => p.SeriesId == series.Id)
                 .ToListAsync(token).ConfigureAwait(false);
 
-            bool changed = false;
+            int cleared = 0;
             foreach (SeriesProviderEntity provider in providers)
             {
                 bool touched = false;
                 foreach (Models.Chapter chapter in provider.Chapters)
                 {
-                    if (chapter.Filename == null ||
-                        !chapter.Filename.Equals(filename, StringComparison.OrdinalIgnoreCase))
+                    if (string.IsNullOrEmpty(chapter.Filename) || present.Contains(chapter.Filename))
                         continue;
                     chapter.Filename = null;
                     chapter.DownloadDate = null;
@@ -329,20 +352,23 @@ public class ReaderService
                     if (provider.ContinueAfterChapter == null || provider.ContinueAfterChapter < chapter.Number)
                         chapter.ShouldDownload = true;
                     touched = true;
+                    cleared++;
                 }
                 if (touched)
-                {
                     _db.Entry(provider).Property(p => p.Chapters).IsModified = true;
-                    changed = true;
-                }
             }
 
-            if (changed)
+            if (cleared > 0)
+            {
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                _logger.LogWarning(
+                    "Reader: \"{Title}\" had {Count} chapter(s) recorded as downloaded whose files are gone — cleared, so they stream now and download again.",
+                    series.Title, cleared);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Reader: couldn't clear the stale filename for \"{Filename}\".", filename);
+            _logger.LogWarning(ex, "Reader: couldn't reconcile \"{Title}\" against disk.", series.Title);
         }
     }
 
