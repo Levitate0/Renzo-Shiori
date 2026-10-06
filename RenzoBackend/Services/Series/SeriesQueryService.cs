@@ -787,6 +787,20 @@ namespace RenzoBackend.Services.Series
         private const int LiveCatalogPages = 8;
         private const int LiveCatalogMaxRows = 400;
 
+        // Ceilings on a live catalog pull. SeriesQueryService was calling into
+        // source extensions with NOTHING bounding them — the only such path left in
+        // the app, and the reason a catalog fetch could outlive its own 10-minute
+        // cache entry: the next request then started a SECOND task for the same
+        // source while the first still held its thread, so a wedged source never
+        // converged and leaked a worker each time round.
+        //
+        // Per page rather than only overall, because the pages are sequential and a
+        // single stuck page would otherwise consume the whole budget. 30s matches
+        // the per-source cap the search fan-out already uses; eight of them keep
+        // the worst case comfortably inside the cache entry's lifetime.
+        private static readonly TimeSpan LiveCatalogPageTimeout = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan LiveCatalogTotalBudget = TimeSpan.FromMinutes(4);
+
         /// <summary>
         /// Single-source Browse (no keyword): merges the source's cached rows with
         /// a live multi-page fetch of its latest/popular listing, so a thin or newly
@@ -822,7 +836,26 @@ namespace RenzoBackend.Services.Series
             if (enabledForBrowse0 != null && !enabledForBrowse0.Contains(mihonProviderId))
                 return [];
 
-            List<LatestSeriesDto> live = await GetLiveCatalogRowsAsync(mihonProviderId, token).ConfigureAwait(false);
+            // Wait for the live catalogue ONLY when the stored rows cannot already
+            // fill the page being asked for — the same rule the keyword path has
+            // applied all along (see GetKeywordCatalogPageAsync), and that the
+            // single-source path never got.
+            //
+            // That omission is what made picking a source in Browse look broken.
+            // The cache holds up to LiveCatalogMaxRows (400) rows for a source —
+            // eleven screens of infinite scroll — and the query above returns them
+            // in milliseconds; the request then sat on the full 60s budget before
+            // handing back those very rows. For a source that cannot finish inside
+            // the budget (Comix, Philia Scans, Manga Ball and Kagane all appear in
+            // the log doing exactly that) EVERY page paid 60s for nothing, and a
+            // client with a shorter deadline than the budget gave up first, which
+            // is the "timeout" as the user experiences it.
+            //
+            // Returning now costs nothing: the fetch is cached and keeps running,
+            // so whatever it finds serves the next scroll.
+            bool canFillPage = merged.Count >= Math.Max(0, start) + count;
+            List<LatestSeriesDto> live = await GetLiveCatalogRowsAsync(
+                mihonProviderId, canFillPage ? 0 : LiveSearchBudgetMs, token).ConfigureAwait(false);
             foreach (LatestSeriesDto row in live)
             {
                 if (known.Add(row.MihonId))
@@ -848,11 +881,15 @@ namespace RenzoBackend.Services.Series
         }
 
         /// <summary>
-        /// Awaits the (shared, cached) live catalog fetch for a source up to the
-        /// live-search budget. A slow source returns empty for this request; the
-        /// task keeps running and its result serves subsequent requests from cache.
+        /// Awaits the (shared, cached) live catalog fetch for a source up to
+        /// <paramref name="budgetMs"/>. A slow source returns empty for this
+        /// request; the task keeps running and its result serves subsequent
+        /// requests from cache.
         /// </summary>
-        private async Task<List<LatestSeriesDto>> GetLiveCatalogRowsAsync(string mihonProviderId, CancellationToken token)
+        /// <param name="budgetMs">How long to wait. Zero starts the fetch and
+        /// returns immediately — the caller already has enough rows to render, and
+        /// the result still lands in the cache for the next request.</param>
+        private async Task<List<LatestSeriesDto>> GetLiveCatalogRowsAsync(string mihonProviderId, int budgetMs, CancellationToken token)
         {
             string cacheKey = $"BrowseCatalog:{mihonProviderId}";
             Task<List<LatestSeriesDto>>? task = _memoryCache.GetOrCreate(cacheKey, entry =>
@@ -863,11 +900,19 @@ namespace RenzoBackend.Services.Series
             if (task == null)
                 return [];
 
-            Task finished = await Task.WhenAny(task, Task.Delay(LiveSearchBudgetMs, token)).ConfigureAwait(false);
-            if (finished != task)
+            if (budgetMs <= 0)
             {
-                _logger.LogInformation("Live catalog fetch for source {Source} still running after {Budget}ms; returning cached rows for now.", mihonProviderId, LiveSearchBudgetMs);
-                return [];
+                if (!task.IsCompleted)
+                    return [];   // enough stored rows to render; don't stall on the fetch
+            }
+            else
+            {
+                Task finished = await Task.WhenAny(task, Task.Delay(budgetMs, token)).ConfigureAwait(false);
+                if (finished != task)
+                {
+                    _logger.LogInformation("Live catalog fetch for source {Source} still running after {Budget}ms; returning cached rows for now.", mihonProviderId, budgetMs);
+                    return [];
+                }
             }
             try
             {
@@ -912,12 +957,23 @@ namespace RenzoBackend.Services.Series
             DateTime seededBase = DateTime.UtcNow.AddYears(-1);
             int order = 0;
 
+            DateTime catalogDeadline = DateTime.UtcNow + LiveCatalogTotalBudget;
+
             for (int page = 1; page <= LiveCatalogPages && rows.Count < LiveCatalogMaxRows; page++)
             {
+                if (DateTime.UtcNow >= catalogDeadline)
+                {
+                    _logger.LogInformation("Live catalog fetch for {Source} hit its {Budget}-minute budget at page {Page}; keeping what it has.",
+                        mihonProviderId, LiveCatalogTotalBudget.TotalMinutes, page);
+                    break;
+                }
+
                 MangaList? res;
                 try
                 {
-                    res = await (useLatest ? src.GetLatestAsync(page) : src.GetPopularAsync(page)).ConfigureAwait(false);
+                    res = await SourceTimeout.RunAsync(
+                        ct => useLatest ? src.GetLatestAsync(page, ct) : src.GetPopularAsync(page, ct),
+                        LiveCatalogPageTimeout).ConfigureAwait(false);
                 }
                 catch (Exception e)
                 {
@@ -1060,7 +1116,16 @@ namespace RenzoBackend.Services.Series
                         .Select(async s =>
                         {
                             await concurrency.WaitAsync().ConfigureAwait(false);
-                            try { await GetLiveCatalogRowsAsync(s.MihonProviderId, CancellationToken.None).ConfigureAwait(false); }
+                            // Waits for real, unlike a browse request: the budget is
+                            // what holds the semaphore, so a zero budget here would
+                            // release it instantly and launch every source at once —
+                            // precisely the outbound burst the cap above exists to
+                            // prevent. The fetch is now bounded internally
+                            // (LiveCatalogPageTimeout / LiveCatalogTotalBudget), so
+                            // waiting cannot stall the sweep indefinitely; the margin
+                            // covers the persist step after the last page.
+                            int sweepBudgetMs = (int)LiveCatalogTotalBudget.TotalMilliseconds + 30_000;
+                            try { await GetLiveCatalogRowsAsync(s.MihonProviderId, sweepBudgetMs, CancellationToken.None).ConfigureAwait(false); }
                             catch (Exception e) { _logger.LogWarning(e, "Catalog sweep failed for {Source}.", s.MihonProviderId); }
                             finally { concurrency.Release(); }
                         })
@@ -1351,6 +1416,22 @@ namespace RenzoBackend.Services.Series
         /// <returns>Distinct genres with their occurrence counts</returns>
         public async Task<List<LatestGenreDto>> GetLatestGenresAsync(CancellationToken token = default)
         {
+            // Cached, because this counts tags across the WHOLE catalogue and there
+            // is no way to do that cheaply: it reads the Genre column of every
+            // LatestSeries row (582k of them here, ~1.5s warm and ~5.6s cold on the
+            // live 6.5GB database, measured) and value-converts each one into its
+            // own List<string>. The browse screen asks for it on every mount, so an
+            // uncached call put seconds on the critical path of opening Browse,
+            // alongside whatever the page query itself cost.
+            //
+            // Five minutes matches the staleTime the clients already apply, so this
+            // changes nothing a user can observe except the wait. The counts only
+            // move as the background catalogue fill discovers series, which is a
+            // slow drip, not something a user is watching for.
+            const string cacheKey = "BrowseLatestGenres";
+            if (_memoryCache.TryGetValue(cacheKey, out List<LatestGenreDto>? cachedGenres) && cachedGenres != null)
+                return cachedGenres;
+
             // Project only the Genre column so whole rows aren't materialized; EF
             // still applies the value converter, giving a List<string> per row.
             List<List<string>> genreLists = await _db.LatestSeries
@@ -1373,11 +1454,14 @@ namespace RenzoBackend.Services.Series
                 }
             }
 
-            return counts
+            List<LatestGenreDto> result = counts
                 .Select(kv => new LatestGenreDto { Name = kv.Key, Count = kv.Value })
                 .OrderByDescending(g => g.Count)
                 .ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            _memoryCache.Set(cacheKey, result, TimeSpan.FromMinutes(5));
+            return result;
         }
     }
 }
