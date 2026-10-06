@@ -307,6 +307,12 @@ function ReaderInner() {
   const capturingRef = useRef<HotkeyAction | null>(null);
   useEffect(() => { capturingRef.current = capturingAction; }, [capturingAction]);
   const [error, setError] = useState<string | null>(null);
+  // Per-page load failures in paged mode, and the retry counter that busts the
+  // cache for one page. Continuous mode already retries a failed page itself
+  // (three tries with backoff, see its onError); paged mode had nothing at all —
+  // a page that failed stayed blank with no way to ask for it again.
+  const [failedPages, setFailedPages] = useState<Set<number>>(new Set());
+  const [pageRetry, setPageRetry] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   // Bumped to force the loader to re-run (e.g. after a locked chapter unlocks).
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -468,6 +474,8 @@ function ReaderInner() {
     const load = async () => {
       setLoading(true);
       setError(null);
+      setFailedPages(new Set());
+      setPageRetry({});
       setCurrentPage(0);
       resumePageRef.current = 0;
       setInfo(null);
@@ -551,11 +559,27 @@ function ReaderInner() {
             freshStreamRef.current = null;
             const sp = await readerService.streamPages(seriesId, chapterNumber, !alreadyFresh);
             if (cancelled) return;
-            if (sp.locked || sp.pageCount <= 0) {
-              // Source withheld the pages — a paid/locked chapter. Show the buy
-              // screen (and the 3s poll picks it up once purchased / free).
+            if (sp.locked) {
+              // A source actually SAID "requires purchase". Show the buy screen
+              // (and the 3s poll picks it up once purchased / turned free).
               setStreaming(false);
               setStreamLocked(true);
+              setLoading(false);
+              return;
+            }
+            if (sp.pageCount <= 0) {
+              // No pages, but no paywall evidence either — a failed read, and it
+              // must NOT be reported as paid. The server is careful to keep these
+              // apart (it sets `locked` only when a source said so, precisely
+              // because "no pages arrived" also covers a timeout, a Cloudflare
+              // challenge, or the extension host restarting mid-read); treating
+              // the two the same here threw that distinction away and told people
+              // to go buy a chapter that is free.
+              setStreaming(false);
+              setError(
+                "No pages came back for this chapter. No source reported it as paid, so this is " +
+                "usually the source having a bad moment — try again in a minute.",
+              );
               setLoading(false);
               return;
             }
@@ -1550,6 +1574,28 @@ function ReaderInner() {
     return [currentPage];
   }, [resolvedMode, currentPage, pageCount]);
 
+  /** Page URL with the retry counter appended, so a retry can't be served the
+   *  failure back out of the browser cache. */
+  const pagedSrc = useCallback((i: number): string => {
+    const base = pageUrl(i);
+    const tries = pageRetry[i] ?? 0;
+    if (tries === 0) return base;
+    return `${base}${base.includes("?") ? "&" : "?"}r=${tries}`;
+  }, [pageUrl, pageRetry]);
+
+  const retryPage = useCallback((i: number) => {
+    setFailedPages((prev) => {
+      const next = new Set(prev);
+      next.delete(i);
+      return next;
+    });
+    setPageRetry((prev) => ({ ...prev, [i]: (prev[i] ?? 0) + 1 }));
+  }, []);
+
+  const markPageFailed = useCallback((i: number) => {
+    setFailedPages((prev) => (prev.has(i) ? prev : new Set(prev).add(i)));
+  }, []);
+
   const preloadPages: number[] = useMemo(() => {
     const out: number[] = [];
     for (let i = 1; i <= settings.preload; i++) {
@@ -1565,9 +1611,24 @@ function ReaderInner() {
     <div className="fixed inset-0 z-50 select-none" style={{ background: BG[settings.background] }}>
       {/* ── Content ── */}
       {error ? (
-        <div className="flex h-full flex-col items-center justify-center gap-4 text-white/80">
-          <p>{error}</p>
-          <Button variant="secondary" onClick={() => router.back()}>Go back</Button>
+        <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center text-white/80">
+          <p className="max-w-sm text-sm">{error}</p>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                // Re-run the loader. Worth offering now that a failed read lands
+                // here instead of on the buy screen: the usual fix is simply
+                // asking the source again.
+                setError(null);
+                setLoading(true);
+                setReloadNonce((n) => n + 1);
+              }}
+            >
+              Try again
+            </Button>
+            <Button variant="ghost" onClick={() => router.back()}>Go back</Button>
+          </div>
         </div>
       ) : loading ? (
         <div className="flex h-full flex-col items-center justify-center gap-4 text-white/70">
@@ -1777,15 +1838,34 @@ function ReaderInner() {
         <div className="flex h-full items-center justify-center overflow-hidden" onClick={handleTap}>
           <div className={`flex h-full items-center justify-center ${isRtl ? "flex-row-reverse" : ""}`}>
             {pagesToRender.map((i) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                key={i}
-                src={pageUrl(i)}
-                alt={`Page ${i + 1}`}
-                className={`${fitClass} max-h-screen object-contain`}
-                style={resolvedMode === "double" ? { maxWidth: "50vw" } : { maxWidth: "100vw" }}
-                onLoad={(e) => onImageLoaded(i, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
-              />
+              failedPages.has(i) ? (
+                <div
+                  key={i}
+                  className="flex flex-col items-center justify-center gap-3 px-6 text-center text-white/80"
+                  style={resolvedMode === "double" ? { width: "50vw" } : { width: "100vw" }}
+                >
+                  <p className="text-sm">Page {i + 1} didn&apos;t load.</p>
+                  <Button
+                    variant="secondary"
+                    // The page container turns the page on tap, so the button
+                    // must not let the click through to it.
+                    onClick={(e) => { e.stopPropagation(); retryPage(i); }}
+                  >
+                    Retry page
+                  </Button>
+                </div>
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={i}
+                  src={pagedSrc(i)}
+                  alt={`Page ${i + 1}`}
+                  className={`${fitClass} max-h-screen object-contain`}
+                  style={resolvedMode === "double" ? { maxWidth: "50vw" } : { maxWidth: "100vw" }}
+                  onLoad={(e) => onImageLoaded(i, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+                  onError={() => markPageFailed(i)}
+                />
+              )
             ))}
           </div>
           {/* Preload upcoming pages invisibly. Also feeds smart-detect (onImageLoaded)
