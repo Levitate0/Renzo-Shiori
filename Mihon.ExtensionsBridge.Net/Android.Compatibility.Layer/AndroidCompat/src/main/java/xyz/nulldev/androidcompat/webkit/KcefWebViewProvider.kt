@@ -286,6 +286,7 @@ class KcefWebViewProvider(
                     try {
                         Thread.sleep(REAP_INTERVAL_MS)
                         reapStale()
+                        sweepLeftoverHelpers()
                     } catch (interrupted: InterruptedException) {
                         Thread.currentThread().interrupt()
                         return@Thread
@@ -359,6 +360,32 @@ class KcefWebViewProvider(
             if (killed > 0) {
                 Log.w(TAG, "Force-exited $killed browser helper process(es) CEF did not reap")
             }
+        }
+
+        /**
+         * Force-exits helper processes that no WebView can possibly still own.
+         *
+         * The per-provider bookkeeping cannot do this job. [createBrowserTracked]
+         * diffs the helper PIDs across the create call, but Chromium spawns its
+         * children ASYNCHRONOUSLY — most appear after createImmediately() has
+         * already returned, so `ownedHelperPids` ends up near-empty and
+         * [destroy] force-exits almost nothing. That is why ~12 helpers survive
+         * every teardown while the live-provider cap is never exceeded, and why
+         * the "Force-exited" line above never appears in practice.
+         *
+         * Attribution being unreliable is exactly why this sweep refuses to
+         * guess: it only runs when NOTHING is live, where every remaining
+         * jcef_helper is leftover by definition and killing it cannot disturb a
+         * browser in use. [reapStale] runs first on the same tick, so a provider
+         * abandoned mid-fetch is destroyed and this then reclaims its children on
+         * a later pass rather than waiting for the watchdog to kill the JVM.
+         */
+        private fun sweepLeftoverHelpers() {
+            if (liveProviders.isNotEmpty()) return
+            val leftover = helperPids()
+            if (leftover.isEmpty()) return
+            Log.w(TAG, "No live WebViews; force-exiting ${leftover.size} leftover browser helper process(es)")
+            killHelpers(leftover)
         }
 
         private fun reapStale() {
