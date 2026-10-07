@@ -50,6 +50,20 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// </summary>
         public int WatchdogMaxHelperProcesses { get; set; } =
             int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_MAX_HELPERS"), out var h) ? h : 60;
+
+        /// <summary>
+        /// Recycle once this many EXITED-but-unreaped helpers have piled up. 0
+        /// disables the check.
+        ///
+        /// Counted apart from live helpers because they cost nothing but a pid
+        /// slot: a helper the leftover sweep kills stays in /proc as a zombie,
+        /// parented to the JVM, which never waits on processes CEF forked. Only
+        /// the JVM exiting lets tini reap them. Measured at ~45 per 18 hours, so
+        /// this default means a reaping recycle every couple of weeks rather
+        /// than the hourly one zombies were triggering through the live limit.
+        /// </summary>
+        public int WatchdogMaxZombieHelpers { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_MAX_ZOMBIES"), out var z) ? z : 1000;
     }
 
     /// <summary>
@@ -270,11 +284,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                         // these exhaust the container's pid allowance and the
                         // runtime aborts on a failed thread creation — which
                         // reports as "Out of memory" and is not.
-                        int helpers = CountHelperProcesses();
+                        (int helpers, int zombies) = CountHelperProcesses();
                         if (_opts.WatchdogMaxHelperProcesses > 0 && helpers > _opts.WatchdogMaxHelperProcesses)
                         {
                             await RestartWithBackoffAsync(
                                 $"{helpers} leaked browser helper processes (limit {_opts.WatchdogMaxHelperProcesses})", token)
+                                .ConfigureAwait(false);
+                        }
+                        else if (_opts.WatchdogMaxZombieHelpers > 0 && zombies > _opts.WatchdogMaxZombieHelpers)
+                        {
+                            await RestartWithBackoffAsync(
+                                $"{zombies} unreaped browser helper zombies (limit {_opts.WatchdogMaxZombieHelpers})", token)
                                 .ConfigureAwait(false);
                         }
                         continue;
@@ -383,14 +403,43 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 
         private static int SafeExit(Process p) { try { return p.ExitCode; } catch { return -1; } }
 
-        /// <summary>Live jcef_helper processes — the leak's visible form.</summary>
-        private int CountHelperProcesses()
+        /// <summary>
+        /// jcef_helper processes, split into LIVE ones (the leak's real cost)
+        /// and zombies (exited, unreaped, holding only a pid slot).
+        ///
+        /// Process.GetProcessesByName cannot tell them apart, and that is why
+        /// the watchdog kept recycling: once the sidecar's own sweep began
+        /// killing leftovers, every corpse still counted toward the live limit.
+        /// </summary>
+        private (int Live, int Zombies) CountHelperProcesses()
         {
-            try { return Process.GetProcessesByName("jcef_helper").Length; }
+            try
+            {
+                if (!OperatingSystem.IsLinux())
+                    return (Process.GetProcessesByName("jcef_helper").Length, 0);
+
+                int live = 0, zombies = 0;
+                foreach (string dir in Directory.EnumerateDirectories("/proc"))
+                {
+                    if (!int.TryParse(Path.GetFileName(dir), out _)) continue;
+                    string stat;
+                    try { stat = File.ReadAllText(Path.Combine(dir, "stat")); }
+                    catch { continue; } // exited between listing and reading
+                    // "pid (comm) S ..." — comm may hold spaces or parens, so
+                    // take the LAST ')' and read the state just after it.
+                    int open = stat.IndexOf('(');
+                    int close = stat.LastIndexOf(')');
+                    if (open < 0 || close <= open || close + 2 >= stat.Length) continue;
+                    if (stat.AsSpan(open + 1, close - open - 1).SequenceEqual("jcef_helper") is false) continue;
+                    if (stat[close + 2] == 'Z') zombies++;
+                    else live++;
+                }
+                return (live, zombies);
+            }
             catch (Exception e)
             {
                 _logger.LogDebug(e, "Could not count browser helper processes.");
-                return 0; // never let a failed count trigger a restart
+                return (0, 0); // never let a failed count trigger a restart
             }
         }
 

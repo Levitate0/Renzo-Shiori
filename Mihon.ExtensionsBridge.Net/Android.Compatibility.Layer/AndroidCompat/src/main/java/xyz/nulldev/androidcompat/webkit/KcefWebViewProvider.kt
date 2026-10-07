@@ -329,12 +329,35 @@ class KcefWebViewProvider(
                     } catch (t: Throwable) {
                         continue // process exited between listing and reading
                     }
-                    if (comm == "jcef_helper") pids.add(pid)
+                    if (comm != "jcef_helper") continue
+                    // Skip zombies. A helper that has exited but was never reaped
+                    // stays in /proc as state Z until its parent waits on it, and
+                    // the parent is this JVM, which never does — CEF forked it,
+                    // not a java.lang.Process. Counting corpses made the leftover
+                    // sweep "force-exit" the same dead PIDs every 30s forever
+                    // (~79k kill forks over one day) and kept the number climbing
+                    // toward the watchdog's limit for processes that hold no
+                    // memory at all.
+                    if (isZombie(dir)) continue
+                    pids.add(pid)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "Could not enumerate browser helper processes", t)
             }
             return pids
+        }
+
+        /**
+         * True for an exited-but-unreaped process. The state is the field after
+         * the parenthesised command in /proc/PID/stat; the command may itself
+         * contain spaces or parens, hence the LAST ')'.
+         */
+        private fun isZombie(procDir: java.io.File): Boolean = try {
+            val stat = java.io.File(procDir, "stat").readText()
+            val close = stat.lastIndexOf(')')
+            close >= 0 && close + 2 < stat.length && stat[close + 2] == 'Z'
+        } catch (t: Throwable) {
+            false
         }
 
         /**
