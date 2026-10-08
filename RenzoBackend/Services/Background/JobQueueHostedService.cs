@@ -210,6 +210,52 @@ namespace RenzoBackend.Services.Background
             }
         }
 
+        /// <summary>
+        /// Orders one group's jobs so a series downloads lowest chapter first.
+        ///
+        /// Within a group the queue used to take jobs in whatever order the
+        /// database returned them, which is insertion order — and a series'
+        /// chapters are enqueued newest first, so a freshly added series fetched
+        /// 203, 202, 201... and the chapter the reader actually starts on came
+        /// last. Reading order is the useful one: the first chapters are ready
+        /// soonest.
+        ///
+        /// Only the order WITHIN a series changes. Series keep the order they
+        /// already had (first appearance), and FairShareOrderBy still
+        /// interleaves the groups afterwards, so no series or provider gains or
+        /// loses its turn. Non-download jobs, or a key whose last segment is not
+        /// a chapter number, keep their original position.
+        /// </summary>
+        private static IEnumerable<EnqueueEntity> SeriesInReadingOrder(IEnumerable<EnqueueEntity> jobs)
+        {
+            List<EnqueueEntity> list = jobs.ToList();
+            if (list.Count < 2)
+                return list;
+
+            var seriesRank = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (EnqueueEntity j in list)
+                seriesRank.TryAdd(j.ExtraKey ?? string.Empty, seriesRank.Count);
+
+            return list
+                .Select((job, index) => (job, index))
+                .OrderBy(x => seriesRank[x.job.ExtraKey ?? string.Empty])
+                .ThenBy(x => ChapterNumberOf(x.job) ?? decimal.MaxValue)
+                .ThenBy(x => x.index)
+                .Select(x => x.job);
+        }
+
+        /// <summary>The chapter number a download job's key ends with, or null.</summary>
+        private static decimal? ChapterNumberOf(EnqueueEntity job)
+        {
+            if (job.JobType != JobType.Download || string.IsNullOrEmpty(job.Key))
+                return null;
+            int bar = job.Key.LastIndexOf('|');
+            if (bar < 0 || bar == job.Key.Length - 1)
+                return null;
+            return decimal.TryParse(job.Key.AsSpan(bar + 1), System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture, out decimal n) ? n : null;
+        }
+
         private async Task<List<EnqueueEntity>> GetJobsToProcessAsync(JobManagementService jobManagement, JobQueues queueName,
             QueueSettings queueSettings, int availableSlots, CancellationToken stoppingToken)
         {
@@ -240,7 +286,7 @@ namespace RenzoBackend.Services.Background
                 var rotatedGroups = groups.Skip(offset).Concat(groups.Take(offset));
 
                 var groupedJobs = rotatedGroups
-                    .ToDictionary(g => g.Key, g => g.Take(runningCounts.GetLocalGroupMax(g.Key, queueSettings.MaxPerGroup)).ToList());
+                    .ToDictionary(g => g.Key, g => SeriesInReadingOrder(g).Take(runningCounts.GetLocalGroupMax(g.Key, queueSettings.MaxPerGroup)).ToList());
 
                 jobsByPriority[priority] = groupedJobs.SelectMany(a => a.Value).FairShareOrderBy(a => a.GroupKey).ToList();
             }
