@@ -266,6 +266,29 @@ public class ReaderController : ControllerBase
         return Ok(new { success = true, cleared = freed });
     }
 
+    /// <summary>
+    /// Drops a series' streamed page images for every chapter NOT listed in
+    /// <c>keep</c>. The paged reader sends the chapter on screen and its two
+    /// neighbours each time it moves, so its cache follows the reader instead of
+    /// accumulating the whole session. Downloaded chapters are unaffected.
+    /// </summary>
+    [HttpPost("trim-stream-cache")]
+    public ActionResult TrimStreamCache([FromBody] TrimStreamCacheRequest request)
+    {
+        if (request == null || request.SeriesId == Guid.Empty || request.Keep == null || request.Keep.Count == 0)
+            return BadRequest(new { error = "seriesId and at least one chapter to keep are required." });
+        int freed = _preview.TrimStreamCache(request.SeriesId, request.Keep);
+        if (freed > 0)
+            _logger.LogInformation("Trimmed {Count} streamed page image(s) for series {SeriesId}, keeping chapters {Keep}.", freed, request.SeriesId, string.Join(", ", request.Keep));
+        return Ok(new { success = true, cleared = freed });
+    }
+
+    public sealed class TrimStreamCacheRequest
+    {
+        public Guid SeriesId { get; set; }
+        public List<decimal> Keep { get; set; } = new();
+    }
+
     // ── Suwayomi backup import (read-state sync) ───────────────────────
 
     /// <summary>

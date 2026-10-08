@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace RenzoBackend.Services.Reader;
@@ -27,17 +29,68 @@ public sealed class StreamImageCache : IDisposable
     private readonly MemoryCache _cache =
         new(new MemoryCacheOptions { SizeLimit = TotalBudgetBytes });
 
+    // MemoryCache cannot be enumerated, so the keys are mirrored here — the only
+    // way to drop "every chapter of this series except these" (TrimSeries). An
+    // eviction callback keeps it in step when the LRU or the sliding expiry
+    // removes an entry on its own.
+    private readonly ConcurrentDictionary<string, byte> _keys = new(StringComparer.Ordinal);
+
     public bool TryGet(string key, out Entry entry) => _cache.TryGetValue(key, out entry);
 
     public void Set(string key, byte[] bytes, string contentType)
     {
         if (bytes is null || bytes.Length == 0 || bytes.Length > MaxItemBytes)
             return;
-        _cache.Set(key, new Entry(bytes, contentType), new MemoryCacheEntryOptions
+        var options = new MemoryCacheEntryOptions
         {
             Size = bytes.Length,
             SlidingExpiration = TimeSpan.FromMinutes(20),
+        };
+        options.RegisterPostEvictionCallback((k, _, reason, _) =>
+        {
+            // A Replaced entry is still present under the same key.
+            if (reason != EvictionReason.Replaced && k is string s)
+                _keys.TryRemove(s, out _);
         });
+        _cache.Set(key, new Entry(bytes, contentType), options);
+        _keys[key] = 0;
+    }
+
+    /// <summary>
+    /// Drops every cached page of <paramref name="seriesId"/> whose chapter is not
+    /// in <paramref name="keep"/>. The paged reader calls this as it moves, so a
+    /// long session holds the chapters around the reader rather than every
+    /// chapter it ever passed through until the byte budget forces them out.
+    ///
+    /// Chapter numbers are compared as decimals, not as key text: the web sends
+    /// "60" and Hub sends "60.0" for the same chapter, and decimal equality
+    /// ignores scale where string equality would not.
+    /// </summary>
+    public int TrimSeries(Guid seriesId, IReadOnlyCollection<decimal> keep)
+    {
+        string prefix = $"lib:img:{seriesId}:";
+        int removed = 0;
+        foreach (string key in _keys.Keys)
+        {
+            if (!key.StartsWith(prefix, StringComparison.Ordinal))
+                continue;
+            // lib:img:{series}:{chapter}:{page} — the chapter is everything up to
+            // the LAST colon of the remainder.
+            string rest = key[prefix.Length..];
+            int colon = rest.LastIndexOf(':');
+            if (colon <= 0)
+                continue;
+            string chapterText = rest[..colon];
+            if (!decimal.TryParse(chapterText, NumberStyles.Number, CultureInfo.CurrentCulture, out decimal chapter)
+                && !decimal.TryParse(chapterText, NumberStyles.Number, CultureInfo.InvariantCulture, out chapter))
+                continue;
+            if (keep.Contains(chapter))
+                continue;
+            _cache.Remove(key);
+            _keys.TryRemove(key, out _);
+            removed++;
+        }
+        return removed;
     }
 
     /// <summary>
@@ -45,13 +98,18 @@ public sealed class StreamImageCache : IDisposable
     /// keys for a chapter are dense (…:0, …:1, …), so the caller sweeps a range
     /// rather than needing this cache to be enumerable.
     /// </summary>
-    public void Remove(string key) => _cache.Remove(key);
+    public void Remove(string key)
+    {
+        _cache.Remove(key);
+        _keys.TryRemove(key, out _);
+    }
 
     /// <summary>Drops every cached streamed image, freeing the whole budget immediately.</summary>
     public long Clear()
     {
         long freed = _cache.Count;
         _cache.Clear();
+        _keys.Clear();
         return freed;
     }
 

@@ -409,6 +409,10 @@ function ReaderInner() {
   // always starts at the top, never inheriting the previous chapter's scroll),
   // or the resume page when re-opening a partially-read chapter.
   const resumePageRef = useRef(0);
+  // Set when paging BACK past a chapter's first page: the previous chapter must
+  // open on its last page, the way scrolling up in continuous mode arrives at
+  // the bottom of the chapter above — not at its first page or its saved spot.
+  const openAtEndRef = useRef(false);
 
   const persistSettings = useCallback((next: ReaderSettings) => {
     setSettings(next);
@@ -990,9 +994,53 @@ function ReaderInner() {
       setCurrentPage((p) => Math.min(pageCount - 1, p + step));
       return;
     }
+    // Backward from the first page steps into the previous chapter, landing on
+    // its last page — the mirror of the forward case above, and what continuous
+    // mode does when you scroll up past a chapter's first page.
+    if (currentPage <= 0) {
+      if (hasChapter(-1)) {
+        openAtEndRef.current = true;
+        goToChapter(-1);
+      }
+      return;
+    }
     // Backward — from the transition screen this returns to the last page.
     setCurrentPage((p) => Math.max(0, Math.min(pageCount, p) - step));
   }, [currentPage, pageCount, step, settings.chapterTransition, hasChapter, goToChapter]);
+
+  // Honour openAtEndRef once the previous chapter has loaded. Runs after the
+  // loader's own resume placement, so it wins. Cleared on failure too, so a
+  // stale intent can't reposition some later, unrelated open.
+  useEffect(() => {
+    if (!openAtEndRef.current || loading) return;
+    if (error || isContinuous || pageCount <= 0) {
+      openAtEndRef.current = false;
+      return;
+    }
+    openAtEndRef.current = false;
+    const last = Math.floor((pageCount - 1) / step) * step;
+    resumePageRef.current = last;
+    setCurrentPage(last);
+  }, [loading, error, isContinuous, pageCount, step]);
+
+  // Paged mode holds one chapter on screen, so the server's streamed-page cache
+  // only needs the chapter being read and its neighbours — the previous one so
+  // stepping back is instant, the next one because it is prefetched. Everything
+  // older is dropped as the reader moves rather than lingering until the byte
+  // budget evicts it. Continuous mode keeps its own ±CHAPTER_WINDOW in the DOM.
+  const lastTrimRef = useRef("");
+  useEffect(() => {
+    if (isPreview || isContinuous || loading || chapterNumber == null || !seriesId) return;
+    const idx = readableChapters.findIndex((c) => c.number === chapterNumber);
+    if (idx < 0) return;
+    const keep = [idx - 1, idx, idx + 1]
+      .map((i) => readableChapters[i]?.number)
+      .filter((n): n is number => n != null);
+    const sig = `${seriesId}:${keep.join(",")}`;
+    if (lastTrimRef.current === sig) return;
+    lastTrimRef.current = sig;
+    readerService.trimStreamCache(seriesId, keep).catch(() => { /* best effort */ });
+  }, [isPreview, isContinuous, loading, chapterNumber, seriesId, readableChapters]);
 
   // Infinite scroll: append the chapter after the last-loaded segment. Kept in a
   // ref so the scroll listener always calls the latest closure without
@@ -1438,8 +1486,10 @@ function ReaderInner() {
     }
   }, [isPreview, seriesId, activeChapterNumber, activeChapterObj]);
 
-  // Run a reader action (from a hotkey). Page navigation stays WITHIN the
-  // chapter; chapter skipping is only the explicit next/prevChapter actions.
+  // Run a reader action (from a hotkey). In paged mode the page actions cross
+  // chapter edges (see advance): past the last page into the next chapter, back
+  // past the first into the previous one's last page. next/prevChapter jump a
+  // whole chapter from anywhere.
   const runAction = useCallback((action: HotkeyAction) => {
     const scroller = scrollRef.current;
     const amount = (scroller?.clientHeight ?? 600) * (settings.tapAdvancePct / 100);
@@ -1839,21 +1889,22 @@ function ReaderInner() {
           <div className={`flex h-full items-center justify-center ${isRtl ? "flex-row-reverse" : ""}`}>
             {pagesToRender.map((i) => (
               failedPages.has(i) ? (
-                <div
+                // Same treatment as a failed page in the continuous reader:
+                // muted label, accent-coloured "Tap to retry", the whole block is
+                // the target. The accent is the theme's primary, so it follows
+                // the user's chosen colour rather than a fixed button style.
+                <button
+                  type="button"
                   key={i}
-                  className="flex flex-col items-center justify-center gap-3 px-6 text-center text-white/80"
+                  className="flex flex-col items-center justify-center px-6 text-center"
                   style={resolvedMode === "double" ? { width: "50vw" } : { width: "100vw" }}
+                  // The page container turns the page on tap, so the retry must
+                  // not let the click through to it.
+                  onClick={(e) => { e.stopPropagation(); retryPage(i); }}
                 >
-                  <p className="text-sm">Page {i + 1} didn&apos;t load.</p>
-                  <Button
-                    variant="secondary"
-                    // The page container turns the page on tap, so the button
-                    // must not let the click through to it.
-                    onClick={(e) => { e.stopPropagation(); retryPage(i); }}
-                  >
-                    Retry page
-                  </Button>
-                </div>
+                  <span className="text-[13px] text-white/70">Page {i + 1} didn&apos;t load</span>
+                  <span className="mt-1 text-xs text-primary">Tap to retry</span>
+                </button>
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img

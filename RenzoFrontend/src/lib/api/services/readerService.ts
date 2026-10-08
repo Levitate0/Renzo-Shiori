@@ -87,6 +87,11 @@ export const readerService = {
     return apiClient.post<BackupImportResult>('/api/reader/import-backup', form);
   },
 
+  /** Keep only these chapters' streamed page images for a series (paged reader). */
+  async trimStreamCache(seriesId: string, keep: number[]): Promise<{ success: boolean; cleared: number }> {
+    return apiClient.post<{ success: boolean; cleared: number }>('/api/reader/trim-stream-cache', { seriesId, keep });
+  },
+
   /** Clear the in-memory cache of streamed (web-pulled) page images. */
   async clearStreamCache(): Promise<{ success: boolean; cleared: number }> {
     return apiClient.post<{ success: boolean; cleared: number }>('/api/reader/clear-stream-cache', {});

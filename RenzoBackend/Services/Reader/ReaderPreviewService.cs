@@ -70,6 +70,10 @@ public class ReaderPreviewService
     /// </summary>
     public long ClearStreamCache() => _imageCache.Clear();
 
+    /// <summary>Keeps only the given chapters' streamed pages for one series.</summary>
+    public int TrimStreamCache(Guid seriesId, IReadOnlyCollection<decimal> keep) =>
+        _imageCache.TrimSeries(seriesId, keep);
+
     public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache,
         SiteAuth.SiteAuthService siteAuth, StreamImageCache imageCache,
         Series.VComicsContentService vcomics, ILogger<ReaderPreviewService> logger)
