@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Mihon.ExtensionsBridge.Models;
 using Mihon.ExtensionsBridge.Models.Abstractions;
 using Mihon.ExtensionsBridge.Models.Extensions;
@@ -38,12 +39,70 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public Task<ParsedManga> GetDetailsAsync(Manga manga, CancellationToken token = default) => _client.DetailsAsync(_meta.Id, manga, token);
         public Task<List<ParsedChapter>> GetChaptersAsync(Manga manga, CancellationToken token = default) => _client.ChaptersAsync(_meta.Id, manga, token);
         public Task<List<Page>> GetPagesAsync(Chapter chapter, CancellationToken token = default) => _client.PagesAsync(_meta.Id, chapter, token);
-        public Task<ContentTypeStream> GetPageImageAsync(Page page, CancellationToken token = default) => _client.ImageAsync(_meta.Id, page, token);
+        public Task<ContentTypeStream> GetPageImageAsync(Page page, CancellationToken token = default) =>
+            ThrottledImageAsync(page, token);
+
+        // Image fetches per source allowed INTO the sidecar at once. Matches
+        // OkHttp's default Dispatcher.maxRequestsPerHost (5), which is the real
+        // limit underneath: extensions fetch images with Call.await(), i.e.
+        // enqueue(), and the sidecar's client never raises that default.
+        private const int MaxImageFetchesPerSource = 5;
+
+        // Static and keyed by source id so the limit survives interop rebuilds
+        // after a sidecar recycle — a per-instance semaphore would hand a fresh
+        // allowance to a source whose old fetches are still running.
+        private static readonly ConcurrentDictionary<long, SemaphoreSlim> ImageSlots = new();
+
+        /// <summary>
+        /// Fetches an image with at most <see cref="MaxImageFetchesPerSource"/>
+        /// per source inside the sidecar, queueing the rest HERE.
+        ///
+        /// Why: the continuous reader "loaded three chapters then stopped" until
+        /// it was exited and re-entered. The sidecar runs each image fetch in a
+        /// bare runBlocking, so nothing can cancel it once sent — a page the
+        /// reader scrolled past keeps its OkHttp slot until the source answers,
+        /// up to the 2-minute callTimeout. Readers abandon pages constantly (471
+        /// cancelled stream requests in one session), so those dead fetches
+        /// queued ahead of every new chapter's pages, and once the backlog grew
+        /// past what drains in the reader's 30s budget, the next chapter's pages
+        /// timed out. Leaving the reader "fixed" it only by letting it drain.
+        ///
+        /// Queueing on this side makes abandonment free: a request still
+        /// waiting for a slot is withdrawn the moment its caller cancels, so the
+        /// sidecar only ever holds work somebody still wants. It also keeps the
+        /// sidecar's shared thread pool — which serves /health too — from filling
+        /// with blocked image handlers.
+        ///
+        /// The slot is held until the SIDECAR finishes, not until the caller
+        /// gives up: the fetch cannot be stopped once sent, so releasing early
+        /// would just move the backlog back into the sidecar. It is bounded by
+        /// the sidecar client's own timeout, so it can never be held forever.
+        /// </summary>
+        private async Task<ContentTypeStream> ThrottledImageAsync(Page page, CancellationToken token)
+        {
+            SemaphoreSlim slots = ImageSlots.GetOrAdd(_meta.Id, _ => new SemaphoreSlim(MaxImageFetchesPerSource));
+            await slots.WaitAsync(token).ConfigureAwait(false);   // abandoned while queued: gone at once
+
+            Task<ContentTypeStream> fetch;
+            try
+            {
+                // Deliberately not the caller's token — see above.
+                fetch = _client.ImageAsync(_meta.Id, page, CancellationToken.None);
+            }
+            catch
+            {
+                slots.Release();
+                throw;
+            }
+            _ = fetch.ContinueWith(_ => slots.Release(), CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            return await fetch.WaitAsync(token).ConfigureAwait(false);
+        }
 
         public Task<ContentTypeStream> DownloadUrlAsync(string url, CancellationToken token = default)
         {
             // Route arbitrary URL fetches through the source's client via a synthetic single-page image.
-            return _client.ImageAsync(_meta.Id, new Page { Index = 0, Url = url, ImageUrl = url }, token);
+            return ThrottledImageAsync(new Page { Index = 0, Url = url, ImageUrl = url }, token);
         }
 
         // Preferences: the sidecar's preference endpoints are being completed; until then these are
