@@ -316,8 +316,21 @@ class KcefWebViewProvider(
                 Thread(r, "kcef-helper-killer").apply { isDaemon = true }
             }
 
-        /** PIDs of the live Chromium child processes, read straight from /proc. */
-        private fun helperPids(): MutableSet<Long> {
+        /**
+         * PIDs of the live Chromium child processes, read straight from /proc.
+         *
+         * @param renderersOnly restrict to `--type=renderer`. Anything that KILLS
+         *   helpers must pass true. The GPU process and the utility processes
+         *   (network service, storage) are app-wide: they serve the CefApp itself
+         *   and exist with zero browsers open. Chromium treats their death as a
+         *   crash and, after a few, deliberately aborts the browser process —
+         *   `trap int3` in libcef.so on CrBrowserMain — which here IS the JVM.
+         *   That is exactly what the first version of the leftover sweep did:
+         *   nine sidecar crashes in a day, the first 20 minutes after it shipped,
+         *   none in the 25 days of kernel log before. Renderers are per page,
+         *   their loss is handled, and they are what actually outlive a browser.
+         */
+        private fun helperPids(renderersOnly: Boolean = false): MutableSet<Long> {
             val pids = HashSet<Long>()
             try {
                 val procDirs = java.io.File("/proc").listFiles() ?: return pids
@@ -339,12 +352,23 @@ class KcefWebViewProvider(
                     // toward the watchdog's limit for processes that hold no
                     // memory at all.
                     if (isZombie(dir)) continue
+                    if (renderersOnly && !isRenderer(dir)) continue
                     pids.add(pid)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "Could not enumerate browser helper processes", t)
             }
             return pids
+        }
+
+        /** True when the process was launched with `--type=renderer`. */
+        private fun isRenderer(procDir: java.io.File): Boolean = try {
+            java.io.File(procDir, "cmdline").readBytes()
+                .toString(Charsets.UTF_8)
+                .split('\u0000')
+                .any { it == "--type=renderer" }
+        } catch (t: Throwable) {
+            false // unreadable or gone: never a kill candidate
         }
 
         /**
@@ -405,9 +429,9 @@ class KcefWebViewProvider(
          */
         private fun sweepLeftoverHelpers() {
             if (liveProviders.isNotEmpty()) return
-            val leftover = helperPids()
+            val leftover = helperPids(renderersOnly = true)
             if (leftover.isEmpty()) return
-            Log.w(TAG, "No live WebViews; force-exiting ${leftover.size} leftover browser helper process(es)")
+            Log.w(TAG, "No live WebViews; force-exiting ${leftover.size} leftover renderer process(es)")
             killHelpers(leftover)
         }
 
@@ -570,9 +594,12 @@ class KcefWebViewProvider(
      */
     private fun createBrowserTracked(block: CefClient.() -> CefBrowser): CefBrowser =
         synchronized(browserCreationLock) {
-            val before = helperPids()
+            val before = helperPids(renderersOnly = true)
             val created = requireClient().block()
-            ownedHelperPids.addAll(helperPids() - before)
+            // Renderers only, for the same reason as the sweep: the first browser
+            // created also spawns the app-wide GPU and utility processes, and
+            // recording those here would let destroy() kill them.
+            ownedHelperPids.addAll(helperPids(renderersOnly = true) - before)
             created
         }
 
