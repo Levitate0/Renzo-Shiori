@@ -2,12 +2,15 @@
 
 This document covers building every artifact in the repository: the **server**
 (a .NET 8 backend that embeds the web UI), the **web frontend** (Next.js static
-export), the **Android** and **Windows** native clients, and the auxiliary
-projects. It also documents the deploy cycle and the full release checklist.
+export), and the auxiliary projects. It also documents the deploy cycle and the
+release checklist.
 
-> The build machine used for releases is Linux/amd64. The backend and Android
-> APK build natively there; the Windows client cross-compiles from Linux via
-> the .NET SDK. Signing certificates/keystores are **not** in the repo.
+> There are no Shiori-specific apps. The standalone Android and Windows clients
+> were retired on 2026-08-21 and removed from the repo on 2026-10-09: the one
+> client is **Renzo Hub** (github.com/Levitate0/Renzo-Hub), which ships manga and
+> anime as a single app on Android, Android TV and Windows.
+>
+> The build machine used for releases is Linux/amd64.
 
 ---
 
@@ -17,8 +20,6 @@ projects. It also documents the deploy cycle and the full release checklist.
 |---|---|
 | `RenzoBackend/` | .NET 8 ASP.NET Core server. Serves the API **and** the web UI, which is embedded as `wwwroot.zip`. |
 | `RenzoFrontend/` | Next.js (static export, `output: 'export'`) web UI → `out/`. |
-| `clients/android/` | Android client — a remote-first WebView shell (Kotlin) with the offline bridge. |
-| `clients/windows/` | Windows client — a WebView2 WPF shell (with the native offline bridge + background downloader), packaged with NSIS. |
 | `RenzoOAuthProxy/` | Tracker OAuth service (AniList/MAL/Kitsu/MangaDex), bundled **inside** the server container. |
 | `Mihon.ExtensionsBridge.Net/` | Prebuilt IKVM compatibility layer for running Mihon/Tachiyomi extensions. |
 | `RenzoTray/`, `Renzo.Web/`, `RenzoOAuthProxy.CF/` | Ancillary/experimental — not part of a release. |
@@ -112,87 +113,7 @@ poll it and silently reload (deferring while the reader is open).
 
 ---
 
-## 3. Android client (`clients/android`) — ARCHIVED 2026-08-21
-
-> **This section is retained for history only. Do not follow it.**
->
-> `clients/android` is archived and ships to nobody — no APK has been attached
-> to a `Renzo-Shiori` release, and `build-release.sh` now exits non-zero. The
-> Android client is **Renzo Hub** (`/opt/zurg-stack/renzo-ecosystem/hub`),
-> which ships manga and anime as one app. See `clients/android/ARCHIVED.md`.
->
-> The description below is also factually stale twice over: the tree was
-> rewritten from a WebView shell into a pure Compose app on 2026-08-01, and
-> this text was never updated.
-
-A remote-first WebView shell: it probes `/api/system/info/public`, then loads
-the server UI. Offline support is provided by a native `@JavascriptInterface`
-(`window.__RenzoAndroid`) plus a bundled offline reader
-(`app/src/main/assets/offline/index.html`).
-
-Bump the version in `app/build.gradle.kts` (`versionName` **and** `versionCode`
-— Android requires `versionCode` to increase for an in-place update), then:
-
-```bash
-cd clients/android
-SIGNING_DIR=/path/to/signing \
-ANDROID_HOME=/opt/android-sdk \
-GRADLE=/opt/gradle-8.7/bin/gradle \
-  ./build-release.sh
-# → app/build/outputs/apk/release/app-release.apk  (signed, v2+v3)
-```
-
-`build-release.sh` generates a keystore in `SIGNING_DIR` on first run and reuses
-it after. The APK is minified with R8; `app/proguard-rules.pro` keeps
-`@JavascriptInterface` methods (without that rule the offline bridge silently
-breaks in release builds).
-
----
-
-## 4. Windows client (`clients/windows`)
-
-A self-contained WebView2 WPF shell, packaged with NSIS. Like Android it is
-remote-first (probes `/api/system/info/public`, then loads the server UI) and
-carries a native offline stack — feature-parity with Android since v1.2.0:
-
-| File | Role |
-|---|---|
-| `RenzoStore.cs` | File/KV/manifest (v2) storage + the download job queue, under a chosen or app-default folder. |
-| `RenzoDownloader.cs` | Native background downloader (parallel page fetch, Bearer auth); keeps running when the window is hidden and resumes a queued job on launch. |
-| `RenzoBridge.cs` | `[ComVisible]` host object added via `CoreWebView2.AddHostObjectToScript`. |
-| `NativeAssets.cs` | The JS shim that exposes the host object as the synchronous `window.__RenzoWindows` the shared frontend expects, plus the bundled offline reader (shown when the server is unreachable). |
-
-These `.cs` files are auto-included by the SDK-style project — no `.csproj`
-edit is needed when adding sources. Bump the version in **both**
-`RenzoWindows.csproj` (`<Version>`) and `renzoshiori-installer.nsi`
-(`!define VERSION`), then:
-
-```bash
-cd clients/windows
-# 1) publish (self-contained, folder — matches the installer's File /r):
-dotnet publish RenzoWindows.csproj -c Release -r win-x64 \
-  --self-contained true -p:PublishSingleFile=false -o /tmp/renzo-exe-folder
-
-# 2) sign the inner exe (self-signed cert; RFC3161 timestamp):
-osslsigncode sign -pkcs12 <cert.pfx> -pass <pw> -h sha256 \
-  -t http://timestamp.digicert.com -n "Renzo Shiori" \
-  -in /tmp/renzo-exe-folder/RenzoShiori.exe -out /tmp/renzo-exe-folder/RenzoShiori.exe
-
-# 3) build the installer (reads /tmp/renzo-exe-folder):
-makensis renzoshiori-installer.nsi          # → RenzoShiori-Setup.exe
-
-# 4) sign the installer too, then rename to RenzoShiori-Setup-<ver>.exe
-osslsigncode sign -pkcs12 <cert.pfx> -pass <pw> -h sha256 \
-  -t http://timestamp.digicert.com -n "Renzo Shiori Setup" \
-  -in RenzoShiori-Setup.exe -out RenzoShiori-Setup-<ver>.exe
-```
-
-The self-signed certificate triggers a SmartScreen "unknown publisher" prompt on
-first run — this is expected.
-
----
-
-## 5. Auxiliary projects
+## 3. Auxiliary projects
 
 - **`RenzoOAuthProxy`** — built and shipped with the server (section 2). To build
   standalone: `dotnet publish RenzoOAuthProxy/RenzoOAuthProxy.csproj -c Release`.
@@ -203,40 +124,31 @@ first run — this is expected.
   of a release.
 
 The whole solution can be restored/built with `dotnet build Renzo.sln -c Release`
-(this does not produce the packaged server image or the signed clients).
+(this does not produce the packaged server image).
 
 ---
 
-## 6. Release checklist
+## 4. Release checklist
 
-1. **Bump versions** together: `RenzoBackend.csproj`, `clients/windows/RenzoWindows.csproj`
-   + `renzoshiori-installer.nsi`, and `clients/android/app/build.gradle.kts`
-   (`versionName` + `versionCode`).
+1. **Bump `<Version>`** in `RenzoBackend.csproj` in the release commit (it has
+   drifted a whole release behind the tag before).
 2. **Build + deploy the server** (sections 1–2), verifying `/api/system/version`
    reports the new version.
-3. **Build + sign the APK** (section 3) → `RenzoShiori.apk`.
-4. **Build + sign the Windows installer** (section 4) → `RenzoShiori-Setup-<ver>.exe`.
-5. **Checksums:** `sha256sum RenzoShiori-Setup-<ver>.exe RenzoShiori.apk > SHA256SUMS.txt`.
-6. **Tag + GitHub Release** `v<ver>` on `main` with the three assets
-   (`RenzoShiori-Setup-<ver>.exe`, `RenzoShiori.apk`, `SHA256SUMS.txt`) — **never**
-   a code-signing `.cer`. GitHub attaches the source archives automatically.
+3. **Tag `v<ver>`** and push the tag. CI (`.github/workflows/docker-publish.yml`)
+   builds the frontend, the sidecar jar and the backend from source and publishes
+   `ghcr.io/levitate0/renzo-shiori:<ver>` (amd64). Verify with an anonymous
+   manifest fetch.
+4. Client changes ship as a **Renzo Hub** release, not from this repo.
 
 ---
 
 ## Architecture notes
 
-- **Clients are thin & remote-first.** They render the server's UI, so a
-  server-side change reaches every client instantly (the version poller reloads
-  stale pages silently).
-- **Offline** works on **both native clients** (Android + Windows desktop). All
-  offline *logic* lives once in `RenzoFrontend/src/lib/native/` and is a complete
-  no-op on the web build; each shell only injects dumb primitives, which the
-  frontend adapter (`adapters.ts`) wraps into the shared contract:
-  - **Android** exposes `window.__RenzoAndroid` via `@JavascriptInterface`.
-  - **Windows** exposes `window.__RenzoWindows` via a WebView2 host object + a
-    small injected JS shim (section 4).
-  Downloads run in a native background service on each platform (not in the
-  WebView), so they continue when the app is tabbed out. Only chapters already
-  downloaded on the server can be saved offline.
+- **One client: Renzo Hub.** It is a native Kotlin/Compose app (Android, Android
+  TV, Windows) talking to this server's API — not a shell around the web UI. Its
+  offline reading is its own; see the Renzo-Hub repo.
+- `RenzoFrontend/src/lib/native/` (the `__RenzoAndroid` / `__RenzoWindows`
+  adapters) served the retired WebView shells. It is a no-op on the web build and
+  is now dormant; it can be removed in a later cleanup.
 - **Back up `/config`** (SQLite DB + extracted UI) before upgrading — the server
   migrates on startup.
