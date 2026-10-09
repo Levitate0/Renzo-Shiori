@@ -246,6 +246,33 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
             // 5 is OkHttp's default; 12 keeps per-host load short of what typically
             // trips rate-limiting on strict sources. Refuse to go below 5.
             int perHost = Math.Clamp(maxRequestsPerHost, 5, 12);
+
+            // The JVM sidecar is what actually runs extensions now. The in-process
+            // client tuned below stopped serving them at the cutover, so until this
+            // push existed the setting changed nothing: the sidecar stayed on
+            // OkHttp's default of 5 whatever the user chose (the log still said
+            // "tuned"). The value also sizes the .NET-side image gate, and rides
+            // the startup /config so a recycled JVM keeps it.
+            Runtime.Sidecar.SidecarNetworkSettings.MaxRequestsPerHost = perHost;
+            if (_serviceProvider.GetService(typeof(Runtime.Sidecar.SidecarProcessManager)) is Runtime.Sidecar.SidecarProcessManager sidecar)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await sidecar.EnsureStartedAsync(CancellationToken.None).ConfigureAwait(false);
+                        await sidecar.Client.ConfigAsync(
+                            new Dictionary<string, object?> { ["maxRequestsPerHost"] = perHost.ToString() },
+                            CancellationToken.None).ConfigureAwait(false);
+                        _logger.LogInformation("Sidecar OkHttp maxRequestsPerHost set to {PerHost}.", perHost);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Could not push maxRequestsPerHost to the JVM sidecar; it applies on the next start.");
+                    }
+                });
+            }
+
             try
             {
                 // Every extension shares one NetworkHelper (a Koin `single`) and thus

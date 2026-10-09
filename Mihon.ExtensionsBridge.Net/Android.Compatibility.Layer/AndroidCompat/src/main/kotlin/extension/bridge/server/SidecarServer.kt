@@ -126,7 +126,31 @@ object SidecarServer {
             interceptorOverrides = cur.interceptorOverrides,
         )
         extension.bridge.setSettings(settings)
+        i("maxRequestsPerHost", 0).takeIf { it > 0 }?.let(::applyMaxRequestsPerHost)
         return """{"ok":true}"""
+    }
+
+    /**
+     * OkHttp's per-host concurrency for every extension. They all derive their
+     * clients from NetworkHelper.client with newBuilder(), which SHARES its
+     * Dispatcher (cloudflareClient is the same client), so one write here governs
+     * them all and takes effect immediately.
+     *
+     * This is the setting the app already exposed as MaxRequestsPerHost. Until
+     * now it only tuned the in-process bridge that stopped serving extensions at
+     * the sidecar cutover, so whatever the user chose, the sidecar ran OkHttp's
+     * default of 5. Pushed on every (re)start alongside the rest of /config, so a
+     * recycled JVM keeps it. Same 5-12 clamp as the old path.
+     */
+    private fun applyMaxRequestsPerHost(requested: Int) {
+        runCatching {
+            val dispatcher = uy.kohesive.injekt.Injekt
+                .getInstance<eu.kanade.tachiyomi.network.NetworkHelper>(eu.kanade.tachiyomi.network.NetworkHelper::class.java)
+                .client.dispatcher
+            dispatcher.maxRequests = maxOf(dispatcher.maxRequests, 128)
+            dispatcher.maxRequestsPerHost = requested.coerceIn(5, 12)
+            System.err.println("[sidecar] OkHttp maxRequestsPerHost=${dispatcher.maxRequestsPerHost}")
+        }.onFailure { System.err.println("[sidecar] could not set maxRequestsPerHost: ${it.message}") }
     }
 
     // The engine registers its PersistentCookieStore as the JVM default cookie handler

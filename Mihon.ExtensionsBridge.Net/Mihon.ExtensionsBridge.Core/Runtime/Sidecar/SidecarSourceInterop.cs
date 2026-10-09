@@ -42,11 +42,11 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public Task<ContentTypeStream> GetPageImageAsync(Page page, CancellationToken token = default) =>
             ThrottledImageAsync(page, token);
 
-        // Image fetches per HOST allowed INTO the sidecar at once. Matches
-        // OkHttp's default Dispatcher.maxRequestsPerHost (5), which is the real
-        // limit underneath: extensions fetch images with Call.await(), i.e.
-        // enqueue(), and the sidecar's client never raises that default.
-        private const int MaxImageFetchesPerSource = 5;
+        // Image fetches per HOST allowed INTO the sidecar at once: exactly the
+        // sidecar's own OkHttp maxRequestsPerHost (the MaxRequestsPerHost
+        // setting), which is the real limit underneath — extensions fetch
+        // images with Call.await(), i.e. enqueue().
+        private static int MaxImageFetchesPerHost() => SidecarNetworkSettings.MaxRequestsPerHost;
 
         // Static so the limit survives interop rebuilds after a sidecar recycle —
         // a per-instance gate would hand a fresh allowance to a host whose old
@@ -95,7 +95,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         private async Task<ContentTypeStream> ThrottledImageAsync(Page page, CancellationToken token)
         {
             // Reader first, downloads never take the last slot — see SourceImageGate.
-            SourceImageGate slots = ImageSlots.GetOrAdd(GateKey(page), _ => new SourceImageGate(MaxImageFetchesPerSource));
+            SourceImageGate slots = ImageSlots.GetOrAdd(GateKey(page), _ => new SourceImageGate(MaxImageFetchesPerHost));
             await slots.AcquireAsync(ImageFetchPriority.IsInteractive, token).ConfigureAwait(false);   // abandoned while queued: gone at once
             if (token.IsCancellationRequested)
             {

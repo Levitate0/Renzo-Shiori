@@ -49,15 +49,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
     /// </summary>
     public sealed class SourceImageGate
     {
-        private readonly int _capacity;
+        private readonly Func<int> _capacity;
         private readonly object _sync = new();
         private readonly LinkedList<TaskCompletionSource<bool>> _interactive = new();
         private readonly LinkedList<TaskCompletionSource<bool>> _background = new();
         private int _inUse;
 
-        public SourceImageGate(int capacity)
+        /// <param name="capacity">Read on every admission, so a settings change
+        /// widens or narrows existing gates without rebuilding them.</param>
+        public SourceImageGate(Func<int> capacity)
         {
-            _capacity = Math.Max(1, capacity);
+            _capacity = () => Math.Max(1, capacity());
         }
 
         /// <summary>Slots currently held (for diagnostics and tests).</summary>
@@ -98,32 +100,35 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 
         public void Release()
         {
-            TaskCompletionSource<bool>? next = null;
+            // Give the slot back, then admit waiters — reader first — while there
+            // is room under the CURRENT capacity. A loop rather than a one-for-one
+            // handover because the capacity is live: raising MaxRequestsPerHost
+            // should let the queue fill the new room at once, and lowering it must
+            // stop over-capacity holders from passing their slots on.
+            List<TaskCompletionSource<bool>>? wake = null;
             lock (_sync)
             {
-                // Hand the slot straight to the next eligible waiter: the reader
-                // first, then background — but background only while that would
-                // still leave a slot free (i.e. the freed slot is not the last).
-                if (_interactive.First != null)
+                _inUse--;
+                while (_inUse < _capacity())
                 {
-                    next = _interactive.First.Value;
-                    _interactive.RemoveFirst();
-                }
-                else if (_background.First != null)
-                {
-                    next = _background.First.Value;
-                    _background.RemoveFirst();
-                }
-                else
-                {
-                    _inUse--;
+                    LinkedList<TaskCompletionSource<bool>> from =
+                        _interactive.First != null ? _interactive :
+                        _background.First != null ? _background : null!;
+                    if (from == null)
+                        break;
+                    TaskCompletionSource<bool> next = from.First!.Value;
+                    from.RemoveFirst();
+                    _inUse++;
+                    (wake ??= new()).Add(next);
                 }
             }
-            next?.TrySetResult(true);
+            if (wake != null)
+                foreach (TaskCompletionSource<bool> w in wake)
+                    w.TrySetResult(true);
         }
 
         // Both may use every slot; background yields while a reader request is queued.
         private bool CanAdmit(bool interactive) =>
-            _inUse < _capacity && (interactive || _interactive.Count == 0);
+            _inUse < _capacity() && (interactive || _interactive.Count == 0);
     }
 }

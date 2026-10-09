@@ -22,9 +22,28 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// <summary>Same fallback the settings page offers when no URL is configured.</summary>
         public const string DefaultFlareSolverrUrl = "http://127.0.0.1:8189";
 
+        private static int _maxRequestsPerHost = 5;
+
+        /// <summary>
+        /// OkHttp's per-host limit inside the sidecar — the app's MaxRequestsPerHost
+        /// setting, clamped 5-12. Lives here so it rides the same map as the
+        /// Cloudflare settings and is re-sent on every sidecar (re)start, and so
+        /// the .NET-side image gate (SourceImageGate) is sized from the SAME
+        /// number: a gate narrower than the sidecar starves it, a wider one lets
+        /// abandoned requests queue inside it again.
+        /// </summary>
+        public static int MaxRequestsPerHost
+        {
+            get => Volatile.Read(ref _maxRequestsPerHost);
+            set => Volatile.Write(ref _maxRequestsPerHost, Math.Clamp(value, 5, 12));
+        }
+
         public static Dictionary<string, object?> Build(Mihon.ExtensionsBridge.Models.Preferences? prefs)
         {
-            var settings = new Dictionary<string, object?>();
+            var settings = new Dictionary<string, object?>
+            {
+                ["maxRequestsPerHost"] = MaxRequestsPerHost.ToString(),
+            };
             if (prefs == null)
                 return settings;
 
