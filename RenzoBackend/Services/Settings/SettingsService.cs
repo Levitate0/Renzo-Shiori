@@ -417,6 +417,7 @@ namespace RenzoBackend.Services.Settings
                 SmtpUseSsl = settings.SmtpUseSsl,
                 SmtpFromAddress = settings.SmtpFromAddress,
                 DownloadAllChapters = settings.DownloadAllChapters,
+                AutoDownloadNewChapters = settings.AutoDownloadNewChapters,
                 LibraryScanIntervalHours = settings.LibraryScanIntervalHours,
             };
 
@@ -473,6 +474,7 @@ namespace RenzoBackend.Services.Settings
                 SmtpUseSsl = ed.SmtpUseSsl,
                 SmtpFromAddress = ed.SmtpFromAddress,
                 DownloadAllChapters = ed.DownloadAllChapters,
+                AutoDownloadNewChapters = ed.AutoDownloadNewChapters,
                 LibraryScanIntervalHours = ed.LibraryScanIntervalHours,
             };
             set.StorageFolder = _config["StorageFolder"] ?? string.Empty;

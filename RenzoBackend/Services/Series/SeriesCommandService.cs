@@ -231,8 +231,10 @@ namespace RenzoBackend.Services.Series
                     // the priority-upgrade setting is on). A source whose chapters
                     // aren't known yet is covered instead by the newly-gained path
                     // in its first scan, which RescheduleIfNeededAsync above
-                    // already queued with runNow.
-                    await QueuePriorityUpgradesAsync(dbSeries.Id, token).ConfigureAwait(false);
+                    // already queued with runNow. Implicit, so it follows the
+                    // server's "Auto-download new chapters" switch.
+                    if ((await _settings.GetSettingsAsync(token).ConfigureAwait(false)).AutoDownloadNewChapters)
+                        await QueuePriorityUpgradesAsync(dbSeries.Id, token).ConfigureAwait(false);
                 }
 
                 return dbSeries.Id;
@@ -310,7 +312,8 @@ namespace RenzoBackend.Services.Series
             // A reorder means some downloaded chapters may now be held by a source
             // the user ranked below another that also has them — queue replacements
             // from the better source (no-ops unless the priority-upgrade setting is on).
-            if (priorityChanged)
+            // Implicit, so it follows the "Auto-download new chapters" switch.
+            if (priorityChanged && settings.AutoDownloadNewChapters)
                 await QueuePriorityUpgradesAsync(dbSeries.Id, token).ConfigureAwait(false);
 
             return dbSeries.ToSeriesExtendedInfo(settings);
@@ -545,11 +548,14 @@ namespace RenzoBackend.Services.Series
                 // per owner: this loop can cover thousands of series and they
                 // mostly share a handful of owners.
                 Dictionary<Guid, bool> downloadAllByOwner = [];
+                // Server-wide "Auto-download new chapters" (off on metered links):
+                // the chapter lists above still update, nothing is queued.
+                bool autoDownload = (await _settings.GetSettingsAsync(token).ConfigureAwait(false)).AutoDownloadNewChapters;
                 foreach (var u in toCheck)
                 {
                     Models.Database.SeriesEntity series = await _db.Series.Include(a => a.Sources)
                         .Where(a => a.Id == u.Item2.SeriesId).AsNoTracking().FirstAsync(token).ConfigureAwait(false);
-                    if (!series.PauseDownloads)
+                    if (!series.PauseDownloads && autoDownload)
                     {
                         if (!downloadAllByOwner.TryGetValue(series.OwnerId, out bool downloadAllLatest))
                         {
@@ -963,10 +969,18 @@ namespace RenzoBackend.Services.Series
                 }
             }
 
-            // Respect the series pause flag — don't queue downloads when paused
-            if (!series.PauseDownloads)
+            // Respect the series pause flag — don't queue downloads when paused —
+            // and the server-wide "Auto-download new chapters" switch, which also
+            // covers the priority-upgrade re-downloads gathered above.
+            bool autoDownload = (await _settings.GetSettingsAsync(token).ConfigureAwait(false)).AutoDownloadNewChapters;
+            if (!series.PauseDownloads && autoDownload)
             {
                 return await _downloadCommand.QueueChapterDownloadsAsync(serie, chaps, token).ConfigureAwait(false);
+            }
+            if (!autoDownload && chaps.Count > 0)
+            {
+                _logger.LogInformation("Auto-download is off: not queuing {Count} chapter(s) of '{Series}' from {Provider}.",
+                    chaps.Count, series.Title, serie.Provider);
             }
 
             return JobResult.Success;

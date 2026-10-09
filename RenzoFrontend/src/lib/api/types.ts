@@ -68,6 +68,8 @@ export interface Settings {
   /** Enables the built-in web reader (library reading + Browse preview). */
   /** Download every chapter, ignoring each series' start-point cutoff. */
   downloadAllChapters: boolean;
+  /** Queue new chapters automatically. Absent (older servers) = on. */
+  autoDownloadNewChapters?: boolean;
   /** Rolling library scan interval in hours (3-12). */
   libraryScanIntervalHours: number;
   // The redownload-on-upgrade toggle and the default source-priority order

@@ -168,6 +168,16 @@ public class EditableSettingsDto
     public bool DownloadAllChapters { get; set; } = false;
 
     /// <summary>
+    /// Queue new chapters for download automatically as sources report them.
+    /// On by default (the behaviour before this setting existed). Off is for
+    /// servers on a capped or metered connection: chapter lists still update
+    /// and new chapters can be read by streaming, but nothing is fetched to
+    /// disk unless someone asks — Download all, a re-download, or a priority
+    /// re-apply. Automatic priority-upgrade re-downloads stop too.
+    /// </summary>
+    public bool AutoDownloadNewChapters { get; set; } = true;
+
+    /// <summary>
     /// Rolling library scan interval in hours (clamped 3–12): how often the whole
     /// library is checked for new chapters, independent of per-title schedules.
     /// </summary>

@@ -507,6 +507,26 @@ function DownloadSettingsSection({
 }) {
   return (
     <CardContent className="space-y-4">
+      <div className="space-y-2 border-b pb-4">
+        <div className="flex items-center space-x-2">
+          <Switch
+            id="auto-download-new-chapters"
+            checked={localSettings.autoDownloadNewChapters !== false}
+            onCheckedChange={(checked) =>
+              setLocalSettings((prev) => ({ ...prev, autoDownloadNewChapters: checked }))
+            }
+          />
+          <Label htmlFor="auto-download-new-chapters">Auto-download new chapters</Label>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Download new chapters as soon as a source reports them. Turn this off on a
+          capped or metered connection: chapter lists still update and new chapters
+          can be read by streaming, but nothing is saved to disk until you ask for it
+          (Download all, re-download, or re-applying source priority). Automatic
+          re-downloads from a higher-priority source stop too.
+        </p>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2">
         {" "}
         <div>
