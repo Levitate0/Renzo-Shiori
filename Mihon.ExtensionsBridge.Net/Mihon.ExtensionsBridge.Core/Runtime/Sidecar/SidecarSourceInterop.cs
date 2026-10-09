@@ -42,16 +42,30 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public Task<ContentTypeStream> GetPageImageAsync(Page page, CancellationToken token = default) =>
             ThrottledImageAsync(page, token);
 
-        // Image fetches per source allowed INTO the sidecar at once. Matches
+        // Image fetches per HOST allowed INTO the sidecar at once. Matches
         // OkHttp's default Dispatcher.maxRequestsPerHost (5), which is the real
         // limit underneath: extensions fetch images with Call.await(), i.e.
         // enqueue(), and the sidecar's client never raises that default.
         private const int MaxImageFetchesPerSource = 5;
 
-        // Static and keyed by source id so the limit survives interop rebuilds
-        // after a sidecar recycle — a per-instance semaphore would hand a fresh
-        // allowance to a source whose old fetches are still running.
-        private static readonly ConcurrentDictionary<long, SemaphoreSlim> ImageSlots = new();
+        // Static so the limit survives interop rebuilds after a sidecar recycle —
+        // a per-instance gate would hand a fresh allowance to a host whose old
+        // fetches are still running. Keyed per image host, like OkHttp (see
+        // SourceImageGate); "source:{id}" when the URL is only resolved inside
+        // the sidecar, where the host can't be known up front.
+        private static readonly ConcurrentDictionary<string, SourceImageGate> ImageSlots = new(StringComparer.OrdinalIgnoreCase);
+
+        private string GateKey(Page page)
+        {
+            foreach (string? candidate in new[] { page.ImageUrl, page.Url })
+            {
+                if (!string.IsNullOrEmpty(candidate)
+                    && Uri.TryCreate(candidate, UriKind.Absolute, out Uri? uri)
+                    && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+                    return uri.Host;
+            }
+            return "source:" + _meta.Id;
+        }
 
         /// <summary>
         /// Fetches an image with at most <see cref="MaxImageFetchesPerSource"/>
@@ -80,8 +94,16 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// </summary>
         private async Task<ContentTypeStream> ThrottledImageAsync(Page page, CancellationToken token)
         {
-            SemaphoreSlim slots = ImageSlots.GetOrAdd(_meta.Id, _ => new SemaphoreSlim(MaxImageFetchesPerSource));
-            await slots.WaitAsync(token).ConfigureAwait(false);   // abandoned while queued: gone at once
+            // Reader first, downloads never take the last slot — see SourceImageGate.
+            SourceImageGate slots = ImageSlots.GetOrAdd(GateKey(page), _ => new SourceImageGate(MaxImageFetchesPerSource));
+            await slots.AcquireAsync(ImageFetchPriority.IsInteractive, token).ConfigureAwait(false);   // abandoned while queued: gone at once
+            if (token.IsCancellationRequested)
+            {
+                // Granted a slot in the same instant the caller gave up: hand it
+                // straight back rather than spend it on a fetch nobody wants.
+                slots.Release();
+                token.ThrowIfCancellationRequested();
+            }
 
             Task<ContentTypeStream> fetch;
             try

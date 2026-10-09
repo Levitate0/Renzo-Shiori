@@ -180,6 +180,8 @@ public class ReaderPreviewService
 
     public async Task<(Stream? stream, string contentType)> GetPageImageAsync(string mihonId, int chapterIndex, int pageIndex, Guid? userId = null, CancellationToken token = default)
     {
+        // A Browse preview is someone reading: same priority as the library reader.
+        Mihon.ExtensionsBridge.Core.Runtime.Sidecar.ImageFetchPriority.MarkInteractive();
         string imgKey = $"pv:img:{mihonId}:{chapterIndex}:{pageIndex}";
         if (_imageCache.TryGet(imgKey, out StreamImageCache.Entry cached))
             return (new MemoryStream(cached.Bytes, writable: false), cached.ContentType);
@@ -339,6 +341,9 @@ public class ReaderPreviewService
 
     public async Task<(Stream? stream, string contentType)> GetLibraryStreamPageImageAsync(Guid seriesId, decimal chapterNumber, int pageIndex, Guid? userId = null, CancellationToken token = default)
     {
+        // The reader is waiting on this: it goes ahead of the download queue
+        // for this source's image slots (SourceImageGate).
+        Mihon.ExtensionsBridge.Core.Runtime.Sidecar.ImageFetchPriority.MarkInteractive();
         // Served from RAM on the way back / re-scroll — no source round-trip.
         string imgKey = $"lib:img:{seriesId}:{chapterNumber}:{pageIndex}";
         if (_imageCache.TryGet(imgKey, out StreamImageCache.Entry cached))
@@ -383,6 +388,9 @@ public class ReaderPreviewService
     private async Task<bool> ProbeAndCacheFirstImageAsync(
         Guid seriesId, decimal chapterNumber, ISourceInterop src, List<Page> pages, CancellationToken token)
     {
+        // The reader is waiting on this: it goes ahead of the download queue
+        // for this source's image slots (SourceImageGate).
+        Mihon.ExtensionsBridge.Core.Runtime.Sidecar.ImageFetchPriority.MarkInteractive();
         if (pages.Count == 0)
             return false;
         string imgKey = $"lib:img:{seriesId}:{chapterNumber}:0";
