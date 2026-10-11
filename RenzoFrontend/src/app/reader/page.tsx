@@ -181,6 +181,21 @@ const APPEND_COOLDOWN_MS = 400;
  * a single crossing.
  */
 const PREFETCH_PAGES = 2;
+/**
+ * The same distance when the next chapter has to be STREAMED from the source:
+ * its page list comes from the source site (sometimes through a Cloudflare
+ * solver), which is the slow path, so it starts further ahead. A downloaded
+ * next chapter opens from the archive in well under the short distance.
+ */
+const PREFETCH_PAGES_STREAM = 6;
+
+/**
+ * How old the chapter list (each chapter's downloaded/streamed state) may get
+ * before a chapter open re-reads it. It used to be read once per reader
+ * session, so a chapter that finished downloading mid-read kept streaming from
+ * the source, and one whose file had been removed kept failing.
+ */
+const CHAPTER_STATE_TTL_MS = 15_000;
 
 /**
  * Cap on a single append/prepend attempt.
@@ -334,6 +349,9 @@ function ReaderInner() {
   // source round-trip exactly when the user is waiting on a chapter they just
   // bought. Consumed (cleared) by the load it applies to.
   const freshStreamRef = useRef<string | null>(null);
+  // The chapter list as last READ from the server, and when (see CHAPTER_STATE_TTL_MS).
+  const chaptersRef = useRef<ReaderChapters | null>(null);
+  const chaptersAtRef = useRef(0);
   // Name of the chapter being switched to — drives the "opening…" overlay so a
   // chapter change is never a silent blank screen, and the toast shown once it lands.
   const [openingLabel, setOpeningLabel] = useState<string | null>(null);
@@ -440,19 +458,53 @@ function ReaderInner() {
     ? (previewChapter?.name || `Chapter ${previewChapterIndex + 1}`)
     : chapter ? (chapter.name || `Chapter ${chapter.number}`) : "";
 
+  useEffect(() => { chaptersRef.current = chapters; }, [chapters]);
+
+  /** The chapter list, re-read once ours is older than CHAPTER_STATE_TTL_MS, so
+   *  each chapter opens from wherever is fastest NOW: its downloaded archive if
+   *  it has one by now, a live stream if it doesn't (any more). */
+  const freshChapters = useCallback(async (): Promise<ReaderChapters | null> => {
+    if (!seriesId) return null;
+    const cur = chaptersRef.current;
+    if (cur && Date.now() - chaptersAtRef.current < CHAPTER_STATE_TTL_MS) return cur;
+    try {
+      const ch = await readerService.getChapters(seriesId);
+      chaptersAtRef.current = Date.now();
+      chaptersRef.current = ch;
+      setChapters(ch);
+      return ch;
+    } catch (e) {
+      if (cur) return cur; // keep reading on what we had
+      throw e;
+    }
+  }, [seriesId]);
+
+  /** True when the chapter after `num` has to be streamed live (the slow path). */
+  const nextStreamsAfter = useCallback((num: number | null): boolean => {
+    const list = (chaptersRef.current?.chapters ?? []).filter((c) => c.number != null);
+    const i = list.findIndex((c) => c.number === num);
+    const next = i >= 0 ? list[i + 1] : undefined;
+    return !!next && !next.locked && !next.filename;
+  }, []);
+
   // ── Segment builders (used for the appended chapters in infinite scroll) ──
   const buildLibrarySeg = useCallback(async (num: number): Promise<Segment | null> => {
-    if (!seriesId || !chapters) return null;
-    const target = chapters.chapters.find((c) => c.number === num);
+    if (!seriesId) return null;
+    const ch = await freshChapters();
+    const target = ch?.chapters.find((c) => c.number === num);
     if (!target || target.locked) return null; // don't roll a locked chapter into the scroll
     const name = target.name || `Chapter ${num}`;
     if (target.filename) {
-      const ci = await readerService.getChapterInfo(seriesId, target.filename);
-      return { key: `lib:${num}`, chapterNumber: num, previewIndex: null, name, pageCount: ci.pageCount, streaming: false, filename: target.filename, pages: ci.pages };
+      // A downloaded file that can't be opened (removed, unreadable archive)
+      // streams the chapter instead of stalling infinite scroll on an error.
+      const ci = await readerService.getChapterInfo(seriesId, target.filename).catch(() => null);
+      if (ci && ci.pageCount > 0) {
+        return { key: `lib:${num}`, chapterNumber: num, previewIndex: null, name, pageCount: ci.pageCount, streaming: false, filename: target.filename, pages: ci.pages };
+      }
     }
     const sp = await readerService.streamPages(seriesId, num);
     return { key: `lib:${num}`, chapterNumber: num, previewIndex: null, name, pageCount: sp.pageCount, streaming: true, filename: null, pages: null };
-  }, [seriesId, chapters]);
+  }, [seriesId, freshChapters]);
 
   const buildPreviewSeg = useCallback(async (idx: number): Promise<Segment | null> => {
     if (!mihonId) return null;
@@ -525,10 +577,9 @@ function ReaderInner() {
           if (cancelled) return;
           setPageCount(pages.pageCount);
         } else if (seriesId && chapterNumber != null) {
-          const ch = chapters ?? (await readerService.getChapters(seriesId));
+          const ch = await freshChapters();
           if (cancelled) return;
-          if (!chapters) setChapters(ch);
-          const target = ch.chapters.find((c) => c.number === chapterNumber);
+          const target = ch?.chapters.find((c) => c.number === chapterNumber);
           if (!target) {
             setError("Chapter not found.");
             setLoading(false);
@@ -542,7 +593,13 @@ function ReaderInner() {
             setLoading(false);
             return;
           }
-          if (!target.filename) {
+          // Downloaded: read the archive. If its file can't be opened (removed,
+          // unreadable), stream the chapter instead of failing the open.
+          const ci = target.filename
+            ? await readerService.getChapterInfo(seriesId, target.filename).catch(() => null)
+            : null;
+          if (cancelled) return;
+          if (!ci || ci.pageCount <= 0) {
             // Not downloaded yet — stream it live from the source so it can be
             // read right away (e.g. while its download is still in the queue).
             //
@@ -594,8 +651,7 @@ function ReaderInner() {
               resumePageRef.current = resume;
             }
           } else {
-            const ci = await readerService.getChapterInfo(seriesId, target.filename);
-            if (cancelled) return;
+            setStreaming(false);
             setInfo(ci);
             setPageCount(ci.pageCount);
             // Resume where the user left off (not at 100%)
@@ -883,8 +939,8 @@ function ReaderInner() {
   // screen (index === pageCount), which isn't a real page.
   useEffect(() => {
     if (isContinuous || currentPage >= pageCount) return;
-    reportProgressFor(chapterNumber, chapter?.filename ?? null, currentPage, pageCount);
-  }, [isContinuous, currentPage, chapterNumber, chapter, pageCount, reportProgressFor]);
+    reportProgressFor(chapterNumber, streaming ? null : chapter?.filename ?? null, currentPage, pageCount);
+  }, [isContinuous, currentPage, chapterNumber, chapter, pageCount, reportProgressFor, streaming]);
 
   // Continuous: report against whichever appended chapter is on screen.
   useEffect(() => {
@@ -1042,6 +1098,50 @@ function ReaderInner() {
     readerService.trimStreamCache(seriesId, keep).catch(() => { /* best effort */ });
   }, [isPreview, isContinuous, loading, chapterNumber, seriesId, readableChapters]);
 
+  // Paged mode has no strip to append into, so the NEXT chapter is resolved a
+  // few pages before the end instead (the Hub's ReaderViewModel.prefetchChapter)
+  // and its first pages are warmed, making the chapter turn near-instant: two
+  // pages out for a downloaded chapter, six for one that must be streamed.
+  // Nothing is fetched for a reader who stops before then.
+  const prefetchedNextRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isPreview || isContinuous || loading || error || !seriesId || chapterNumber == null || pageCount <= 0) return;
+    const idx = readableChapters.findIndex((c) => c.number === chapterNumber);
+    const nextNum = idx >= 0 ? readableChapters[idx + 1]?.number : null;
+    if (nextNum == null) return;
+    const ahead = nextStreamsAfter(chapterNumber) ? PREFETCH_PAGES_STREAM : PREFETCH_PAGES;
+    if (pageCount - 1 - currentPage > ahead) return;
+    const key = `${seriesId}:${nextNum}`;
+    if (prefetchedNextRef.current === key) return;
+    prefetchedNextRef.current = key;
+    const warm = (urls: string[]) => urls.forEach((u) => { const img = new Image(); img.src = u; });
+    const count = Math.max(1, settings.preload);
+    void (async () => {
+      try {
+        const ch = await freshChapters();
+        const next = ch?.chapters.find((c) => c.number === nextNum);
+        if (!next || next.locked) return;
+        if (next.filename) {
+          const ci = await readerService.getChapterInfo(seriesId, next.filename).catch(() => null);
+          if (ci && ci.pageCount > 0) {
+            warm(Array.from({ length: Math.min(count, ci.pageCount) }, (_, i) => readerService.pageUrl(seriesId, next.filename!, i)));
+            return;
+          }
+        }
+        // Streamed: pay for the fresh source pull now rather than at the turn,
+        // and let that open reuse it — the same handshake an unlock poll uses.
+        const attempt = await withTimeout(readerService.streamPages(seriesId, nextNum, true), APPEND_TIMEOUT_MS);
+        const sp = attempt.timedOut ? null : attempt.value;
+        if (!sp || sp.locked || sp.pageCount <= 0) { prefetchedNextRef.current = null; return; }
+        freshStreamRef.current = key;
+        warm(Array.from({ length: Math.min(count, sp.pageCount) }, (_, i) => readerService.streamPageUrl(seriesId, nextNum, i)));
+      } catch {
+        prefetchedNextRef.current = null; // a later page turn tries again
+      }
+    })();
+  }, [isPreview, isContinuous, loading, error, seriesId, chapterNumber, pageCount, currentPage, readableChapters,
+    nextStreamsAfter, freshChapters, settings.preload]);
+
   // Infinite scroll: append the chapter after the last-loaded segment. Kept in a
   // ref so the scroll listener always calls the latest closure without
   // re-subscribing on every state change.
@@ -1049,8 +1149,11 @@ function ReaderInner() {
     if (!settings.infiniteScroll || !isContinuous || appendLockRef.current || appendStoppedRef.current) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
-    // Within PREFETCH_PAGES of the last loaded page (see the constant).
-    if (pagesRemainingRef.current > PREFETCH_PAGES) return;
+    // Within PREFETCH_PAGES of the last loaded page (see the constant) — further
+    // ahead when the next chapter has to be streamed.
+    const lastLoaded = segments[segments.length - 1];
+    const ahead = nextStreamsAfter(lastLoaded?.chapterNumber ?? null) ? PREFETCH_PAGES_STREAM : PREFETCH_PAGES;
+    if (pagesRemainingRef.current > ahead) return;
     // Never queue a chapter while the reader is still inside an earlier one.
     // An append inserts pages ABOVE the end block, so at an unchanged scroll
     // position the distance-to-bottom check can be satisfied again immediately
@@ -1112,7 +1215,7 @@ function ReaderInner() {
         setAppending(false);
       }
     })();
-  }, [settings.infiniteScroll, isContinuous, segments, chapterExistsFrom, isPreview, previewOrder, readableChapters, buildPreviewSeg, buildLibrarySeg]);
+  }, [settings.infiniteScroll, isContinuous, segments, chapterExistsFrom, isPreview, previewOrder, readableChapters, buildPreviewSeg, buildLibrarySeg, nextStreamsAfter]);
 
   const maybeAppendRef = useRef(maybeAppend);
   useEffect(() => { maybeAppendRef.current = maybeAppend; }, [maybeAppend]);
