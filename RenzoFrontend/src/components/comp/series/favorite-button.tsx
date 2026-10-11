@@ -237,8 +237,9 @@ function ListRow({ list, seriesId, depth }: { list: FavoriteList; seriesId: stri
           </button>
         )}
 
-        {/* Row actions — visible on hover/focus */}
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        {/* Row actions — visible on hover/focus, and always on touch screens,
+            which have no hover (a phone could never reach Delete otherwise). */}
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
           {depth === 0 && (
             <IconButton title="Add sub-list" onClick={() => setAddingSub((v) => !v)}>
               {addingSub ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
