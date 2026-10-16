@@ -20,6 +20,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.InputStream
@@ -285,9 +286,42 @@ object SidecarServer {
         return url
     }
 
+    // Stripping baseUrl is only right when the source's public url IS baseUrl + url. Many add a
+    // path: MangaHub's getChapterUrl is baseUrl + "/chapter" + url, so the stored
+    // ".../chapter/slug/chapter-60.0" stripped to "/chapter/slug/chapter-60.0" and the source,
+    // expecting "/slug/chapter-60.0", threw — and a source that builds requests from the url
+    // asked its site for a path that does not exist (404). Ask the source itself: the relative
+    // url is the suffix whose public url is exactly the stored one. Falls back to relBase.
+    private fun relFor(s: eu.kanade.tachiyomi.source.Source, url: String, publicUrl: (String) -> String?): String {
+        val rel = relBase(s, url)
+        if (s !is HttpSource || rel == url || publicUrl(rel) == url) return rel
+        var i = rel.indexOf('/', 1)
+        while (i > 0) {
+            for (cand in listOf(rel.substring(i), rel.substring(i + 1))) {
+                if (cand.isNotEmpty() && publicUrl(cand) == url) return cand
+            }
+            i = rel.indexOf('/', i + 1)
+        }
+        return rel
+    }
+
+    private fun relChapter(s: eu.kanade.tachiyomi.source.Source, c: SChapter): String =
+        relFor(s, c.url) { u ->
+            runCatching {
+                (s as HttpSource).getChapterUrl(SChapter.create().also { it.url = u; it.name = c.name; it.memo = c.memo })
+            }.getOrNull()
+        }
+
+    private fun relManga(s: eu.kanade.tachiyomi.source.Source, m: SManga): String =
+        relFor(s, m.url) { u ->
+            runCatching {
+                (s as HttpSource).getMangaUrl(SManga.create().also { it.url = u; it.title = m.title; it.memo = m.memo })
+            }.getOrNull()
+        }
+
     private fun details(req: JsonObject): String {
         val s = src(req)
-        val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relBase(s, it.url) }
+        val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relManga(s, it) }
         // Go through the 1.6 combined call: newer sources implement getMangaUpdate and leave
         // getMangaDetails throwing; the compat default delegates to getMangaDetails for old sources.
         val out = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), true, false).manga }
@@ -306,7 +340,7 @@ object SidecarServer {
 
     private fun chapters(req: JsonObject): String {
         val s = src(req)
-        val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relBase(s, it.url) }
+        val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relManga(s, it) }
         val list = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
                    else runBlocking { s.getChapterList(manga) }
         return buildJsonArray {
@@ -322,7 +356,7 @@ object SidecarServer {
 
     private fun pages(req: JsonObject): String {
         val s = src(req)
-        val chapter = chapterFrom(req["chapter"]!! as JsonObject).also { it.url = relBase(s, it.url) }
+        val chapter = chapterFrom(req["chapter"]!! as JsonObject).also { it.url = relChapter(s, it) }
         val list = runBlocking { s.getPageList(chapter) }
         return buildJsonArray { for (p in list) add(pageJson(p)) }.toString()
     }
@@ -333,8 +367,9 @@ object SidecarServer {
             val s = src(req) as? HttpSource ?: throw IllegalStateException("Source does not support HTTP")
             val p = pageFrom(req["page"]!! as JsonObject)
             if (p.imageUrl.isNullOrEmpty()) {
-                val u = runCatching { runBlocking { s.getImageUrl(p) } }.getOrNull()
-                if (!u.isNullOrEmpty()) p.imageUrl = u
+                // Let a failure here surface as itself — swallowed, it resurfaced
+                // one call later as a meaningless "no scheme was found for null".
+                p.imageUrl = runBlocking { s.getImageUrl(p) }
             }
             val resp = runBlocking { s.getImage(p) }
             try {
@@ -424,29 +459,36 @@ object SidecarServer {
         p.imageUrl?.let { put("imageUrl", it) }
     }
 
+    // The .NET side sends absent fields as JSON null, and `jsonPrimitive.content`
+    // reads JsonNull as the four-letter STRING "null". For a page that made
+    // imageUrl "null": not empty, so image() skipped getImageUrl() and fetched
+    // the URL "null" — every page of every source that resolves images from a
+    // per-page HTML (Mangatown) failed, in the reader and in downloads alike.
+    private fun JsonObject.str(k: String): String? = (this[k] as? JsonPrimitive)?.contentOrNull
+
     private fun mangaFrom(o: JsonObject): SManga = SManga.create().apply {
-        url = o["url"]?.jsonPrimitive?.content ?: ""
-        title = o["title"]?.jsonPrimitive?.content ?: ""
-        o["artist"]?.let { artist = it.jsonPrimitive.content }
-        o["author"]?.let { author = it.jsonPrimitive.content }
-        o["description"]?.let { description = it.jsonPrimitive.content }
-        o["genre"]?.let { genre = it.jsonPrimitive.content }
-        o["status"]?.let { status = it.jsonPrimitive.content.toInt() }
-        o["thumbnail_url"]?.let { thumbnail_url = it.jsonPrimitive.content }
+        url = o.str("url") ?: ""
+        title = o.str("title") ?: ""
+        o.str("artist")?.let { artist = it }
+        o.str("author")?.let { author = it }
+        o.str("description")?.let { description = it }
+        o.str("genre")?.let { genre = it }
+        o.str("status")?.toIntOrNull()?.let { status = it }
+        o.str("thumbnail_url")?.let { thumbnail_url = it }
         (o["memo"] as? JsonObject)?.let { memo = it }
     }
 
     private fun chapterFrom(o: JsonObject): SChapter = SChapter.create().apply {
-        url = o["url"]?.jsonPrimitive?.content ?: ""
-        name = o["name"]?.jsonPrimitive?.content ?: ""
-        o["scanlator"]?.let { scanlator = it.jsonPrimitive.content }
+        url = o.str("url") ?: ""
+        name = o.str("name") ?: ""
+        o.str("scanlator")?.let { scanlator = it }
         (o["memo"] as? JsonObject)?.let { memo = it }
     }
 
     private fun pageFrom(o: JsonObject): Page {
-        val idx = o["index"]?.jsonPrimitive?.content?.toInt() ?: 0
-        val url = o["url"]?.jsonPrimitive?.content ?: ""
-        val imageUrl = o["imageUrl"]?.jsonPrimitive?.content
+        val idx = o.str("index")?.toIntOrNull() ?: 0
+        val url = o.str("url") ?: ""
+        val imageUrl = o.str("imageUrl")?.takeIf { it.isNotEmpty() }
         return Page(idx, url, imageUrl)
     }
 
