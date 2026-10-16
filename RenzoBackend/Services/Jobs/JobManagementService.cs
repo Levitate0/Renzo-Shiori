@@ -1,5 +1,6 @@
 using RenzoBackend.Data;
 using RenzoBackend.Extensions;
+using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.Jobs;
@@ -412,6 +413,64 @@ namespace RenzoBackend.Services.Jobs
             await _db.Queues.Where(j => j.Status == QueueStatus.Running)
                 .ExecuteUpdateAsync(a => a.SetProperty(b => b.Status, QueueStatus.Waiting), token)
                 .ConfigureAwait(false);
+            await RekeyLegacyDownloadsAsync(token).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Moves downloads queued before the one-source-per-chapter change onto
+        /// the series+chapter key every enqueue and reschedule now uses.
+        ///
+        /// Those rows were keyed by the source's manga URL. When one failed, the
+        /// reschedule wrote to the series+chapter key — a DIFFERENT row — so its
+        /// own row stayed Running until the 20-minute reclaim ran it again with
+        /// the same retry count. It never ran out of retries, never stepped down
+        /// to the next source, and held its provider's only slot 20 minutes in
+        /// every 25: one broken chapter stalled every download from that source
+        /// for weeks. Where the new-key row already exists it carries the
+        /// chapter, so the old one is dropped.
+        /// </summary>
+        private async Task RekeyLegacyDownloadsAsync(CancellationToken token)
+        {
+            using (await _lock.LockAsync(token))
+            {
+                string prefix = $"{JobType.Download}_";
+                HashSet<string> keys = new(await _db.Queues.Where(j => j.JobType == JobType.Download)
+                    .Select(j => j.Key).ToListAsync(token).ConfigureAwait(false), StringComparer.Ordinal);
+                List<EnqueueEntity> waiting = await _db.Queues
+                    .Where(j => j.JobType == JobType.Download && j.Status == QueueStatus.Waiting)
+                    .ToListAsync(token).ConfigureAwait(false);
+
+                int moved = 0, dropped = 0;
+                foreach (EnqueueEntity row in waiting)
+                {
+                    ChapterDownload? ch;
+                    try { ch = JsonSerializer.Deserialize<ChapterDownload>(row.JobParameters ?? ""); }
+                    catch (JsonException) { continue; }
+                    if (ch?.Chapter == null || ch.SeriesId == Guid.Empty)
+                        continue;
+                    string key = $"{prefix}{ch.SeriesId}|{ch.Chapter.ParsedNumber.FormatDecimal()}";
+                    if (row.Key == key)
+                        continue;
+                    if (keys.Contains(key))
+                    {
+                        _db.Queues.Remove(row);
+                        dropped++;
+                    }
+                    else
+                    {
+                        row.Key = key;
+                        row.ExtraKey = ch.SeriesId.ToString();
+                        keys.Add(key);
+                        moved++;
+                    }
+                }
+                if (moved + dropped == 0)
+                    return;
+                await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                _logger.LogWarning(
+                    "Re-keyed {Moved} queued download(s) from the old per-source key and dropped {Dropped} that already had a series+chapter twin.",
+                    moved, dropped);
+            }
         }
 
         public void DetachJob(EnqueueEntity job)

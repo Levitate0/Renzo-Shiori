@@ -302,7 +302,9 @@ namespace RenzoBackend.Services.Background
             // This uses the internal update method
             await management.QueuedJobs.Where(j => j.Id == job.Id)
                 .ExecuteUpdateAsync(updates => updates.SetProperty(j => j.Status, QueueStatus.Running)
-                    .SetProperty(j => j.StartedDate, DateTime.UtcNow), stoppingToken);
+                    // The in-memory stamp, not a fresh UtcNow: a Handled job closes
+                    // its row only if it is still THIS run (HandleJobResultAsync).
+                    .SetProperty(j => j.StartedDate, job.StartedDate), stoppingToken);
         }
 
         private async Task ExecuteJobAsync(EnqueueEntity job, JobQueues queueName, QueueSettings queueSettings,
@@ -429,6 +431,16 @@ namespace RenzoBackend.Services.Background
             }
             else
             {
+                // Handled = the job moved its work elsewhere: a reschedule or a step
+                // down to another source. Onto its OWN key that leaves this row
+                // Waiting again; onto a different key (a row queued under the old
+                // per-source key) it left this row Running, and the reclaim re-ran
+                // it every 20 minutes with the same retry count — forever, holding
+                // the provider's only slot. Close it unless it was re-dispatched.
+                await management.QueuedJobs
+                    .Where(j => j.Id == job.Id && j.Status == QueueStatus.Running && j.StartedDate == job.StartedDate)
+                    .ExecuteUpdateAsync(u => u.SetProperty(j => j.Status, QueueStatus.Completed)
+                        .SetProperty(j => j.FinishedDate, DateTime.UtcNow), stoppingToken).ConfigureAwait(false);
                 _logger.LogWarning("Rescheduled job {jobType} {GroupKey} in queue {queueName}", job.JobType, job.GroupKey ?? job.Key, queueName);
             }
         }
