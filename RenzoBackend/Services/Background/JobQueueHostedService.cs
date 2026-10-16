@@ -159,6 +159,23 @@ namespace RenzoBackend.Services.Background
                 string.Join(", ", stuck.Select(j => j.GroupKey).Distinct()));
         }
 
+        private readonly ConcurrentDictionary<JobQueues, DateTime> _lastHealthLog = new();
+
+        /// <summary>
+        /// One line a minute per queue: slots held, the limit, and how many jobs
+        /// the picker offered (-1 = never asked, the slots were full). The queue
+        /// has stalled silently more than once; this is the line that tells a
+        /// full slot table from an empty picker without attaching a debugger.
+        /// </summary>
+        private void LogQueueHealth(JobQueues queue, int held, int max, int offered)
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_lastHealthLog.TryGetValue(queue, out DateTime last) && now - last < TimeSpan.FromMinutes(1))
+                return;
+            _lastHealthLog[queue] = now;
+            _logger.LogInformation("Queue {Queue}: {Held}/{Max} slots held, picker offered {Offered}.", queue, held, max, offered);
+        }
+
         private async Task ProcessQueueAsync(JobManagementService jobManagement, QueueSettings queueSettings, 
             CancellationToken stoppingToken)
         {
@@ -171,7 +188,10 @@ namespace RenzoBackend.Services.Background
 
             // Check available slots outside lock first (quick exit optimization)
             if (runningJobsInQueue.Count >= queueSettings.MaxThreads)
+            {
+                LogQueueHealth(queueName, runningJobsInQueue.Count, queueSettings.MaxThreads, -1);
                 return;
+            }
 
             var availableSlots = queueSettings.MaxThreads - runningJobsInQueue.Count;
             if (availableSlots <= 0)
@@ -180,6 +200,7 @@ namespace RenzoBackend.Services.Background
             // Get jobs ready for execution
             var jobsToProcess = await GetJobsToProcessAsync(jobManagement, queueName, queueSettings, 
                 availableSlots, stoppingToken).ConfigureAwait(false);
+            LogQueueHealth(queueName, runningJobsInQueue.Count, queueSettings.MaxThreads, jobsToProcess.Count);
 
             foreach (var job in jobsToProcess)
             {
@@ -204,8 +225,16 @@ namespace RenzoBackend.Services.Background
                 await UpdateJobStatusAsync(job, stoppingToken).ConfigureAwait(false);
                 jobManagement.DetachJob(job);
                 
-                // Track in-flight job task so we can drain on shutdown
-                var jobTask = ExecuteJobAsync(job, queueName, queueSettings, stoppingToken);
+                // Track in-flight job task so we can drain on shutdown.
+                //
+                // On the thread pool, never inline: an async method runs on the
+                // CALLER's thread until its first real await, and Microsoft.Data
+                // .Sqlite's async calls complete synchronously. A GetLatest job's
+                // opening query (every cached catalogue row for its source) thus
+                // ran on THIS loop for minutes at a time, and no queue — downloads
+                // included — dispatched anything until it finished: downloads
+                // arrived in bursts five minutes apart with 4,700 due.
+                var jobTask = Task.Run(() => ExecuteJobAsync(job, queueName, queueSettings, stoppingToken), CancellationToken.None);
                 _inFlightJobTasks.Add(jobTask);
             }
         }
