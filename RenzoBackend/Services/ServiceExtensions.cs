@@ -22,7 +22,6 @@ using RenzoBackend.Services.Series;
 using RenzoBackend.Services.Settings;
 using RenzoBackend.Services.Users;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using sun.net.www.http;
 using System.Net.Http.Headers;
 
 namespace RenzoBackend.Services

@@ -1,6 +1,3 @@
-using com.sun.tools.@internal.xjc;
-using javax.activation;
-using javax.xml.crypto;
 using RenzoBackend.Data;
 using RenzoBackend.Extensions;
 using RenzoBackend.Migration.Models;
@@ -13,7 +10,6 @@ using RenzoBackend.Services.ReadState;
 using RenzoBackend.Services.Settings;
 using Microsoft.EntityFrameworkCore;
 using Mihon.ExtensionsBridge.Models.Extensions;
-using sun.security.provider;
 using System.Text;
 using System.Text.Json;
 using System.Xml;

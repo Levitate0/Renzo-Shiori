@@ -1,4 +1,3 @@
-using com.sun.org.apache.xpath.@internal.objects;
 using RenzoBackend.Data;
 using RenzoBackend.Migration.Models;
 using RenzoBackend.Models.Enums;
@@ -17,8 +16,6 @@ using Mihon.ExtensionsBridge.Core.Utilities;
 using Mihon.ExtensionsBridge.Models;
 using Mihon.ExtensionsBridge.Models.Abstractions;
 using Mihon.ExtensionsBridge.Models.Extensions;
-using sun.java2d.loops;
-using sun.misc;
 using System.Globalization;
 using System.IO;
 using System.Linq;
