@@ -163,6 +163,26 @@ namespace RenzoBackend.Services.Downloads
             DownloadSummary downloadSummary;
 
             var appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+
+            // A chapter queued on a source that has since been switched off, or
+            // whose extension is gone, is not retried there: it moves to the next
+            // enabled source now. It used to keep failing against the dead site
+            // until its whole retry budget was spent — hours — before stepping
+            // down, and with no other source it just kept failing.
+            var sourceState = await _db.SeriesProviders.AsNoTracking()
+                .Where(a => a.Id == ch.SeriesProviderId)
+                .Select(a => new { a.IsDisabled, a.IsUninstalled })
+                .FirstOrDefaultAsync(token).ConfigureAwait(false);
+            if (sourceState != null && (sourceState.IsDisabled || sourceState.IsUninstalled))
+            {
+                if (await TryStepDownToNextSourceAsync(ch, token).ConfigureAwait(false))
+                    return JobResult.Handled;
+                _logger.LogInformation(
+                    "Chapter {Chapter} of '{Title}' was queued on {Provider}, which is now disabled, and no other enabled source has it; dropping it until one does.",
+                    ch.Chapter.ParsedNumber, ch.Title, ch.ProviderName);
+                return JobResult.Failed;
+            }
+
             ISourceInterop src;
             try
             {
