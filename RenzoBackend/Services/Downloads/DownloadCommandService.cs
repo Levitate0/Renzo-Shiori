@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using RenzoBackend.Data;
 using RenzoBackend.Extensions;
 using RenzoBackend.Models;
@@ -311,10 +311,25 @@ namespace RenzoBackend.Services.Downloads
 
                         // Bounded for the same reason as GetPagesAsync above — this is
                         // the call the 2026-07-30 pipeline-wide stall traced back to.
-                        Task<ContentTypeStream?> Fetch(Page target) => _mihon.MihonErrorWrapperAsync(
-                            () => SourceTimeout.RunAsync(ct => src.GetPageImageAsync(target, ct), token),
-                            "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
-                            target.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider);
+                        //
+                        // Retried twice before the chapter is given up on: one
+                        // dropped connection used to throw away every page
+                        // already fetched (118 of them on a big Manganato
+                        // chapter) and start again from page 1 thirty minutes
+                        // later. A page that fails three times is a real failure.
+                        async Task<ContentTypeStream?> Fetch(Page target)
+                        {
+                            for (int attempt = 0; ; attempt++)
+                            {
+                                ContentTypeStream? got = await _mihon.MihonErrorWrapperAsync(
+                                    () => SourceTimeout.RunAsync(ct => src.GetPageImageAsync(target, ct), token),
+                                    "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
+                                    target.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                                if (got != null || attempt >= 2 || token.IsCancellationRequested)
+                                    return got;
+                                await Task.Delay(TimeSpan.FromSeconds(attempt == 0 ? 2 : 6), token).ConfigureAwait(false);
+                            }
+                        }
 
                         // Acquire first, then enqueue — if the wait is cancelled nothing is
                         // queued and no slot is held, keeping acquire/release balanced.

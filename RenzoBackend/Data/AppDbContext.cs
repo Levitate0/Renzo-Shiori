@@ -75,6 +75,82 @@ namespace RenzoBackend.Data
         }
     }
 
+    /// <summary>
+    /// Change tracking for a source's chapter list (one JSON column).
+    ///
+    /// The generic list comparer above never worked for it: its snapshot step
+    /// tests `list is IList&lt;object&gt;`, which a List&lt;Chapter&gt; is not, so
+    /// the "snapshot" was the live list itself, and equality compared element
+    /// references. A chapter edited in place therefore always compared equal
+    /// to its own snapshot, and the edit was saved only if the caller also
+    /// remembered <c>db.Touch(provider, p =&gt; p.Chapters)</c>. Several did not:
+    /// a storage download deleting the other sources' duplicate files cleared
+    /// their filenames in memory only, leaving rows that pointed at files that
+    /// no longer existed.
+    ///
+    /// This one snapshots copies and compares values. ADD ANY NEW Chapter
+    /// PROPERTY TO <see cref="Same"/> and <see cref="Copy"/>.
+    /// </summary>
+    public static class ChapterListComparer
+    {
+        public static ValueComparer<List<Chapter>> Instance { get; } = new(
+            (a, b) => ListsEqual(a, b),
+            a => a == null ? 0 : a.Count,
+            a => CopyList(a));
+
+        private static bool ListsEqual(List<Chapter>? a, List<Chapter>? b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null || a.Count != b.Count) return false;
+            for (int i = 0; i < a.Count; i++)
+                if (!Same(a[i], b[i])) return false;
+            return true;
+        }
+
+        private static bool Same(Chapter? x, Chapter? y)
+        {
+            if (ReferenceEquals(x, y)) return true;
+            if (x == null || y == null) return false;
+            return x.ChapterNumber == y.ChapterNumber
+                && x.Index == y.Index
+                && x.Name == y.Name
+                && x.ProviderUploadDate == y.ProviderUploadDate
+                && x.DateFetched == y.DateFetched
+                && x.Url == y.Url
+                && x.ProviderIndex == y.ProviderIndex
+                && x.DownloadDate == y.DownloadDate
+                && x.ShouldDownload == y.ShouldDownload
+                && x.IsDeleted == y.IsDeleted
+                && x.IsLocked == y.IsLocked
+                && x.LockedCheckedAt == y.LockedCheckedAt
+                && x.PageCount == y.PageCount
+                && x.Filename == y.Filename
+                && (ReferenceEquals(x.Pages, y.Pages) || (x.Pages ?? []).SequenceEqual(y.Pages ?? []));
+        }
+
+        private static Chapter Copy(Chapter c) => new()
+        {
+            ChapterNumber = c.ChapterNumber,
+            Index = c.Index,
+            Name = c.Name,
+            ProviderUploadDate = c.ProviderUploadDate,
+            DateFetched = c.DateFetched,
+            Url = c.Url,
+            ProviderIndex = c.ProviderIndex,
+            DownloadDate = c.DownloadDate,
+            ShouldDownload = c.ShouldDownload,
+            IsDeleted = c.IsDeleted,
+            IsLocked = c.IsLocked,
+            LockedCheckedAt = c.LockedCheckedAt,
+            PageCount = c.PageCount,
+            Filename = c.Filename,
+            Pages = c.Pages == null ? [] : [.. c.Pages],
+        };
+
+        private static List<Chapter> CopyList(List<Chapter>? list) =>
+            list == null ? null! : list.Select(c => c == null ? null! : Copy(c)).ToList();
+    }
+
     public class AppDbContext : DbContext
     {
         public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
@@ -178,7 +254,7 @@ namespace RenzoBackend.Data
                      .HasConversion(
                          v => JsonSerializer.Serialize(v, new JsonSerializerOptions { WriteIndented = false }),
                          v => JsonSerializer.Deserialize<List<Chapter>>(v, new JsonSerializerOptions { WriteIndented = false }) ?? new List<Chapter>()
-                     ).Metadata.SetValueComparer(GenericValueComparer.Create<List<Chapter>>());
+                     ).Metadata.SetValueComparer(ChapterListComparer.Instance);
                 entity.HasIndex(sp => sp.SeriesId).HasDatabaseName("IX_SeriesProvider_SeriesId");
                 entity.HasIndex(sp => sp.MihonId).HasDatabaseName("IX_SeriesProvider_MihonId");
                 entity.HasIndex(sp => sp.MihonProviderId).HasDatabaseName("IX_SeriesProvider_MihonProviderId");
