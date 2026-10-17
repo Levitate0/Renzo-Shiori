@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Mihon.ExtensionsBridge.Models.Abstractions;
 using Mihon.ExtensionsBridge.Core.Extensions;
@@ -31,6 +31,20 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// </summary>
         public int WatchdogFailuresBeforeRestart { get; set; } =
             int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_WATCHDOG_FAILURES"), out var f) ? f : 4;
+
+        /// <summary>
+        /// How long every worker may be busy with NOTHING completing before the
+        /// sidecar counts as wedged. Busy alone is not wedged: 32 slow page
+        /// fetches are normal under a download backlog, and killing the JVM for
+        /// it threw away every one of them. Longer than OkHttp's 2-minute call
+        /// timeout, so a pool of genuinely slow calls has turned over by then.
+        /// </summary>
+        public int WatchdogWedgedSeconds { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_WEDGED_SECONDS"), out var ws) ? ws : 300;
+
+        /// <summary>The sidecar's status listener (its own thread). Defaults to the sidecar port + 1.</summary>
+        public int StatusPort { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_STATUS_PORT"), out var sp) ? sp : 0;
 
         /// <summary>Per-probe timeout. /health does nothing but answer, so this is generous.</summary>
         public int WatchdogProbeTimeoutSeconds { get; set; } =
@@ -215,6 +229,39 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             await EnsureStartedAsync(token).ConfigureAwait(false);
         }
 
+        private int StatusPort => _opts.StatusPort > 0 ? _opts.StatusPort : _opts.Port + 1;
+
+        private string LogPath => Path.Combine(Path.GetTempPath(), "renzo-sidecar-jvm.log");
+
+        /// <summary>
+        /// Before a watchdog kill, ask the JVM for a thread dump (SIGQUIT prints
+        /// it to the log without stopping anything) and keep the log. Every
+        /// restart used to truncate it, so the 35-50 daily kills left no trace
+        /// of what the workers had been doing.
+        /// </summary>
+        private void CaptureDiagnostics()
+        {
+            try
+            {
+                if (_proc is not { HasExited: false } p || !OperatingSystem.IsLinux())
+                    return;
+                using (var kill = Process.Start(new ProcessStartInfo("kill", $"-3 {p.Id}") { UseShellExecute = false }))
+                    kill?.WaitForExit(2000);
+                Thread.Sleep(1500); // the dump is written asynchronously
+                string dir = Path.Combine(_folder.AndroidFolder, "sidecar", "diagnostics");
+                Directory.CreateDirectory(dir);
+                string dest = Path.Combine(dir, $"wedged-{DateTime.UtcNow:yyyyMMdd-HHmmss}.log");
+                File.Copy(LogPath, dest, overwrite: true);
+                foreach (FileInfo old in new DirectoryInfo(dir).GetFiles("wedged-*.log").OrderByDescending(f => f.Name).Skip(5))
+                    old.Delete();
+                _logger.LogWarning("Saved the sidecar's thread dump to {Path}.", dest);
+            }
+            catch (Exception e)
+            {
+                _logger.LogDebug(e, "Could not capture sidecar diagnostics.");
+            }
+        }
+
         private void StartWatchdog()
         {
             if (_opts.WatchdogIntervalSeconds <= 0 || _watchdog is { IsCompleted: false })
@@ -271,7 +318,20 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                     using var probe = CancellationTokenSource.CreateLinkedTokenSource(token);
                     probe.CancelAfter(TimeSpan.FromSeconds(_opts.WatchdogProbeTimeoutSeconds));
                     bool healthy;
-                    try { healthy = await Client.HealthAsync(probe.Token).ConfigureAwait(false); }
+                    SidecarClient.SidecarStatus? status = null;
+                    try
+                    {
+                        // The status listener has its own thread, so it answers
+                        // while every worker is busy and tells us whether work is
+                        // still completing. Only a JVM that has stopped running
+                        // code, or a pool that has stopped finishing anything,
+                        // counts as down. An older jar has no listener: fall back
+                        // to /health on the shared pool, the old behaviour.
+                        status = await Client.StatusAsync(StatusPort, probe.Token).ConfigureAwait(false);
+                        healthy = status != null
+                            ? !(status.Busy >= status.Workers && status.LastCompletedAgoMs > _opts.WatchdogWedgedSeconds * 1000L)
+                            : await Client.HealthAsync(probe.Token).ConfigureAwait(false);
+                    }
                     catch (OperationCanceledException) when (!token.IsCancellationRequested) { healthy = false; }
 
                     if (healthy)
@@ -301,10 +361,16 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                     }
 
                     failures++;
-                    _logger.LogWarning("Sidecar /health probe failed ({Failures}/{Limit}).", failures, _opts.WatchdogFailuresBeforeRestart);
+                    _logger.LogWarning(
+                        "Sidecar probe failed ({Failures}/{Limit}): {State}.",
+                        failures, _opts.WatchdogFailuresBeforeRestart,
+                        status == null
+                            ? "no answer from the JVM"
+                            : $"all {status.Workers} workers busy, nothing completed for {status.LastCompletedAgoMs / 1000}s, heap {status.HeapUsedMb}/{status.HeapMaxMb} MB");
                     if (failures >= _opts.WatchdogFailuresBeforeRestart)
                     {
                         failures = 0;
+                        CaptureDiagnostics();
                         await RestartWithBackoffAsync(
                             $"unresponsive for ~{_opts.WatchdogIntervalSeconds * _opts.WatchdogFailuresBeforeRestart}s", token)
                             .ConfigureAwait(false);
@@ -364,6 +430,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             psi.ArgumentList.Add(_opts.JarPath);
             psi.ArgumentList.Add("extension.bridge.server.SidecarServer");
             psi.Environment["RENZO_SIDECAR_PORT"] = _opts.Port.ToString();
+            psi.Environment["RENZO_SIDECAR_STATUS_PORT"] = StatusPort.ToString();
             if (_opts.DisableJcef) psi.Environment["RENZO_SIDECAR_NO_JCEF"] = "1";
             if (!string.IsNullOrEmpty(_opts.EnjarifyDir)) psi.Environment["RENZO_ENJARIFY_DIR"] = _opts.EnjarifyDir!;
             // The app runs with LD_LIBRARY_PATH pointed at IKVM's native libs (/app/ikvm/.../bin).
@@ -374,7 +441,10 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             // JCEF). Empty if unset -> the JRE still finds its libs via its own rpath.
             psi.Environment["LD_LIBRARY_PATH"] = Environment.GetEnvironmentVariable("RENZO_SIDECAR_LDPATH") ?? "";
 
-            var logPath = Path.Combine(Path.GetTempPath(), "renzo-sidecar-jvm.log");
+            var logPath = LogPath;
+            // Keep the previous run's output: it is the only record of why that
+            // process died.
+            try { if (File.Exists(logPath)) File.Move(logPath, logPath + ".prev", overwrite: true); } catch { /* best effort */ }
             System.IO.StreamWriter? sw = null;
             try { sw = new System.IO.StreamWriter(logPath, append: false) { AutoFlush = true }; } catch { /* logging is best-effort */ }
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };

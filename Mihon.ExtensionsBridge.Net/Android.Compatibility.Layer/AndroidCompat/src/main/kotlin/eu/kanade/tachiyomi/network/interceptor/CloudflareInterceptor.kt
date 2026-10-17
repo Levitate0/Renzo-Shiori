@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -58,10 +59,19 @@ class CloudflareInterceptor(
             // network.cookieStore.remove(originalRequest.url.toUri())
 
             val flareResponseFallback = Settings.flareSolverrAsResponseFallback
+            val clearanceBefore = CFClearance.clearance(originalRequest.url)
             val flareResponse =
                 runBlocking {
-                    CFClearance.resolveWithFlareSolver(originalRequest, !flareResponseFallback)
+                    CFClearance.resolveWithFlareSolver(originalRequest, !flareResponseFallback, clearanceBefore)
                 }
+                    // Another request for this site solved the challenge while
+                    // this one waited its turn: its clearance is already in the
+                    // jar, so retry with it instead of solving again.
+                    ?: return chain.proceed(
+                        originalRequest.newBuilder()
+                            .header("User-Agent", CFClearance.currentUserAgent())
+                            .build(),
+                    )
 
             if (flareResponse.message.contains("not detected", ignoreCase = true)) {
                 logger.debug { "FlareSolverr failed to detect Cloudflare challenge" }
@@ -122,7 +132,22 @@ object CFClearance {
     }
     private val json: Json by injectLazy()
     private val jsonMediaType = "application/json".toMediaType()
-    private val mutex = Mutex()
+
+    // One solve per site at a time, and at most two sites at once. This was a
+    // single global mutex: every challenged request on every site queued
+    // behind one ~60 s solve, each holding a sidecar worker in runBlocking
+    // while it waited, until all of them were blocked and nothing completed.
+    // That is what the watchdog kept killing as "unresponsive".
+    private val hostLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    private val solveSlots = kotlinx.coroutines.sync.Semaphore(2)
+
+    /** The cf_clearance cookie the jar would send to [url] right now, if any. */
+    fun clearance(url: HttpUrl): String? =
+        network.cookieStore.get(url).firstOrNull { it.name in COOKIE_NAMES }?.value
+
+    fun currentUserAgent(): String = network.defaultUserAgentProvider()
+
+    private val COOKIE_NAMES = setOf("cf_clearance")
 
     @Serializable
     data class FlareSolverCookie(
@@ -183,14 +208,24 @@ object CFClearance {
         val version: String = "",
     )
 
+    /**
+     * Solves the challenge for [originalRequest]'s site, or returns null when a
+     * clearance different from [clearanceBefore] appeared while waiting for the
+     * site's lock, meaning someone else just solved it.
+     */
     suspend fun resolveWithFlareSolver(
         originalRequest: Request,
         onlyCookies: Boolean,
-    ): FlareSolverResponse {
+        clearanceBefore: String? = null,
+    ): FlareSolverResponse? {
         val timeout = Settings.flareSolverrTimeout.seconds
+        val host = originalRequest.url.host
 
         return with(json) {
-            mutex.withLock {
+            hostLocks.computeIfAbsent(host) { Mutex() }.withLock {
+                val now = clearance(originalRequest.url)
+                if (now != null && now != clearanceBefore) return@withLock null
+                solveSlots.withPermit {
                 client
                     .newCall(
                         POST(
@@ -216,6 +251,7 @@ object CFClearance {
                     // Parse with the lenient json (ignoreUnknownKeys) — NOT parseAs's strict Json.Default
                     // — so extra fields from any FlareSolverr v1/v2 backend don't fail the whole solve.
                     .parseAs<FlareSolverResponse>(json)
+                }
             }
         }
     }

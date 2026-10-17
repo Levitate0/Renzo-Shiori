@@ -21,6 +21,8 @@ import kotlinx.serialization.builtins.SetSerializer
 import kotlinx.serialization.builtins.serializer
 import xyz.nulldev.androidcompat.util.SafePath
 import xyz.nulldev.ts.config.ApplicationRootDir
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.Properties
 import kotlin.io.path.Path
 import kotlin.io.path.createParentDirectories
@@ -50,27 +52,70 @@ class JavaSharedPreferences(
                     file.inputStream().use { properties.loadFromXML(it) }
                 }
             } catch (e: Exception) {
-                logger.error(e) { "Error loading settings from $key" }
+                // Unreadable (an empty file is the usual shape: a write that was
+                // cut short before writes became atomic). Keep it aside rather
+                // than overwriting it on the next save, so it can be inspected.
+                logger.error(e) { "Error loading settings from $key; moving it aside and starting empty" }
+                try {
+                    Files.move(file, file.resolveSibling("${file.fileName}.corrupt"), StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: Exception) {
+                }
             }
         }
+
+    // Writes are serialised and atomic. They used to truncate the file in place
+    // from whichever thread changed a value. The cookie store is written from
+    // every network thread at once, so two overlapping saves, or a restart
+    // mid-save, left an empty file, and every saved cookie (site logins,
+    // Cloudflare clearances) was gone on the next start.
+    private val writeLock = Any()
+
+    // An Editor commit is many puts (a string set is one put per element plus
+    // a size), and each put fired a full rewrite. Inside a commit, puts only
+    // mark the store dirty, and the commit writes once.
+    private val batching = ThreadLocal.withInitial { false }
+
+    private fun persist(properties: Properties) {
+        if (batching.get()) return
+        synchronized(writeLock) {
+            try {
+                if (properties.isEmpty) {
+                    file.deleteIfExists()
+                } else {
+                    file.createParentDirectories()
+                    val tmp = file.resolveSibling("${file.fileName}.tmp")
+                    tmp.outputStream().use {
+                        properties.storeToXML(it, null)
+                    }
+                    try {
+                        Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                    } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING)
+                    }
+                }
+            } catch (e: Exception) {
+                logger.error(e) { "Error saving settings in ${file.fileName}" }
+            }
+        }
+    }
+
     private val preferences =
         PropertiesSettings(
             properties,
-            onModify = { properties ->
-                try {
-                    if (properties.isEmpty) {
-                        file.deleteIfExists()
-                    } else {
-                        file.createParentDirectories()
-                        file.outputStream().use {
-                            properties.storeToXML(it, null)
-                        }
-                    }
-                } catch (e: Exception) {
-                    logger.error(e) { "Error saving settings in $key" }
-                }
-            },
+            onModify = { persist(it) },
         )
+
+    private fun batch(block: () -> Unit) {
+        val outer = batching.get()
+        batching.set(true)
+        try {
+            block()
+        } finally {
+            batching.set(outer)
+        }
+        if (!outer) persist(properties)
+    }
+
     private val listeners = mutableMapOf<SharedPreferences.OnSharedPreferenceChangeListener, (String) -> Unit>()
 
     // TODO: 2021-05-29 Need to find a way to get this working with all pref types
@@ -124,7 +169,7 @@ class JavaSharedPreferences(
     override fun contains(key: String): Boolean = key in preferences.keys
 
     override fun edit(): SharedPreferences.Editor =
-        Editor(preferences) { key ->
+        Editor(preferences, ::batch) { key ->
             listeners.forEach { (_, listener) ->
                 listener(key)
             }
@@ -132,6 +177,7 @@ class JavaSharedPreferences(
 
     class Editor(
         private val preferences: Settings,
+        private val batch: (() -> Unit) -> Unit,
         private val notify: (String) -> Unit,
     ) : SharedPreferences.Editor {
         private val actions = mutableListOf<Action>()
@@ -226,7 +272,7 @@ class JavaSharedPreferences(
             addToPreferences()
         }
 
-        private fun addToPreferences() {
+        private fun addToPreferences() = batch {
             actions.forEach {
                 @Suppress("UNCHECKED_CAST")
                 when (it) {

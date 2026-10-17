@@ -42,10 +42,51 @@ object SidecarConvert {
      *
      * Fallback when enjarify is unavailable: dex2jar + Java-6 downgrade (older extensions only).
      */
+    /**
+     * Bump when the conversion output changes, so jars converted by an older
+     * pipeline are redone once instead of being reused.
+     */
+    private const val CONVERTER_VERSION = "1"
+
+    private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    /**
+     * Converts unless an up-to-date jar from this pipeline is already there.
+     *
+     * Every extension load used to convert from scratch: dex2jar + an enjarify
+     * subprocess for each of ~40 extensions after every sidecar restart. Two
+     * loads of one extension also converted at once into the same temp files
+     * ("/convert failed ... .d2j.jar"), and the output was rewritten in place
+     * under a JVM that might already have it open. Conversions of one jar are
+     * now serialised, built under a unique temp name and moved into place.
+     */
     fun convert(apkPath: String, outJarPath: String) {
         val apk = File(apkPath)
         val outJar = File(outJarPath)
+        val stamp = File(outJar.parentFile, outJar.name + ".stamp")
+        val wanted = "$CONVERTER_VERSION:${apk.length()}:${apk.lastModified()}"
+        synchronized(locks.computeIfAbsent(outJar.absolutePath) { Any() }) {
+            if (outJar.length() > 0 && stamp.exists() && runCatching { stamp.readText() }.getOrNull() == wanted) return
+            val tmp = File(outJar.parentFile, "${outJar.nameWithoutExtension}.tmp-${System.nanoTime()}.jar")
+            try {
+                val definitive = convertTo(apk, tmp)
+                try {
+                    java.nio.file.Files.move(tmp.toPath(), outJar.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                    java.nio.file.Files.move(tmp.toPath(), outJar.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                }
+                // A fallback produced because enjarify FAILED this time is used
+                // but not stamped, so the next load tries the full pipeline again.
+                if (definitive) stamp.writeText(wanted) else stamp.delete()
+            } finally {
+                tmp.delete()
+            }
+        }
+    }
 
+    /** Returns false when enjarify is configured but failed, i.e. the output is a fallback. */
+    private fun convertTo(apk: File, outJar: File): Boolean {
         val sigJar = File(outJar.parentFile, outJar.name + ".d2j.jar")
         dex2jar(apk, sigJar)
 
@@ -67,6 +108,7 @@ object SidecarConvert {
         } finally {
             sigJar.delete(); enjJar.delete()
         }
+        return enjOk || System.getenv("RENZO_ENJARIFY_DIR")?.let { File(it).isDirectory } != true
     }
 
     private fun dex2jar(apk: File, out: File) {

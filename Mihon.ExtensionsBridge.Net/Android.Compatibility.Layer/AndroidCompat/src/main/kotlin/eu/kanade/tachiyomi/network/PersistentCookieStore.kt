@@ -79,7 +79,7 @@ class PersistentCookieStore(
 
     override fun removeAll(): Boolean =
         lock.withLock {
-            val wasNotEmpty = cookieMap.isEmpty()
+            val wasNotEmpty = cookieMap.isNotEmpty()
             prefs.edit().clear().apply()
             cookieMap.clear()
             wasNotEmpty
@@ -102,10 +102,13 @@ class PersistentCookieStore(
 
     fun get(url: HttpUrl): List<Cookie> =
         lock.withLock {
+            // A domain matches itself and its subdomains only. A bare endsWith
+            // also matched unrelated hosts ("webtoon.com" received the cookies
+            // of "toon.com"), and expired cookies kept being sent until restart.
             cookieMap.entries
-                .filter {
-                    url.host.endsWith(it.key)
-                }.flatMap { it.value }
+                .filter { (domain, _) ->
+                    url.host == domain || url.host.endsWith(".$domain")
+                }.flatMap { (_, cookies) -> cookies.filter { !it.hasExpired() } }
         }
 
     override fun add(

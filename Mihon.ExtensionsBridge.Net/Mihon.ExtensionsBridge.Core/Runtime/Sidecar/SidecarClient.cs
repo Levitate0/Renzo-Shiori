@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Mihon.ExtensionsBridge.Models;
@@ -41,6 +41,29 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 return r.IsSuccessStatusCode;
             }
             catch { return false; }
+        }
+
+        /// <summary>What the sidecar's dedicated status listener reports. Null when it can't be reached.</summary>
+        public sealed record SidecarStatus(int Busy, int Workers, long LastCompletedAgoMs, long HeapUsedMb, long HeapMaxMb);
+
+        /// <summary>
+        /// Probes the status listener (sidecar port + 1), which runs on its own
+        /// thread and so answers even when every worker is busy. Returns null if
+        /// it does not answer, which means the JVM itself is not running code,
+        /// or that it is an older jar without the listener.
+        /// </summary>
+        public async Task<SidecarStatus?> StatusAsync(int statusPort, CancellationToken token = default)
+        {
+            try
+            {
+                using var r = await _http.GetAsync($"http://127.0.0.1:{statusPort}/status", token).ConfigureAwait(false);
+                if (!r.IsSuccessStatusCode) return null;
+                using var doc = JsonDocument.Parse(await r.Content.ReadAsStringAsync(token).ConfigureAwait(false));
+                var e = doc.RootElement;
+                long L(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0;
+                return new SidecarStatus((int)L("busy"), (int)L("workers"), L("lastCompletedAgoMs"), L("heapUsedMb"), L("heapMaxMb"));
+            }
+            catch { return null; }
         }
 
         public Task SetupAsync(string dataRoot, string tempRoot, CancellationToken token = default) =>
@@ -158,16 +181,16 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             bodyTimeout.CancelAfter(_http.Timeout);
             CancellationToken bodyToken = bodyTimeout.Token;
 
-            var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, bodyToken).ConfigureAwait(false);
+            // `using`: a body read that times out or is cancelled used to skip the
+            // Dispose, stranding the pooled connection.
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, bodyToken).ConfigureAwait(false);
             var ct = resp.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
             if (!resp.IsSuccessStatusCode || ct.Contains("application/json"))
             {
                 var err = await resp.Content.ReadAsStringAsync(bodyToken).ConfigureAwait(false);
-                resp.Dispose();
                 throw new SidecarException($"image failed: {err}");
             }
             var bytes = await resp.Content.ReadAsByteArrayAsync(bodyToken).ConfigureAwait(false);
-            resp.Dispose();
             return new SidecarContentTypeStream(bytes, ct);
         }
 
@@ -252,6 +275,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             var n = new Dictionary<string, object?>
             {
                 ["url"] = c.Url, ["name"] = c.Name, ["scanlator"] = c.Scanlator,
+                ["chapter_number"] = c.ChapterNumber, ["date_upload"] = c.DateUpload.ToUnixTimeMilliseconds(),
             };
             AttachMemo(n, c.Memo);
             return n;

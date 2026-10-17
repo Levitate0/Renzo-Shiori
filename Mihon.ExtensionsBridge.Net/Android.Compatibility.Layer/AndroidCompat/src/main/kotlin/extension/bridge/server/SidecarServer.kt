@@ -56,13 +56,33 @@ object SidecarServer {
     private val sources = ConcurrentHashMap<Long, CatalogueSource>()
     @Volatile private var initialized = false
 
+    // Work accounting for the status probe below.
+    private val inflight = java.util.concurrent.atomic.AtomicInteger()
+    private val lastCompleted = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+    private var workers = 16
+
     @JvmStatic
     fun main(args: Array<String>) {
         val port = (System.getenv("RENZO_SIDECAR_PORT") ?: "9834").toInt()
+        workers = (System.getenv("RENZO_SIDECAR_THREADS") ?: "16").toInt()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
-        server.executor = Executors.newFixedThreadPool(
-            (System.getenv("RENZO_SIDECAR_THREADS") ?: "16").toInt(),
-        )
+        server.executor = Executors.newFixedThreadPool(workers)
+
+        // The watchdog's probe gets its own listener and thread. On the shared
+        // pool, /health queued behind every slow source call, so a sidecar that
+        // was merely busy (32 two-minute page fetches) failed four probes and
+        // was killed, 35-50 times a day, taking every in-flight read and
+        // download with it. This answers even then, and says whether work is
+        // still COMPLETING, which is what separates busy from wedged. A JVM
+        // that is frozen outright (GC, a stuck safepoint) still fails it.
+        val statusPort = (System.getenv("RENZO_SIDECAR_STATUS_PORT") ?: (port + 1).toString()).toInt()
+        runCatching {
+            val status = HttpServer.create(InetSocketAddress("127.0.0.1", statusPort), 0)
+            status.executor = Executors.newSingleThreadExecutor { r -> Thread(r, "sidecar-status").apply { isDaemon = true } }
+            status.createContext("/status") { ex -> respond(ex, 200, statusJson()) }
+            status.start()
+            System.err.println("[sidecar] status on 127.0.0.1:$statusPort")
+        }.onFailure { System.err.println("[sidecar] status listener unavailable: ${it.message}") }
 
         server.createContext("/health") { ex -> respond(ex, 200, """{"ok":true,"initialized":$initialized}""") }
         server.createContext("/setup") { ex -> guarded(ex) { setup(readObj(ex)) } }
@@ -78,7 +98,7 @@ object SidecarServer {
         server.createContext("/source/details") { ex -> guarded(ex) { details(readObj(ex)) } }
         server.createContext("/source/chapters") { ex -> guarded(ex) { chapters(readObj(ex)) } }
         server.createContext("/source/pages") { ex -> guarded(ex) { pages(readObj(ex)) } }
-        server.createContext("/source/image") { ex -> image(ex) }
+        server.createContext("/source/image") { ex -> tracked { image(ex) } }
         server.createContext("/source/preferences") { ex -> guarded(ex) { preferences(readObj(ex)) } }
         server.createContext("/source/preference") { ex -> guarded(ex) { setPreference(readObj(ex)) } }
         server.createContext("/source/unload") { ex -> guarded(ex) { unload(readObj(ex)) } }
@@ -482,6 +502,9 @@ object SidecarServer {
         url = o.str("url") ?: ""
         name = o.str("name") ?: ""
         o.str("scanlator")?.let { scanlator = it }
+        // A few sources build page requests from these; they used to arrive as 0.
+        o.str("chapter_number")?.toFloatOrNull()?.let { chapter_number = it }
+        o.str("date_upload")?.toLongOrNull()?.let { date_upload = it }
         (o["memo"] as? JsonObject)?.let { memo = it }
     }
 
@@ -494,12 +517,35 @@ object SidecarServer {
 
     // ---- HTTP plumbing ----
 
-    private inline fun guarded(ex: HttpExchange, body: () -> String) {
+    private inline fun guarded(ex: HttpExchange, body: () -> String) = tracked {
         try {
             respond(ex, 200, body())
         } catch (t: Throwable) {
             respond(ex, 500, errorJson(t))
         }
+    }
+
+    private inline fun tracked(body: () -> Unit) {
+        inflight.incrementAndGet()
+        try {
+            body()
+        } finally {
+            inflight.decrementAndGet()
+            lastCompleted.set(System.currentTimeMillis())
+        }
+    }
+
+    private fun statusJson(): String {
+        val rt = Runtime.getRuntime()
+        return buildJsonObject {
+            put("ok", true)
+            put("initialized", initialized)
+            put("busy", inflight.get())
+            put("workers", workers)
+            put("lastCompletedAgoMs", System.currentTimeMillis() - lastCompleted.get())
+            put("heapUsedMb", (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024))
+            put("heapMaxMb", rt.maxMemory() / (1024 * 1024))
+        }.toString()
     }
 
     private fun readObj(ex: HttpExchange): JsonObject {

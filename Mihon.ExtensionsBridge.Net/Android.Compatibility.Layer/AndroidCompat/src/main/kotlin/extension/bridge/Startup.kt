@@ -200,7 +200,10 @@ object AndroidCompatRuntime {
         defaultUncaughtHandler = null
     }
 }
-val jarLoaderMap = mutableMapOf<String, URLClassLoader>()
+// Concurrent: after a sidecar restart every extension loads at once, one HTTP
+// worker each, and a plain map written from many threads can lose entries or
+// corrupt itself.
+val jarLoaderMap = java.util.concurrent.ConcurrentHashMap<String, URLClassLoader>()
 private val extensionLoaderLogger = androidCompatLogger(AndroidCompatRuntime::class.java)
 
 /**
@@ -216,11 +219,10 @@ fun loadExtensionSources(
         extensionLoaderLogger.debug { "Loader parent=${parentLoader}" }
 
         val classLoader =
-            jarLoaderMap[jarPath]
-                ?: URLClassLoader(arrayOf<URL>(Path(jarPath).toUri().toURL()), parentLoader)
+            jarLoaderMap.computeIfAbsent(jarPath) {
+                URLClassLoader(arrayOf<URL>(Path(jarPath).toUri().toURL()), parentLoader)
+            }
         val classToLoad = Class.forName(className, false, classLoader)
-
-        jarLoaderMap[jarPath] = classLoader
 
         return classToLoad.getDeclaredConstructor().newInstance()
     } catch (e: Exception) {
@@ -232,10 +234,9 @@ fun loadExtensionSources(
 }
 fun unloadExtension(jarPath: String)
 {
-    if (jarLoaderMap.containsKey(jarPath)) {
-        jarLoaderMap.remove(jarPath)
-        System.gc()
-    }        
+    // No System.gc(): an explicit full collection on a 1.5 GB heap stalls
+    // every worker, and the loader is collected anyway once unreachable.
+    jarLoaderMap.remove(jarPath)
 }
 private fun installJulBridge() {
     val logManager = java.util.logging.LogManager.getLogManager()
