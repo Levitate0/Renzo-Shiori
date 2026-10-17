@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Extensions;
 using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
@@ -401,15 +401,18 @@ namespace RenzoBackend.Services.Series
                 // Index is the source's own list position, and sources that return
                 // newest-first make the highest Index the OLDEST chapter (same bug
                 // fixed in the write path — see LatestChapterOf).
-                Dictionary<string, (DateTime, Manga?, ParsedChapter?)> latestDates = await _db.LatestSeries
-                    .AsNoTracking()
-                    .Where(a => a.MihonProviderId == mihonProviderId)
-                    .ToDictionaryAsync(a => a.MihonId, a => (a.FetchDate, a.ToManga(), LatestChapterOf(a.Chapters)), token)
-                    .ConfigureAwait(false);
+                //
+                // Looked up per PAGE, for the 20-50 series that page lists, not
+                // preloaded for the whole provider: MangaFire alone caches ~78,000
+                // rows per language with up to 137 MB of chapter JSON, and every
+                // 30-minute run deserialized all of it to consult a handful. That
+                // load is what froze the job dispatcher for minutes at a time.
+                Dictionary<string, (DateTime, Manga?, ParsedChapter?)> latestDates = new();
                 ConcurrentDictionary<string, ComboSeries> newChaps = [];
                 int page = 1;
                 bool upToDate = false;
-                bool neverDone = latestDates.Count == 0;
+                bool neverDone = !await _db.LatestSeries.AsNoTracking()
+                    .AnyAsync(a => a.MihonProviderId == mihonProviderId, token).ConfigureAwait(false);
                 ISourceInterop src;
                 try
                 {
@@ -438,6 +441,20 @@ namespace RenzoBackend.Services.Series
                     if (res==null)
                         return JobResult.Failed;
                     hasNext = res.HasNextPage;
+
+                    List<string> unseen = res.Mangas
+                        .Select(m => mihonProviderId + "|" + m.Url)
+                        .Where(id => !latestDates.ContainsKey(id))
+                        .Distinct()
+                        .ToList();
+                    if (unseen.Count > 0)
+                    {
+                        List<LatestSerieEntity> known = await _db.LatestSeries.AsNoTracking()
+                            .Where(a => unseen.Contains(a.MihonId))
+                            .ToListAsync(token).ConfigureAwait(false);
+                        foreach (LatestSerieEntity a in known)
+                            latestDates[a.MihonId] = (a.FetchDate, a.ToManga(), LatestChapterOf(a.Chapters));
+                    }
 
                     SettingsDto s = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
                     await Parallel.ForEachAsync(res.Mangas, new ParallelOptions

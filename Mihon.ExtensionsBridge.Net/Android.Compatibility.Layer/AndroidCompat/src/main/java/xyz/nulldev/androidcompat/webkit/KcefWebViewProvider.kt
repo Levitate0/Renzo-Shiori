@@ -149,6 +149,9 @@ class KcefWebViewProvider(
      * CEF has had its chance.
      */
     private val ownedHelperPids = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
+    /** When this WebView was created, for the live renderer sweep. */
+    internal val createdAt: Long = System.currentTimeMillis()
     private var messageRouter: CefMessageRouter? = null
     private val renderHandler = HeadlessRenderHandler()
     private val viewDelegate = KcefViewDelegate()
@@ -428,12 +431,65 @@ class KcefWebViewProvider(
          * a later pass rather than waiting for the watchdog to kill the JVM.
          */
         private fun sweepLeftoverHelpers() {
-            if (liveProviders.isNotEmpty()) return
+            if (liveProviders.isNotEmpty()) {
+                sweepRenderersOlderThanLiveViews()
+                return
+            }
             val leftover = helperPids(renderersOnly = true)
             if (leftover.isEmpty()) return
             Log.w(TAG, "No live WebViews; force-exiting ${leftover.size} leftover renderer process(es)")
             killHelpers(leftover)
         }
+
+        /**
+         * Renderers to tolerate before sweeping while WebViews are live. Under a
+         * steady download load some WebView is nearly always live, so the
+         * nothing-live sweep above almost never ran: renderers climbed from 5 to
+         * 14 in ten minutes (the --renderer-process-limit flag does not hold)
+         * until the watchdog recycled the whole JVM at 60 helpers, ~9 times a
+         * day, killing every in-flight read and download with it.
+         */
+        private const val LIVE_SWEEP_THRESHOLD = 12
+        private const val LIVE_SWEEP_MIN_AGE_MS = 2 * 60 * 1000L
+
+        /**
+         * With WebViews live, a renderer that STARTED before the oldest live
+         * WebView was created cannot have been spawned for any of them, so it is
+         * a leftover. Chromium can hand an old renderer to a new page when it is
+         * over its process limit, so this can occasionally take one in use; that
+         * fails one page load, which the caller retries — far cheaper than the
+         * watchdog's whole-JVM recycle this exists to prevent. Hence it only runs
+         * past [LIVE_SWEEP_THRESHOLD].
+         */
+        private fun sweepRenderersOlderThanLiveViews() {
+            val renderers = helperPids(renderersOnly = true)
+            if (renderers.size <= LIVE_SWEEP_THRESHOLD) return
+            val oldestLive = liveProviders.keys.minOfOrNull { it.createdAt } ?: return
+            val now = System.currentTimeMillis()
+            val stale = renderers.filter { pid ->
+                val started = processStartMillis(pid) ?: return@filter false
+                started < oldestLive - 10_000 && now - started > LIVE_SWEEP_MIN_AGE_MS
+            }
+            if (stale.isEmpty()) return
+            Log.w(TAG, "${renderers.size} renderers with ${liveProviders.size} live WebView(s); force-exiting ${stale.size} that predate every live one")
+            killHelpers(stale)
+        }
+
+        private val bootMillis: Long? by lazy {
+            runCatching {
+                java.io.File("/proc/stat").readLines()
+                    .first { it.startsWith("btime ") }
+                    .substringAfter(' ').trim().toLong() * 1000
+            }.getOrNull()
+        }
+
+        /** Wall-clock start of a process, from /proc/PID/stat field 22 (clock ticks since boot, USER_HZ=100). */
+        private fun processStartMillis(pid: Long): Long? = runCatching {
+            val boot = bootMillis ?: return null
+            val stat = java.io.File("/proc/$pid/stat").readText()
+            val fields = stat.substring(stat.lastIndexOf(')') + 2).split(' ')
+            boot + fields[19].toLong() * 10
+        }.getOrNull()
 
         private fun reapStale() {
             val now = System.currentTimeMillis()
