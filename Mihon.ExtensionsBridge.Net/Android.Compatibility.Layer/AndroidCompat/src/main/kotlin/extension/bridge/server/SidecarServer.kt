@@ -14,6 +14,8 @@ import eu.kanade.tachiyomi.source.online.HttpSource
 import extension.bridge.applicationSetup
 import extension.bridge.loadExtensionSources
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -55,6 +57,21 @@ object SidecarServer {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val sources = ConcurrentHashMap<Long, CatalogueSource>()
     @Volatile private var initialized = false
+    @Volatile private var lastDebug: JsonObject? = null
+
+    /**
+     * Hard ceiling on one source call. The app abandons a call after 120 s,
+     * but the worker running it did not: an extension waiting on a WebView
+     * result that never comes (AllManga on 2026-10-16: >6 minutes, five
+     * workers at once) kept its thread until the JVM was killed, and enough
+     * of them wedged the pool. withTimeout cancels the coroutine, which frees
+     * any suspended wait; blocking I/O is bounded separately by OkHttp's own
+     * call timeout.
+     */
+    private val callTimeoutMs = ((System.getenv("RENZO_SIDECAR_CALL_TIMEOUT_S")?.toLongOrNull() ?: 150L) * 1000)
+
+    private fun <T> bounded(block: suspend kotlinx.coroutines.CoroutineScope.() -> T): T =
+        runBlocking { withTimeout(callTimeoutMs) { block() } }
 
     // Work accounting for the status probe below.
     private val inflight = java.util.concurrent.atomic.AtomicInteger()
@@ -102,6 +119,11 @@ object SidecarServer {
         server.createContext("/source/preferences") { ex -> guarded(ex) { preferences(readObj(ex)) } }
         server.createContext("/source/preference") { ex -> guarded(ex) { setPreference(readObj(ex)) } }
         server.createContext("/source/unload") { ex -> guarded(ex) { unload(readObj(ex)) } }
+        // Diagnostics (127.0.0.1 only, like everything here): what each source
+        // needs from the network layer, and what a WebView actually ends up on.
+        server.createContext("/debug/probe") { ex -> guarded(ex) { SidecarProbe.probe(sources.values.toList(), readObj(ex)) } }
+        server.createContext("/debug/webview") { ex -> guarded(ex) { SidecarProbe.webView(readObj(ex)) } }
+        server.createContext("/debug/fetch") { ex -> guarded(ex) { SidecarProbe.fetchVia(src(readObj(ex).also { lastDebug = it }), lastDebug!!) } }
 
         server.start()
         System.err.println("[sidecar] listening on 127.0.0.1:$port")
@@ -276,12 +298,12 @@ object SidecarServer {
 
     private fun popular(req: JsonObject): String {
         val s = src(req); val page = req["page"]!!.jsonPrimitive.content.toInt()
-        return runBlocking { s.getPopularManga(page) }.let(::mangasPage)
+        return bounded { s.getPopularManga(page) }.let(::mangasPage)
     }
 
     private fun latest(req: JsonObject): String {
         val s = src(req); val page = req["page"]!!.jsonPrimitive.content.toInt()
-        return runBlocking { s.getLatestUpdates(page) }.let(::mangasPage)
+        return bounded { s.getLatestUpdates(page) }.let(::mangasPage)
     }
 
     private fun search(req: JsonObject): String {
@@ -289,7 +311,7 @@ object SidecarServer {
         val page = req["page"]!!.jsonPrimitive.content.toInt()
         val query = req["query"]?.jsonPrimitive?.content ?: ""
         val filters: FilterList = try { s.getFilterList() } catch (_: Throwable) { FilterList() }
-        return runBlocking { s.getSearchManga(page, query, filters) }.let(::mangasPage)
+        return bounded { s.getSearchManga(page, query, filters) }.let(::mangasPage)
     }
 
     // Sources build requests as GET(baseUrl + entry.url), i.e. they expect a source-RELATIVE url.
@@ -344,8 +366,8 @@ object SidecarServer {
         val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relManga(s, it) }
         // Go through the 1.6 combined call: newer sources implement getMangaUpdate and leave
         // getMangaDetails throwing; the compat default delegates to getMangaDetails for old sources.
-        val out = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), true, false).manga }
-                  else runBlocking { s.getMangaDetails(manga) }
+        val out = if (s is HttpSource) bounded { s.getMangaUpdate(manga, emptyList(), true, false).manga }
+                  else bounded { s.getMangaDetails(manga) }
         // The 1.6 combined getMangaUpdate returns a manga carrying only CHANGED fields, expecting the
         // caller to merge it onto the existing entry — so SManga's lateinit `url`/`title` are often left
         // unset and throw when we serialize them or call getMangaUrl. Backfill both from the request.
@@ -361,8 +383,8 @@ object SidecarServer {
     private fun chapters(req: JsonObject): String {
         val s = src(req)
         val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relManga(s, it) }
-        val list = if (s is HttpSource) runBlocking { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
-                   else runBlocking { s.getChapterList(manga) }
+        val list = if (s is HttpSource) bounded { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
+                   else bounded { s.getChapterList(manga) }
         return buildJsonArray {
             for (c in list) {
                 // The absolute browser URL, exactly like the IKVM path's parsed.RealUrl =
@@ -377,8 +399,55 @@ object SidecarServer {
     private fun pages(req: JsonObject): String {
         val s = src(req)
         val chapter = chapterFrom(req["chapter"]!! as JsonObject).also { it.url = relChapter(s, it) }
-        val list = runBlocking { s.getPageList(chapter) }
+        val list = try {
+            bounded { s.getPageList(chapter) }
+        } catch (t: Throwable) {
+            if (!isWebViewTimeout(t) || !warmCloudflare(s, chapter)) throw t
+            bounded { s.getPageList(chapter) }
+        }
         return buildJsonArray { for (p in list) add(pageJson(p)) }.toString()
+    }
+
+    private fun isWebViewTimeout(t: Throwable): Boolean =
+        generateSequence(t) { it.cause }.any { it.message?.contains("Timed out waiting for WebView") == true }
+
+    private val lastWarm = ConcurrentHashMap<Long, Long>()
+
+    /**
+     * A source whose page list is read through a WebView (AllManga: the
+     * chapter page on mkissa.to, then the API call it makes) waits forever on
+     * Cloudflare's "Just a moment..." page in a headless browser, and the
+     * extension gives up with "Timed out waiting for WebView". Fetching the
+     * site once through the source's own HTTP client lets the Cloudflare
+     * interceptor solve the challenge and store cf_clearance (with the
+     * solver's user agent, which the WebView also uses); every new WebView
+     * copies the stored cookies in. Rate-limited per source, since a solve is
+     * expensive and a site that stays blocked won't be fixed by repeating it.
+     */
+    private fun warmCloudflare(s: CatalogueSource, chapter: SChapter): Boolean {
+        if (s !is HttpSource) return false
+        // The page the WebView actually loads, which need not be on baseUrl:
+        // AllManga's baseUrl (allmanga.to) is unprotected, the reader it opens
+        // (mkissa.to) is behind the challenge.
+        val target = runCatching { s.getChapterUrl(chapter) }.getOrNull()?.takeIf { it.startsWith("http") }
+            ?: s.baseUrl.takeIf { it.isNotEmpty() } ?: return false
+        val now = System.currentTimeMillis()
+        val prev = lastWarm[s.id]
+        if (prev != null && now - prev < 10 * 60_000) return false
+        lastWarm[s.id] = now
+        return runCatching {
+            // Straight to the solver: the extension's own client need not run
+            // the Cloudflare interceptor (AllManga strips it for its own
+            // WebView flow). ChallengeSolver stores the clearance in the jar
+            // and Chromium and records its user agent for this site.
+            val url = target.toHttpUrlOrNull() ?: return@runCatching false
+            val ok = runBlocking { eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.solve(url) }
+            System.err.println("[sidecar] Cloudflare warm-up for ${s.name} ($target): ${if (ok) "cleared" else "not cleared"}")
+            ok
+        }.getOrElse {
+            System.err.println("[sidecar] Cloudflare warm-up for ${s.name} failed: ${it.message}")
+            false
+        }
     }
 
     private fun image(ex: HttpExchange) {
@@ -389,9 +458,9 @@ object SidecarServer {
             if (p.imageUrl.isNullOrEmpty()) {
                 // Let a failure here surface as itself — swallowed, it resurfaced
                 // one call later as a meaningless "no scheme was found for null".
-                p.imageUrl = runBlocking { s.getImageUrl(p) }
+                p.imageUrl = bounded { s.getImageUrl(p) }
             }
-            val resp = runBlocking { s.getImage(p) }
+            val resp = bounded { s.getImage(p) }
             try {
                 if (resp.code != 200) throw RuntimeException("Request error! ${resp.code}")
                 val body = resp.body

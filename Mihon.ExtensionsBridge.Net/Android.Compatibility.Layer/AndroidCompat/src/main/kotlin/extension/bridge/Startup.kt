@@ -388,6 +388,11 @@ fun applicationShutdown(logger: AndroidCompatLogger) {
     logger.info { "Android compatibility runtime shut down." }
 }
 
+/** Java-callable handle on [toCefCookie] for the sidecar server. */
+object StartupCookies {
+    fun Cookie.asCef(): CefCookie = toCefCookie()
+}
+
 fun Cookie.toCefCookie(): CefCookie {
     val cookie = this
     return CefCookie(

@@ -31,9 +31,7 @@ import java.io.IOException
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
-class CloudflareInterceptor(
-    private val setUserAgent: (String) -> Unit,
-) : Interceptor {
+class CloudflareInterceptor : Interceptor {
     private val logger = androidCompatLogger(CloudflareInterceptor::class.java)
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -44,7 +42,7 @@ class CloudflareInterceptor(
         val originalResponse = chain.proceed(originalRequest)
 
         // Check if Cloudflare anti-bot is on
-        if (!(originalResponse.code in ERROR_CODES && originalResponse.header("Server") in SERVER_CHECK)) {
+        if (!ChallengeSolver.isChallenge(originalResponse)) {
             return originalResponse
         }
 
@@ -66,10 +64,11 @@ class CloudflareInterceptor(
                 }
                     // Another request for this site solved the challenge while
                     // this one waited its turn: its clearance is already in the
-                    // jar, so retry with it instead of solving again.
+                    // jar, so retry with it — and with the user agent it was
+                    // issued to — instead of solving again.
                     ?: return chain.proceed(
                         originalRequest.newBuilder()
-                            .header("User-Agent", CFClearance.currentUserAgent())
+                            .header("User-Agent", ChallengeSolver.userAgentFor(originalRequest.url.host) ?: CFClearance.currentUserAgent())
                             .build(),
                     )
 
@@ -84,7 +83,7 @@ class CloudflareInterceptor(
                     if (!isImage) {
                         logger.debug { "Falling back to FlareSolverr response" }
 
-                        setUserAgent(flareResponse.solution.userAgent)
+                        CFClearance.storeSolution(flareResponse)
 
                         return originalResponse
                             .newBuilder()
@@ -97,7 +96,7 @@ class CloudflareInterceptor(
                 }
             }
 
-            val request = CFClearance.requestWithFlareSolverr(flareResponse, setUserAgent, originalRequest)
+            val request = CFClearance.requestWithFlareSolverr(flareResponse, originalRequest)
 
             chain.proceed(request)
         } catch (e: Exception) {
@@ -108,9 +107,6 @@ class CloudflareInterceptor(
     }
 
     companion object {
-        private val ERROR_CODES = listOf(403, 503)
-        private val SERVER_CHECK = arrayOf("cloudflare-nginx", "cloudflare")
-        private val COOKIE_NAMES = listOf("cf_clearance")
         private val CHROME_IMAGE_TEMPLATE_REGEX = Regex("""<title>(.*?) \(\d+×\d+\)</title>""")
     }
 }
@@ -256,46 +252,52 @@ object CFClearance {
         }
     }
 
+    /**
+     * Puts a solution's cookies into the jar and Chromium, and records the user
+     * agent they were issued to for their site — never globally: that is what
+     * scrambled every later source's frozen user agent (see ChallengeSolver).
+     */
+    fun storeSolution(flareSolverResponse: FlareSolverResponse) {
+        val ua = flareSolverResponse.solution.userAgent
+        val cookies =
+            flareSolverResponse.solution.cookies
+                .map { cookie ->
+                    val expirationSeconds = cookie.expires ?: cookie.expiry
+                    Cookie
+                        .Builder()
+                        .name(cookie.name)
+                        .value(cookie.value)
+                        .domain(cookie.domain.removePrefix("."))
+                        .also {
+                            if (cookie.httpOnly != null && cookie.httpOnly) it.httpOnly()
+                            if (cookie.secure != null && cookie.secure) it.secure()
+                            if (!cookie.path.isNullOrEmpty()) it.path(cookie.path)
+                            // We need to convert the expires time to milliseconds for the persistent cookie store
+                            if (expirationSeconds != null && expirationSeconds > 0) {
+                                it.expiresAt((expirationSeconds * 1000).toLong())
+                            }
+                            if (!cookie.domain.startsWith('.')) it.hostOnlyDomain(cookie.domain.removePrefix("."))
+                        }.build()
+                }
+        for ((domain, forDomain) in cookies.groupBy { it.domain }) {
+            val url = HttpUrl.Builder().scheme("https").host(domain.removePrefix(".")).build()
+            network.cookieStore.addAll(url, forDomain)
+            val clearance = forDomain.firstOrNull { it.name in COOKIE_NAMES }
+            if (clearance != null) {
+                val expires = if (clearance.persistent) clearance.expiresAt else System.currentTimeMillis() + 30 * 60_000L
+                ChallengeSolver.record(domain, ua, expires)
+            }
+            ChallengeSolver.pushToChromium(url)
+        }
+        logger.debug { "New cookies\n${cookies.joinToString("; ")}" }
+    }
+
     fun requestWithFlareSolverr(
         flareSolverResponse: FlareSolverResponse,
-        setUserAgent: (String) -> Unit,
         originalRequest: Request,
     ): Request {
         if (flareSolverResponse.solution.status in 200..299) {
-            setUserAgent(flareSolverResponse.solution.userAgent)
-            val cookies =
-                flareSolverResponse.solution.cookies
-                    .map { cookie ->
-                        val expirationSeconds = cookie.expires ?: cookie.expiry
-                        Cookie
-                            .Builder()
-                            .name(cookie.name)
-                            .value(cookie.value)
-                            .domain(cookie.domain.removePrefix("."))
-                            .also {
-                                if (cookie.httpOnly != null && cookie.httpOnly) it.httpOnly()
-                                if (cookie.secure != null && cookie.secure) it.secure()
-                                if (!cookie.path.isNullOrEmpty()) it.path(cookie.path)
-                                // We need to convert the expires time to milliseconds for the persistent cookie store
-                                if (expirationSeconds != null && expirationSeconds > 0) {
-                                    it.expiresAt((expirationSeconds * 1000).toLong())
-                                }
-                                if (!cookie.domain.startsWith('.')) it.hostOnlyDomain(cookie.domain.removePrefix("."))
-                            }.build()
-                    }.groupBy { it.domain }
-                    .flatMap { (domain, cookies) ->
-                        network.cookieStore.addAll(
-                            HttpUrl
-                                .Builder()
-                                .scheme("http")
-                                .host(domain.removePrefix("."))
-                                .build(),
-                            cookies,
-                        )
-
-                        cookies
-                    }
-            logger.debug { "New cookies\n${cookies.joinToString("; ")}" }
+            storeSolution(flareSolverResponse)
             val finalCookies =
                 network.cookieStore.get(originalRequest.url).joinToString("; ", postfix = "; ") {
                     "${it.name}=${it.value}"

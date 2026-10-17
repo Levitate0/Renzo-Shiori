@@ -80,6 +80,7 @@ import org.cef.handler.CefResourceHandlerAdapter
 import org.cef.handler.CefResourceRequestHandler
 import org.cef.handler.CefResourceRequestHandlerAdapter
 import org.cef.misc.BoolRef
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.cef.misc.IntRef
 import org.cef.misc.StringRef
 import org.cef.network.CefPostData
@@ -126,7 +127,45 @@ class KcefWebViewProvider(
     private var chromeClient = WebChromeClient()
     private val mappings: MutableList<FunctionMapping> = mutableListOf()
     private val mappingIndex = ConcurrentHashMap<String, FunctionMapping>()
-    private val urlHttpMapping: MutableMap<String, String> = mutableMapOf()
+    private val urlHttpMapping: MutableMap<String, String> = java.util.concurrent.ConcurrentHashMap()
+
+    /** Set by our own loadUrl/loadData, so its navigation is not offered to shouldOverrideUrlLoading. */
+    private val selfNavigation = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Cloudflare auto-solves per host for this WebView, so a site that stays blocked can't loop. */
+    private val autoSolves = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * After a main-frame load and BEFORE the extension hears onPageFinished:
+     * copy Chromium's cookies into the HTTP jar (one store, as on Android),
+     * and if the page is a Cloudflare challenge, solve it and reload — what a
+     * person would do with the WebView on a phone. The extension then only
+     * ever sees the real page; if solving fails it sees the challenge, as
+     * before.
+     */
+    private fun afterMainFrameLoad(cefBrowser: CefBrowser, url: String, report: () -> Unit) {
+        val httpUrl = url.toHttpUrlOrNull()
+        if (httpUrl == null) {
+            report()
+            return
+        }
+        KcefFidelity.syncChromiumCookiesToJar(httpUrl) {
+            KcefFidelity.isChallengePage(cefBrowser).whenComplete { challenged, _ ->
+                val attempts = if (challenged == true) autoSolves.merge(httpUrl.host, 1, Int::plus) ?: 1 else 0
+                if (challenged != true || attempts > MAX_AUTO_SOLVES) {
+                    report()
+                    return@whenComplete
+                }
+                KcefFidelity.log("Cloudflare challenge on ${httpUrl.host}; solving and reloading (attempt $attempts)")
+                challengeExecutor.execute {
+                    val solved = runCatching {
+                        kotlinx.coroutines.runBlocking { eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.solve(httpUrl) }
+                    }.getOrDefault(false)
+                    if (solved) cefBrowser.reloadIgnoreCache() else report()
+                }
+            }
+        }
+    }
     private var initialRequestData: InitialRequestData? = null
 
     private var cefClient: CefClient? = null
@@ -245,6 +284,10 @@ class KcefWebViewProvider(
         // idle for five minutes is abandoned by definition. MAX_LIVE is the second
         // bound: past it, reap the least-recently-used regardless of age.
         private const val IDLE_TTL_MS = 5 * 60 * 1000L
+        private const val MAX_AUTO_SOLVES = 2
+        private val challengeExecutor = java.util.concurrent.Executors.newCachedThreadPool { r ->
+            Thread(r, "kcef-challenge").apply { isDaemon = true }
+        }
         private const val REAP_INTERVAL_MS = 30_000L
 
         /**
@@ -713,6 +756,7 @@ class KcefWebViewProvider(
      * the next request rather than baked into browser construction.
      */
     private fun navigateTo(url: String) {
+        selfNavigation.set(true)
         val existing = browser
         if (existing != null) {
             touch()
@@ -724,6 +768,7 @@ class KcefWebViewProvider(
 
     /** As [navigateTo], for inline HTML. */
     private fun navigateToHtml(html: String) {
+        selfNavigation.set(true)
         val existing = browser
         if (existing != null) {
             touch()
@@ -816,7 +861,13 @@ class KcefWebViewProvider(
             source: String,
             line: Int,
         ): Boolean {
-            Log.v(TAG, "$source:$line[$level]: $message")
+            // Page errors are how a WebView-driven extension fails silently
+            // (a hook that threw, a blocked script); keep them visible.
+            if (level == CefSettings.LogSeverity.LOGSEVERITY_ERROR || level == CefSettings.LogSeverity.LOGSEVERITY_WARNING) {
+                Log.i(TAG, "console[$level] ${source.take(120)}:$line ${message.take(300)}")
+            } else {
+                Log.v(TAG, "$source:$line[$level]: $message")
+            }
             return true
         }
 
@@ -845,6 +896,21 @@ class KcefWebViewProvider(
             val url = frame.url ?: ""
             val syntheticRequest = buildSyntheticRequest(frame)
             Log.v(TAG, "Load end $url")
+            if (frame.isMain) Log.i(TAG, "Main frame loaded ($httpStatusCode) ${url.take(160)}")
+            if (!frame.isMain) {
+                // Android reports the page lifecycle for the MAIN frame only.
+                // Every iframe used to fire onPageFinished too (and, below,
+                // onReceivedError) — "about:srcdoc ERR_ABORTED" from an embed
+                // reached extensions as a failed page.
+                if (httpStatusCode >= 400) {
+                    handler.post { viewClient.onReceivedHttpError(view, syntheticRequest, buildSyntheticResponse(httpStatusCode)) }
+                }
+                return
+            }
+            afterMainFrameLoad(browser, url) { reportPageFinished(url, httpStatusCode, syntheticRequest) }
+        }
+
+        private fun reportPageFinished(url: String, httpStatusCode: Int, syntheticRequest: WebResourceRequest) {
             handler.post {
                 if (httpStatusCode == 404) {
                     notifyLegacyError(WebViewClient.ERROR_FILE_NOT_FOUND, "Not Found", url)
@@ -869,6 +935,8 @@ class KcefWebViewProvider(
             failedUrl: String,
         ) {
             Log.w(TAG, "Load error ($failedUrl) [$errorCode]: $errorText")
+            // The legacy onReceivedError is for the main resource only.
+            if (!frame.isMain) return
             handler.post {
                 notifyLegacyError(
                     WebViewClient.ERROR_UNKNOWN,
@@ -907,7 +975,7 @@ class KcefWebViewProvider(
                 browser.executeJavaScript(js, "SUWAYOMI ${it.toNice()}", 0)
             }
 
-            handler.post { viewClient.onPageStarted(view, frame.url, null) }
+            if (frame.isMain) handler.post { viewClient.onPageStarted(view, frame.url, null) }
         }
 
         private fun buildSyntheticRequest(frame: CefFrame): WebResourceRequest {
@@ -1075,13 +1143,29 @@ class KcefWebViewProvider(
         ): Boolean {
             initialRequestData?.apply(request)
             initialRequestData = null
-            request.setHeaderByName("user-agent", settings.userAgentString, true)
+            // A site we hold a Cloudflare clearance for gets the user agent the
+            // clearance was issued to (the external solver's); under any other
+            // one Cloudflare refuses it and serves the challenge again.
+            // Measured: the same clearance, Chrome UA -> "Just a moment..." for
+            // 50 s; solver UA -> the page in 1 s. Same rule as the HTTP side
+            // (UserAgentInterceptor).
+            val clearanceUa = runCatching { java.net.URI(request.url).host }.getOrNull()
+                ?.let { eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.userAgentFor(it) }
+            request.setHeaderByName("user-agent", clearanceUa ?: settings.userAgentString, true)
 
+            // Android asks shouldOverrideUrlLoading about NAVIGATIONS the page
+            // starts — not about every image, script and XHR, and not about the
+            // app's own loadUrl. Asking for everything let an extension that
+            // guards its page against navigation cancel its own resources.
+            val type = request.resourceType
+            val isDocument = type == CefRequest.ResourceType.RT_MAIN_FRAME || type == CefRequest.ResourceType.RT_SUB_FRAME
+            val ownNavigation = type == CefRequest.ResourceType.RT_MAIN_FRAME && selfNavigation.getAndSet(false)
             val cancel =
-                viewClient.shouldOverrideUrlLoading(
-                    view,
-                    CefWebResourceRequest(request, frame, false),
-                )
+                isDocument && !ownNavigation &&
+                    viewClient.shouldOverrideUrlLoading(
+                        view,
+                        CefWebResourceRequest(request, frame, false),
+                    )
             Log.v(TAG, "Resource ${request.url}, result is cancel? $cancel")
 
             handler.post { viewClient.onLoadResource(view, frame?.url) }
@@ -1106,7 +1190,14 @@ class KcefWebViewProvider(
                     )
                 }
             if (response == null) {
-                urlHttpMapping[request.url.trimEnd('/')]?.let {
+                val key = request.url.trimEnd('/')
+                urlHttpMapping[key]?.let {
+                    // Served ONCE, as the document loadDataWithBaseURL asked for.
+                    // Kept forever, a later load of the same URL — the page's
+                    // own reload, a Cloudflare challenge reloading itself after
+                    // it passes, our reload after solving — got the stale HTML
+                    // again instead of the network, which can loop forever.
+                    if (request.resourceType == CefRequest.ResourceType.RT_MAIN_FRAME) urlHttpMapping.remove(key)
                     return HtmlResponseResourceHandler(it)
                 }
             }
@@ -1803,14 +1894,26 @@ class KcefWebViewProvider(
 
         val activeBrowser = browser
         if (activeBrowser == null) {
-            handler.post { cb.onReceiveValue(null) }
+            handler.post { cb.onReceiveValue("null") }
             return
         }
 
+        val source = script.removePrefix("javascript:")
+        KcefFidelity.evaluate(activeBrowser, source).whenComplete { result, _ ->
+            if (result != null) {
+                handler.post { cb.onReceiveValue(result) }
+            } else {
+                // No DevTools: the in-page bridge (subject to the page's CSP).
+                evaluateViaQuery(activeBrowser, source, cb)
+            }
+        }
+    }
+
+    private fun evaluateViaQuery(activeBrowser: CefBrowser, source: String, cb: ValueCallback<String>) {
         val token = UUID.randomUUID().toString()
         evalCallbacks[token] = cb
 
-        val js = buildEvalScript(token, script.removePrefix("javascript:"))
+        val js = buildEvalScript(token, source)
         activeBrowser.mainFrame?.executeJavaScript(js, "suwayomi://eval", 0)
     }
 
@@ -1834,57 +1937,60 @@ class KcefWebViewProvider(
                     onFailure: () => {}
                 });
 
-                let fn;
+                // Android semantics: the result is the COMPLETION VALUE of the
+                // script run as a global program — what eval() returns — so
+                // `document.title` or an IIFE `(function(){ ... })()` yields
+                // its value. This used to run `new Function(source)`, where
+                // only an explicit top-level `return` produced anything: every
+                // script written for Android came back "null", and extensions
+                // that poll for a value (AllManga's chapter navigation) waited
+                // until they timed out on every chapter. A script written the
+                // old way (top-level `return`) is a SyntaxError for eval, so it
+                // still gets the function form. Promises are not awaited, as
+                // on Android (a Promise serializes to "{}").
+                let result;
                 try {
-                    fn = new Function(source);
+                    result = (0, eval)(source);
+                } catch (err) {
+                    if (!(err instanceof SyntaxError)) {
+                        notify("null", err && err.toString ? err.toString() : String(err));
+                        return;
+                    }
+                    try {
+                        result = new Function(source).call(window);
+                    } catch (err2) {
+                        notify("null", err2 && err2.toString ? err2.toString() : String(err2));
+                        return;
+                    }
+                }
+
+                let serialized;
+                try {
+                    serialized = JSON.stringify(result === undefined ? null : result);
                 } catch (err) {
                     notify("null", err && err.toString ? err.toString() : String(err));
                     return;
                 }
-
-                const execute = () => {
-                    try {
-                        return fn.call(window);
-                    } catch (err) {
-                        throw err;
-                    }
-                };
-
-                Promise.resolve()
-                    .then(execute)
-                    .then(result => {
-                        let serialized;
-                        try {
-                            serialized = JSON.stringify(result ?? null);
-                        } catch (err) {
-                            notify("null", err && err.toString ? err.toString() : String(err));
-                            return;
-                        }
-                        if (serialized === undefined) {
-                            serialized = "null";
-                        }
-                        notify(serialized, "");
-                    })
-                    .catch(err => {
-                        notify("null", err && err.toString ? err.toString() : String(err));
-                    });
+                notify(serialized === undefined ? "null" : serialized, "");
             })();
         """.trimIndent()
     }
 
     private fun handleEvalResult(token: String, resultJson: String?, error: String?) {
         val callback = evalCallbacks.remove(token) ?: return
+        // Android's contract: the callback receives the result as a JSON
+        // string, and a null/undefined result or a script error arrives as
+        // the string "null" — never as a Java null. Extensions rely on it:
+        // AllManga polls `evaluateJavascript` until the value stops being
+        // "null", and handed a real null its callback dereferenced it and
+        // threw ("Cannot invoke Object.getClass() because <local1> is null"),
+        // failing every chapter of the source.
         handler.post {
             if (!error.isNullOrEmpty()) {
-                callback.onReceiveValue(null)
+                callback.onReceiveValue("null")
                 return@post
             }
-            val normalized = when (resultJson) {
-                null -> null
-                "null" -> null
-                else -> resultJson
-            }
-            callback.onReceiveValue(normalized)
+            callback.onReceiveValue(resultJson ?: "null")
         }
     }
 

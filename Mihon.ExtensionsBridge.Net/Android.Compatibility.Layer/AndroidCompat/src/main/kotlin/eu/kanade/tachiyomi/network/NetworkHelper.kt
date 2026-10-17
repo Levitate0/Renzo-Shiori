@@ -49,14 +49,28 @@ class NetworkHelper(
     }
     // Tachidesk <--
 
-    private val userAgent =
-        MutableStateFlow(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
+    // The default user agent is the one the embedded Chromium really is, read
+    // from its install: a WebView presenting one browser while its engine is
+    // another is exactly what Cloudflare's checks look for, and Chrome/120 was
+    // nearly three years out of date. Sources freeze this into their headers on
+    // first use, so it is settled here, before any of them loads.
+    private val userAgent = MutableStateFlow(chromiumUserAgent())
+
+    private fun chromiumUserAgent(): String {
+        val major = runCatching {
+            val meta = java.io.File(System.getProperty("jcef.dir") ?: "", "build_meta.json")
+            Regex("chromium-(\\d+)\\.").find(meta.readText())?.groupValues?.get(1)
+        }.getOrNull() ?: "141"
+        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36"
+    }
     val userAgentFlow = userAgent.asStateFlow()
 
     fun defaultUserAgentProvider(): String = userAgent.value
+
+    /** Adopt a Cloudflare solver's user agent (its clearance is bound to it). */
+    fun setUserAgent(ua: String) {
+        if (ua.isNotBlank()) userAgent.value = ua
+    }
 
     init {
         @OptIn(DelicateCoroutinesApi::class)
@@ -104,9 +118,7 @@ class NetworkHelper(
             builder.addNetworkInterceptor(httpLoggingInterceptor)
             // }
 
-            builder.addInterceptor(
-                CloudflareInterceptor(setUserAgent = { userAgent.value = it }),
-            )
+            builder.addInterceptor(CloudflareInterceptor())
 
             // when (preferences.dohProvider().get()) {
             //     PREF_DOH_CLOUDFLARE -> builder.dohCloudflare()

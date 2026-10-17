@@ -6,6 +6,7 @@ import android.webkit.ValueCallback
 import android.webkit.WebView
 import java.net.HttpCookie
 import java.net.URI
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 @Suppress("DEPRECATION")
 class CookieManagerImpl : CookieManager() {
@@ -44,6 +45,11 @@ class CookieManagerImpl : CookieManager() {
 
         HttpCookie.parse(value).forEach {
             cookieHandler.cookieStore.add(uri, it)
+        }
+        // On Android this IS the WebView's store; here Chromium keeps its own,
+        // so a cookie an extension sets for its WebView has to be handed over.
+        uri.toString().toHttpUrlOrNull()?.let {
+            eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.pushToChromium(it)
         }
     }
 

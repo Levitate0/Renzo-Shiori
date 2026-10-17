@@ -89,6 +89,62 @@ namespace RenzoBackend.Services.Downloads
             _tempFolder = Path.Combine(config["runtimeDirectory"] ?? "", "Downloads");
         }
 
+        /// <summary>Set once a chapter's page fetch is rate-limited (HTTP 429).</summary>
+        private sealed class PageThrottle
+        {
+            public volatile bool Limited;
+        }
+
+        private static bool IsStaleChapterError(Exception? e)
+        {
+            string? m = e?.Message;
+            return m != null
+                && (m.Contains("Refresh Chapter List", StringComparison.OrdinalIgnoreCase)
+                    || m.Contains("Cannot invoke \"Object.getClass()\"", StringComparison.Ordinal));
+        }
+
+        /// <summary>Fresh chapter listings per source entry, so a backlog of stale jobs costs one listing, not one each.</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, (DateTime At, List<ParsedChapter> Chapters)> FreshListings = new();
+
+        private async Task<ParsedChapter?> RefreshChapterReferenceAsync(ISourceInterop src, ChapterDownload ch, string provider, CancellationToken token)
+        {
+            List<ParsedChapter>? listing = null;
+            if (FreshListings.TryGetValue(ch.SeriesProviderId, out var hit) && DateTime.UtcNow - hit.At < TimeSpan.FromMinutes(10))
+                listing = hit.Chapters;
+            SeriesProviderEntity? sp = await _db.SeriesProviders.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == ch.SeriesProviderId, token).ConfigureAwait(false);
+            if (sp == null)
+                return null;
+            if (listing == null)
+            {
+                Manga? manga = sp.ToManga();
+                if (manga == null)
+                    return null;
+                listing = await _mihon.MihonErrorWrapperAsync(
+                    () => SourceTimeout.RunAsync(ct => src.GetChaptersAsync(manga, ct), token),
+                    "Unable to refresh the chapter list of {Title} from {provider}", ch.Title, provider).ConfigureAwait(false);
+                if (listing == null || listing.Count == 0)
+                    return null;
+                FreshListings[ch.SeriesProviderId] = (DateTime.UtcNow, listing);
+            }
+
+            // Same scanlator scoping as the download and streaming paths.
+            IEnumerable<ParsedChapter> pool = listing;
+            if (sp.Scanlator == sp.Provider || string.IsNullOrEmpty(sp.Scanlator))
+                pool = pool.Where(c => string.IsNullOrEmpty(c.Scanlator) || c.Scanlator == sp.Provider);
+            else
+                pool = pool.Where(c => c.Scanlator == sp.Scanlator);
+
+            decimal number = ch.Chapter.ParsedNumber;
+            ParsedChapter? match = number > 0
+                ? pool.FirstOrDefault(c => c.ParsedNumber == number)
+                : null;
+            match ??= pool.FirstOrDefault(c => !string.IsNullOrEmpty(ch.Chapter.Name) && c.Name == ch.Chapter.Name);
+            if (match != null && string.IsNullOrEmpty(match.Scanlator))
+                match.Scanlator = ch.Chapter.Scanlator;
+            return match;
+        }
+
         /// <summary>
         /// Downloads a chapter and saves it as a CBZ file
         /// </summary>
@@ -141,6 +197,30 @@ namespace RenzoBackend.Services.Downloads
                                 () => SourceTimeout.RunAsync(ct => src.GetPagesAsync(ch.Chapter, ct), token),
                                 e => pageFailure = e,
                                 "Unable to get Pages from Chapter {ParsedNumber}, Series {Title} from {provider}", ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                // The extension says this chapter reference is stale. Jobs carry
+                // the chapter as it was listed when they were queued — in some
+                // cases July — and an extension update can change what that
+                // reference must contain (AllManga 1.6.x: "Refresh Chapter List",
+                // or an NPE on a memo field it now expects). Retrying the same
+                // stale reference can never work; fetch the source's current
+                // listing once, take this chapter from it, and try again. The
+                // reschedule below persists the fresh reference either way.
+                if (pages == null && IsStaleChapterError(pageFailure))
+                {
+                    ParsedChapter? fresh = await RefreshChapterReferenceAsync(src, ch, provider, token).ConfigureAwait(false);
+                    if (fresh != null)
+                    {
+                        _logger.LogInformation("Refreshed the stale chapter reference for chapter {Chapter} of '{Title}' from {Provider}; retrying.",
+                            ch.Chapter.ParsedNumber, ch.Title, provider);
+                        ch.Chapter = fresh;
+                        pageFailure = null;
+                        pages = await _mihon.MihonErrorWrapperAsync(
+                                    () => SourceTimeout.RunAsync(ct => src.GetPagesAsync(ch.Chapter, ct), token),
+                                    e => pageFailure = e,
+                                    "Unable to get Pages from Chapter {ParsedNumber}, Series {Title} from {provider}", ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                    }
+                }
+
                 // A coin-gated chapter the user already bought yields nothing here:
                 // on the Astro/"vcomics" platform the paid pages are never in the
                 // HTML the extension reads, even for the purchaser. Ask the site's
@@ -298,6 +378,7 @@ namespace RenzoBackend.Services.Downloads
                         // while pages are still WRITTEN in order, so the archive is
                         // byte-for-byte what the serial path produced.
                         int window = Math.Clamp(appSettings.PagesInParallelPerChapter, 1, 16);
+                        var throttle = new PageThrottle();
                         var inFlight = new Queue<(Page page, Task<ContentTypeStream?> task)>();
                         int nextToFetch = 0;
 
@@ -317,17 +398,31 @@ namespace RenzoBackend.Services.Downloads
                         // already fetched (118 of them on a big Manganato
                         // chapter) and start again from page 1 thirty minutes
                         // later. A page that fails three times is a real failure.
+                        //
+                        // An HTTP 429 means the site is rate-limiting us, and the
+                        // quick retries only made it worse (Comic Asura: 2,622 of
+                        // them in a day, no chapter completed). Once one is seen,
+                        // retries wait far longer and the rest of the chapter is
+                        // fetched one page at a time.
                         async Task<ContentTypeStream?> Fetch(Page target)
                         {
                             for (int attempt = 0; ; attempt++)
                             {
+                                Exception? failure = null;
                                 ContentTypeStream? got = await _mihon.MihonErrorWrapperAsync(
                                     () => SourceTimeout.RunAsync(ct => src.GetPageImageAsync(target, ct), token),
+                                    e => failure = e,
                                     "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
                                     target.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
                                 if (got != null || attempt >= 2 || token.IsCancellationRequested)
                                     return got;
-                                await Task.Delay(TimeSpan.FromSeconds(attempt == 0 ? 2 : 6), token).ConfigureAwait(false);
+                                bool limited = failure?.Message.Contains("HTTP error 429", StringComparison.Ordinal) == true;
+                                if (limited)
+                                    throttle.Limited = true;
+                                TimeSpan wait = limited
+                                    ? TimeSpan.FromSeconds(attempt == 0 ? 15 : 45)
+                                    : TimeSpan.FromSeconds(attempt == 0 ? 2 : 6);
+                                await Task.Delay(wait, token).ConfigureAwait(false);
                             }
                         }
 
@@ -337,6 +432,12 @@ namespace RenzoBackend.Services.Downloads
                         {
                             if (nextToFetch >= ch.Pages.Count)
                                 return false;
+                            // Rate-limited: let the window drain to one page in
+                            // flight. Nothing is skipped — nextToFetch only moves
+                            // when a page is queued, and the loop below keeps
+                            // calling this as pages complete.
+                            if (throttle.Limited && inFlight.Count > 0)
+                                return true;
                             await memorySlots.WaitAsync(token).ConfigureAwait(false);
                             Page queued = ch.Pages[nextToFetch++];
                             inFlight.Enqueue((queued, Fetch(queued)));
