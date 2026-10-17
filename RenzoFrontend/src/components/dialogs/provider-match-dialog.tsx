@@ -63,7 +63,7 @@ const ChapterRow = memo(({
         <Input
           type="number"
           step="0.1"
-          value={chapter.chapterNumber || ""}
+          value={chapter.chapterNumber ?? ""}
           onChange={(e) => onChapterChange(index, 'chapterNumber', e.target.value ? parseFloat(e.target.value) : null)}
           className="h-7 text-sm text-right tabular-nums font-mono"
           onMouseDown={(e) => e.stopPropagation()}

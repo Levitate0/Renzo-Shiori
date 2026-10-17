@@ -37,7 +37,6 @@
     }
   },
   "include": [
-    ".eslintrc.cjs",
     "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
@@ -52,6 +51,7 @@
   "exclude": [
     "node_modules",
     "public/sw.js",
+    ".eslintrc.cjs",
     "out/**/*",
     ".next/static/**/*",
     ".next/server/**/*",

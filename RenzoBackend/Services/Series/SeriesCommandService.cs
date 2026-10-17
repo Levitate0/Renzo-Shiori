@@ -1107,17 +1107,20 @@ namespace RenzoBackend.Services.Series
         /// </summary>
         public async Task<JobResult> ScanAllSeriesAsync(CancellationToken token = default)
         {
-            List<SeriesProviderEntity> providers = await _db.SeriesProviders
+            // Ids only: this loaded every source with its whole chapter list,
+            // tracked, to read the id off each one.
+            List<Guid> providers = await _db.SeriesProviders
                 .Where(p => !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled
                     && p.MihonProviderId != null && p.MihonProviderId != "")
+                .Select(p => p.Id)
                 .ToListAsync(token).ConfigureAwait(false);
 
             int queued = 0;
-            foreach (SeriesProviderEntity p in providers)
+            foreach (Guid id in providers)
             {
                 token.ThrowIfCancellationRequested();
-                await _jobManagement.EnqueueJobAsync(JobType.GetChapters, p.Id, Priority.Normal,
-                    key: p.Id.ToString(), token: token).ConfigureAwait(false);
+                await _jobManagement.EnqueueJobAsync(JobType.GetChapters, id, Priority.Normal,
+                    key: id.ToString(), token: token).ConfigureAwait(false);
                 queued++;
             }
             _logger.LogInformation("Library scan queued a chapter check for {count} provider(s).", queued);

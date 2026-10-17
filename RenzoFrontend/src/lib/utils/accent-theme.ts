@@ -59,9 +59,9 @@ function applyAccent(accent: AccentValue, customHsl: string): void {
   if (accent === "custom") {
     const parts = customHsl.trim().split(/\s+/);
     if (parts.length === 3) {
-      el.style.setProperty("--primary-h", parts[0]);
-      el.style.setProperty("--primary-s", parts[1]);
-      el.style.setProperty("--primary-l", parts[2]);
+      el.style.setProperty("--primary-h", parts[0]!);
+      el.style.setProperty("--primary-s", parts[1]!);
+      el.style.setProperty("--primary-l", parts[2]!);
     }
     el.setAttribute("data-accent", "custom");
     return;
@@ -123,7 +123,7 @@ export function hexToHsl(hex: string): string {
   let r = 0, g = 0, b = 0;
   const m = hex.trim().replace("#", "");
   if (m.length === 3) {
-    r = parseInt(m[0] + m[0], 16); g = parseInt(m[1] + m[1], 16); b = parseInt(m[2] + m[2], 16);
+    r = parseInt(m[0]! + m[0]!, 16); g = parseInt(m[1]! + m[1]!, 16); b = parseInt(m[2]! + m[2]!, 16);
   } else if (m.length === 6) {
     r = parseInt(m.slice(0, 2), 16); g = parseInt(m.slice(2, 4), 16); b = parseInt(m.slice(4, 6), 16);
   }
@@ -148,9 +148,9 @@ export function hexToHsl(hex: string): string {
 export function hslToHex(hsl: string): string {
   const parts = hsl.trim().split(/\s+/);
   if (parts.length !== 3) return "#8b5cf6";
-  const h = parseFloat(parts[0]) / 360;
-  const s = parseFloat(parts[1]) / 100;
-  const l = parseFloat(parts[2]) / 100;
+  const h = parseFloat(parts[0]!) / 360;
+  const s = parseFloat(parts[1]!) / 100;
+  const l = parseFloat(parts[2]!) / 100;
   const hue2rgb = (p: number, q: number, t: number) => {
     if (t < 0) t += 1; if (t > 1) t -= 1;
     if (t < 1 / 6) return p + (q - p) * 6 * t;

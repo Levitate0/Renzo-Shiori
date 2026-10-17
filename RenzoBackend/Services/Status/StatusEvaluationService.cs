@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Models.Enums;
@@ -45,11 +45,29 @@ public class StatusEvaluationService
     /// </summary>
     private async Task EvaluateSeriesAsync(SettingsDto settings, CancellationToken token = default)
     {
+        // Hourly, so the sources are projected to the four fields the
+        // evaluation reads: including them whole parsed every chapter list in
+        // the library (~100 MB of JSON) each run.
         var seriesList = await _db.Series
-            .Include(s => s.Sources)
             .AsNoTracking()
             .ToListAsync(token)
             .ConfigureAwait(false);
+        var sourcesBySeries = (await _db.SeriesProviders
+            .AsNoTracking()
+            .Select(p => new SeriesProviderEntity
+            {
+                Id = p.Id,
+                SeriesId = p.SeriesId,
+                IsDisabled = p.IsDisabled,
+                IsUninstalled = p.IsUninstalled,
+                IsUnknown = p.IsUnknown,
+                LastKnownStatus = p.LastKnownStatus,
+            })
+            .ToListAsync(token)
+            .ConfigureAwait(false))
+            .ToLookup(p => p.SeriesId);
+        foreach (var series in seriesList)
+            series.Sources = sourcesBySeries[series.Id].ToList();
 
         foreach (var series in seriesList)
         {
@@ -200,9 +218,17 @@ public class StatusEvaluationService
     /// </summary>
     private async Task EvaluateProvidersAsync(SettingsDto settings, CancellationToken token = default)
     {
+        // Only the error fields are read; see EvaluateSeriesAsync.
         var providers = await _db.SeriesProviders
             .Where(p => !p.IsDisabled && !p.IsUninstalled && !p.IsUnknown)
             .AsNoTracking()
+            .Select(p => new SeriesProviderEntity
+            {
+                Id = p.Id,
+                SeriesId = p.SeriesId,
+                LastErrorDate = p.LastErrorDate,
+                ConsecutiveErrorCount = p.ConsecutiveErrorCount,
+            })
             .ToListAsync(token)
             .ConfigureAwait(false);
 

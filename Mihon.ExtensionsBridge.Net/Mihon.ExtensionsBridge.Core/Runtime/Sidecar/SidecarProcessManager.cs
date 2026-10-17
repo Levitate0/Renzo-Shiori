@@ -111,6 +111,25 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 
         public SidecarClient Client { get; }
 
+        /// <summary>Forced restarts since the app started, for the Engine panel.</summary>
+        public int RestartCount => Volatile.Read(ref _restartCount);
+        private int _restartCount;
+        public string? LastRestartReason { get; private set; }
+        public DateTime? LastRestartAt { get; private set; }
+        public DateTime? StartedAt { get; private set; }
+        public bool IsReady => _ready && _proc is { HasExited: false };
+
+        /// <summary>Live worker/heap state from the status listener; null when it does not answer.</summary>
+        public Task<SidecarClient.SidecarStatus?> GetStatusAsync(CancellationToken token = default) =>
+            Client.StatusAsync(StatusPort, token);
+
+        /// <summary>Live and zombie browser helper processes (see <see cref="SidecarOptions.WatchdogMaxHelperProcesses"/>).</summary>
+        public (int Live, int Zombies, int Limit) GetHelperCounts()
+        {
+            (int live, int zombies) = CountHelperProcesses();
+            return (live, zombies, _opts.WatchdogMaxHelperProcesses);
+        }
+
         public SidecarProcessManager(SidecarOptions opts, IWorkingFolderStructure folder, ILogger logger)
         {
             _opts = opts;
@@ -139,6 +158,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 await PushNetworkSettingsAsync(token).ConfigureAwait(false);
                 int generation = Interlocked.Increment(ref _generation);
                 _ready = true;
+                StartedAt = DateTime.UtcNow;
                 _logger.LogInformation("Sidecar ready on 127.0.0.1:{Port} (generation {Generation}).", _opts.Port, generation);
                 StartWatchdog();
             }
@@ -194,6 +214,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public async Task RestartAsync(string reason, CancellationToken token = default)
         {
             _logger.LogWarning("Restarting sidecar: {Reason}.", reason);
+            Interlocked.Increment(ref _restartCount);
+            LastRestartReason = reason;
+            LastRestartAt = DateTime.UtcNow;
             // Bump the generation BEFORE the kill, not only when the replacement is
             // ready. Everything holding a cached interop checks this to decide
             // whether its source ids still exist, and a restart takes several

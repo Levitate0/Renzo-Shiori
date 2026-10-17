@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Services.Jobs;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +22,10 @@ namespace RenzoBackend.Services.Background
         private readonly ILogger<JobQueueHostedService> _logger;
         private readonly JobsSettings _settings;
         private readonly ConcurrentDictionary<JobQueues, ConcurrentDictionary<string, byte>> _runningJobs = new();
+
+        /// <summary>Slots this process currently holds in a queue (the Engine panel's "in use").</summary>
+        public int HeldSlots(JobQueues queue) =>
+            _runningJobs.TryGetValue(queue, out var running) ? running.Count : 0;
         private readonly object _slotLock = new object();
         private readonly ConcurrentBag<Task> _inFlightJobTasks = new();
         // Rotates which GroupKey gets first pick of a queue's limited slots each tick.

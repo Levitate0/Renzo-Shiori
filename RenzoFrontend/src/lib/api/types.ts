@@ -908,9 +908,48 @@ export enum ScrobblerProvider {
   MangaDex = 4,
 }
 
+/** GET /api/system/health (SystemHealthController, owner only). */
+export interface SystemHealth {
+  engine: {
+    running: boolean;
+    responding: boolean;
+    busyWorkers?: number | null;
+    workers?: number | null;
+    lastCompletedSecondsAgo?: number | null;
+    heapUsedMb?: number | null;
+    heapMaxMb?: number | null;
+    browserHelpers: number;
+    browserHelperLimit: number;
+    zombieHelpers: number;
+    startedAt?: string | null;
+    restartsSinceAppStart: number;
+    lastRestartAt?: string | null;
+    lastRestartReason?: string | null;
+  } | null;
+  downloads: {
+    slotsInUse: number;
+    maxSlots: number;
+    perSource: number;
+    waitingDue: number;
+    waitingLater: number;
+    running: number;
+    failed: number;
+    retries: number;
+    retryEveryMinutes: number;
+    autoDownloadNewChapters: boolean;
+  };
+  background: { slotsInUse: number; maxSlots: number };
+}
+
 export interface ScrobblerConfig {
   provider: ScrobblerProvider;
   displayName: string;
+  icon?: string;
+  link?: string;
+  linkDescription?: string;
+  supportsDirectAuth?: boolean;
+  seriesUrlTemplate?: string;
+  imageTemplateUrl?: string;
   isEnabled: boolean;
   isConnected: boolean;
   autoSync: boolean;
@@ -934,12 +973,29 @@ export interface ScrobblerSearchResult {
 export interface SeriesMatchStatus {
   seriesId: string;
   seriesTitle: string;
+  seriesCoverUrl?: string;
+  alternativeTitles?: string;
   provider: ScrobblerProvider;
   mappingStatus: SeriesMappingStatus;
   externalSeriesId?: string;
   externalSeriesTitle?: string;
   externalCoverUrl?: string;
+  externalSeriesUrl?: string;
   matchScore?: number;
+}
+
+/** POST /api/scrobbler/config/kitsu/direct (KitsuDirectAuthDto). */
+export interface KitsuDirectAuthRequest {
+  email: string;
+  password: string;
+}
+
+/** POST /api/scrobbler/config/mangadex/direct (MangaDexDirectAuthDto). */
+export interface MangaDexDirectAuthRequest {
+  username: string;
+  password: string;
+  clientId: string;
+  clientSecret: string;
 }
 
 export enum SeriesMappingStatus {

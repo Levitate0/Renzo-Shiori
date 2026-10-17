@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.Jobs.Models;
 using RenzoBackend.Services.Settings;
@@ -55,8 +55,11 @@ namespace RenzoBackend.Services.Daily
         {
             try
             {
+                // Untracked, attaching only the sources it changes: tracking
+                // every source snapshotted every chapter list in the library to
+                // write a handful of them.
                 List<Models.Database.SeriesProviderEntity> providers =
-                    await _db.SeriesProviders.ToListAsync(token).ConfigureAwait(false);
+                    await _db.SeriesProviders.AsNoTracking().ToListAsync(token).ConfigureAwait(false);
 
                 int requeued = 0;
                 foreach (Models.Database.SeriesProviderEntity provider in providers)
@@ -76,7 +79,10 @@ namespace RenzoBackend.Services.Daily
                         requeued++;
                     }
                     if (touched)
+                    {
+                        _db.SeriesProviders.Attach(provider);
                         _db.Touch(provider, x => x.Chapters);
+                    }
                 }
 
                 if (requeued > 0)

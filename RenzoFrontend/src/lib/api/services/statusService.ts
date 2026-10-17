@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api/client';
-import type { SeriesHealth, ProviderHealth, StatusSummary, ClearAlertRequest } from '@/lib/api/types';
+import type { SeriesHealth, ProviderHealth, StatusSummary, ClearAlertRequest, SystemHealth } from '@/lib/api/types';
 
 export const statusService = {
   /** Each user's health alerts are isolated to their own library; viewAll (Owner-level only) shows every user's. */
@@ -13,6 +13,11 @@ export const statusService = {
 
   async getStatusSummary(viewAll = false): Promise<StatusSummary> {
     return apiClient.get<StatusSummary>(`/api/status/summary${viewAll ? '?viewAll=true' : ''}`);
+  },
+
+  /** Engine + queue state (owner only). */
+  async getSystemHealth(): Promise<SystemHealth> {
+    return apiClient.get<SystemHealth>('/api/system/health');
   },
 
   async clearAlert(request: ClearAlertRequest): Promise<void> {

@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { Activity, AlertTriangle, Radio } from 'lucide-react';
-import { useSeriesStatus, useProviderStatus, useClearAlert } from '@/lib/api/hooks/useStatus';
+import { useSeriesStatus, useProviderStatus, useClearAlert, useSystemHealth } from '@/lib/api/hooks/useStatus';
+import { EnginePanel } from '@/components/comp/status/engine-panel';
 import { ProviderStatusPanel } from '@/components/comp/status/provider-status-panel';
 import { SeriesStatusPanel } from '@/components/comp/status/series-status-panel';
 import { RibbonSlot } from '@/components/comp/layout/ribbon';
@@ -120,6 +121,7 @@ export default function StatusPage() {
   const { data: series, isLoading: seriesLoading } = useSeriesStatus(effectiveViewAll);
   const { data: providers, isLoading: providersLoading } = useProviderStatus(effectiveViewAll);
   const { mutate: clearAlert } = useClearAlert();
+  const { data: health } = useSystemHealth(canOwner);
 
   const handleClearAlert = (targetType: number, targetId: string) => {
     clearAlert({ targetType, targetId });
@@ -156,6 +158,10 @@ export default function StatusPage() {
           )}
         </div>
       </RibbonSlot>
+
+      {/* Engine + download queue (owner only): the live state behind
+          "why isn't anything downloading?" */}
+      {canOwner && health && <EnginePanel health={health} />}
 
       {/* Summary tiles */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -141,7 +141,7 @@ async function pruneOrphanSeries(m: OfflineManifest, nat: NativePrimitives): Pro
   const withChapters = new Set(Object.values(m.chapters).map((c) => c.seriesId));
   for (const sid of Object.keys(m.series)) {
     if (!withChapters.has(sid)) {
-      const cp = m.series[sid].coverPath;
+      const cp = m.series[sid]?.coverPath;
       if (cp) await nat.deletePath(cp).catch(() => {});
       delete m.series[sid];
     }
@@ -169,7 +169,7 @@ export async function saveChapterOffline(
   const total = input.pageUrls.length;
 
   for (let i = 0; i < total; i++) {
-    const res = await fetch(input.pageUrls[i]);
+    const res = await fetch(input.pageUrls[i]!);
     if (!res.ok) throw new Error(`Page ${i + 1}/${total} failed (HTTP ${res.status})`);
     const buf = await res.arrayBuffer();
     const rel = `${dir}/${String(i).padStart(4, "0")}.${extFromContentType(res.headers.get("content-type"))}`;
@@ -222,7 +222,7 @@ export async function saveSeriesOffline(
   requireNative();
   let saved = 0;
   for (let i = 0; i < chapters.length; i++) {
-    const ch = chapters[i];
+    const ch = chapters[i]!;
     if (await isChapterOffline(ch.chapterKey)) continue;
     await saveChapterOffline(
       {

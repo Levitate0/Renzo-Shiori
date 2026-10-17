@@ -11,7 +11,8 @@ const config = {
   skipTrailingSlashRedirect: true,
   distDir: 'out',
   typescript: {
-    ignoreBuildErrors: true,
+    // The tree type-checks clean (fixed 2026-10-16); keep it that way.
+    ignoreBuildErrors: false,
   },
   // Move serverComponentsExternalPackages to root level as per Next.js 15
   serverExternalPackages: [],

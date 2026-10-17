@@ -37,7 +37,7 @@ const DEFAULT_CUSTOM = "265 83% 58%";
 const BASE_PRESETS = new Set(["renzo"]);
 
 export function presetById(id: string): ThemePreset {
-  return THEME_PRESETS.find((t) => t.id === id) ?? THEME_PRESETS[0];
+  return THEME_PRESETS.find((t) => t.id === id) ?? THEME_PRESETS[0]!;
 }
 
 export function getPreset(): string {
@@ -63,9 +63,9 @@ export function applyThemeDom(preset: string, customOn: boolean, customHsl: stri
   if (customOn) {
     const parts = customHsl.trim().split(/\s+/);
     if (parts.length === 3) {
-      el.style.setProperty("--primary-h", parts[0]);
-      el.style.setProperty("--primary-s", parts[1]);
-      el.style.setProperty("--primary-l", parts[2]);
+      el.style.setProperty("--primary-h", parts[0]!);
+      el.style.setProperty("--primary-s", parts[1]!);
+      el.style.setProperty("--primary-l", parts[2]!);
     }
     el.setAttribute("data-accent", "custom");
   } else {
@@ -128,16 +128,16 @@ export function useTheme(): ThemeState {
   const snap = React.useSyncExternalStore(subscribe, snapshot, () => `${DEFAULT_PRESET}|0|${DEFAULT_CUSTOM}`);
   return React.useMemo(() => {
     const [preset, custom, hsl] = snap.split("|");
-    return { preset, customOn: custom === "1", customHsl: hsl };
+    return { preset: preset ?? DEFAULT_PRESET, customOn: custom === "1", customHsl: hsl ?? DEFAULT_CUSTOM };
   }, [snap]);
 }
 
 // hex <-> "H S% L%" helpers for the color input.
 export function hslStrToHex(hsl: string): string {
   const [h, s, l] = hsl.trim().split(/\s+/);
-  const H = parseFloat(h) / 360;
-  const S = parseFloat(s) / 100;
-  const L = parseFloat(l) / 100;
+  const H = parseFloat(h ?? "0") / 360;
+  const S = parseFloat(s ?? "0") / 100;
+  const L = parseFloat(l ?? "0") / 100;
   const k = (n: number) => (n + H * 12) % 12;
   const a = S * Math.min(L, 1 - L);
   const f = (n: number) => L - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));

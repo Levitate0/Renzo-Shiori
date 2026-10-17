@@ -189,7 +189,7 @@ export function useOfflineDownload(): {
         return;
       }
       setBatch({ active: true, done: 0, total: chapters.length });
-      enqueueNative({ baseUrl: serverBaseUrl(), token, series: seriesMetaOf(targets[0]), chapters });
+      enqueueNative({ baseUrl: serverBaseUrl(), token, series: seriesMetaOf(targets[0]!), chapters });
       toast({ title: "Saving series offline", description: `${chapters.length} chapters — downloading in the background.` });
     },
     [toast],

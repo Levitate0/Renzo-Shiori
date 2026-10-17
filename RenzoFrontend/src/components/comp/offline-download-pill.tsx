@@ -14,7 +14,7 @@ export function OfflineDownloadPill(): React.ReactElement | null {
   const entries = Object.entries(status.series).filter(([, s]) => s.total > 0);
   if (!status.active || entries.length === 0) return null;
 
-  const [, current] = entries[0];
+  const [, current] = entries[0]!;
   const pct = current.total ? Math.min(100, Math.round((current.done / current.total) * 100)) : 0;
   const more = entries.length - 1;
 

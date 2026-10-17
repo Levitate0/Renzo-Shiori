@@ -450,28 +450,38 @@ class KcefWebViewProvider(
          * day, killing every in-flight read and download with it.
          */
         private const val LIVE_SWEEP_THRESHOLD = 12
-        private const val LIVE_SWEEP_MIN_AGE_MS = 2 * 60 * 1000L
-
+        
         /**
-         * With WebViews live, a renderer that STARTED before the oldest live
-         * WebView was created cannot have been spawned for any of them, so it is
-         * a leftover. Chromium can hand an old renderer to a new page when it is
-         * over its process limit, so this can occasionally take one in use; that
-         * fails one page load, which the caller retries — far cheaper than the
-         * watchdog's whole-JVM recycle this exists to prevent. Hence it only runs
-         * past [LIVE_SWEEP_THRESHOLD].
+         * With WebViews live, attribution is impossible (every renderer is a
+         * child of this JVM, and Chromium forks them asynchronously), so this
+         * goes by age instead: past [LIVE_SWEEP_THRESHOLD], renderers older
+         * than the idle TTL are force-exited, always sparing the youngest few.
+         *
+         * Measured 2026-10-16: 31 WebViews in 33 minutes (mostly one source
+         * navigating every ~90 s), each leaving a ~225 MB renderer that never
+         * exited, plus two from startup at 700-860 MB still spinning. An
+         * earlier version spared everything younger than the oldest LIVE
+         * WebView, which never fired: one WebView lives, in use, as long as
+         * the JVM does.
+         *
+         * A renderer still serving a page loses it; the page load fails and
+         * the caller retries, and the next navigation forks a fresh renderer.
+         * That is far cheaper than the whole-JVM recycle this prevents.
          */
         private fun sweepRenderersOlderThanLiveViews() {
             val renderers = helperPids(renderersOnly = true)
             if (renderers.size <= LIVE_SWEEP_THRESHOLD) return
-            val oldestLive = liveProviders.keys.minOfOrNull { it.createdAt } ?: return
             val now = System.currentTimeMillis()
-            val stale = renderers.filter { pid ->
-                val started = processStartMillis(pid) ?: return@filter false
-                started < oldestLive - 10_000 && now - started > LIVE_SWEEP_MIN_AGE_MS
-            }
+            val byAge = renderers
+                .mapNotNull { pid -> processStartMillis(pid)?.let { pid to it } }
+                .sortedByDescending { it.second } // youngest first
+            val keep = maxOf(MAX_LIVE * 2, 4)
+            val stale = byAge.drop(keep)
+                .filter { (_, started) -> now - started > IDLE_TTL_MS }
+                .map { it.first }
             if (stale.isEmpty()) return
-            Log.w(TAG, "${renderers.size} renderers with ${liveProviders.size} live WebView(s); force-exiting ${stale.size} that predate every live one")
+            val oldestLiveAgeS = liveProviders.keys.minOfOrNull { it.createdAt }?.let { (now - it) / 1000 }
+            Log.w(TAG, "${renderers.size} renderers with ${liveProviders.size} live WebView(s) (oldest ${oldestLiveAgeS}s); force-exiting ${stale.size} older than ${IDLE_TTL_MS / 60000} min")
             killHelpers(stale)
         }
 

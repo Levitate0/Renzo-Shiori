@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Extensions;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
@@ -456,6 +456,22 @@ public class ReaderPreviewService
 
     private async Task<List<SeriesProviderEntity>> GetCapableProvidersAsync(Guid seriesId, decimal chapterNumber, CancellationToken token)
     {
+        // Every streamed page image resolves its source through here, and the
+        // query loads the series with every source's whole chapter list: a
+        // 100-page chapter was 100 such loads. A minute of reuse covers a
+        // chapter being read; the source handles themselves are still looked
+        // up per call, so a sidecar restart cannot strand a cached one.
+        string key = $"lib:capable:{seriesId}:{chapterNumber}";
+        if (_cache.TryGetValue(key, out List<SeriesProviderEntity>? hit) && hit != null)
+            return hit;
+        List<SeriesProviderEntity> found = await LoadCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
+        if (found.Count > 0)
+            _cache.Set(key, found, TimeSpan.FromSeconds(60));
+        return found;
+    }
+
+    private async Task<List<SeriesProviderEntity>> LoadCapableProvidersAsync(Guid seriesId, decimal chapterNumber, CancellationToken token)
+    {
         SeriesEntity? series = await _db.Series.Include(s => s.Sources).AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
         if (series == null)
@@ -746,6 +762,8 @@ public class ReaderPreviewService
             if (_cache.TryGetValue($"lib:win:{seriesId}:{chapterNumber}", out Guid sw))
                 staleWinner = sw;
             _cache.Remove(key);
+            // A refresh is "look again": the sources' chapter lists may have changed.
+            _cache.Remove($"lib:capable:{seriesId}:{chapterNumber}");
         }
         else
         {
