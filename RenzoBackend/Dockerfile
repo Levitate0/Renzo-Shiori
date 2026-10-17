@@ -28,7 +28,12 @@ ENV RENZO_SIDECAR_JAVA=java \
     RENZO_SIDECAR_JAR=/app/sidecar/AndroidCompat-1.0-all.jar \
     RENZO_ENJARIFY_DIR=/app/sidecar/enjarify \
     RENZO_SIDECAR_LDPATH=/usr/lib/jvm/java-21-openjdk-amd64/lib \
-    RENZO_SIDECAR_THREADS=32
+    RENZO_SIDECAR_THREADS=48
+# 48, raised from 32 on 2026-10-17 with downloads at 8 chapters x 3 pages in
+# parallel: that alone is 24 source calls, plus up to 10 background jobs, plus
+# the reader — 32 was measured at 27-31 busy, so a reader opening a chapter
+# queued behind downloads. Each worker is one JVM thread (a pid, see the pids
+# budget below), so this is cheap next to a browser's ~31.
 
 # ── Memory budget ────────────────────────────────────────────────────────────
 # Three things share the container and only one of them is the app. Measured on

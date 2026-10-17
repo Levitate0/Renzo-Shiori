@@ -284,6 +284,16 @@ namespace RenzoBackend.Services.Downloads
                         return await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
                 }
 
+                // The source wants a person to solve a captcha in its WebView
+                // (AllManga, Comix). Retrying cannot help until someone does, so
+                // the chapter goes to the next source now instead of spending
+                // seven attempts here first. With no other source it keeps its
+                // normal retry schedule, so it still arrives once the captcha is
+                // solved.
+                if (pages == null && pageFailure?.Message.Contains("captcha", StringComparison.OrdinalIgnoreCase) == true &&
+                    await TryStepDownToNextSourceAsync(ch, token).ConfigureAwait(false))
+                    return JobResult.Handled;
+
                 if (pages==null)
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
                 ch.Pages = pages;
