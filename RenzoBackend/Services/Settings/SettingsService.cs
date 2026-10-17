@@ -212,7 +212,11 @@ namespace RenzoBackend.Services.Settings
             {
                 var settings = scope.ServiceProvider.GetRequiredService<JobsSettings>();
                 settings.SetQueueSettings(JobQueues.Downloads, set.NumberOfSimultaneousDownloads, 20, set.NumberOfSimultaneousDownloadsPerProvider, set.ChapterDownloadFailRetryTime);
-                settings.SetQueueSettings(JobQueues.Default, 10, set.ChapterDownloadFailRetries, 10, set.ChapterDownloadFailRetryTime);
+                // The Default queue runs scans, metadata and extension jobs, not
+                // downloads — so it must not inherit the chapter-download retry
+                // policy (288 x 30 min would retry a failing catalogue scan for
+                // six days). It keeps the code default: 8 retries, 5 minutes apart.
+                settings.SetQueueSettings(JobQueues.Default, 10, 8, 10);
             }
         }
 
@@ -246,7 +250,8 @@ namespace RenzoBackend.Services.Settings
                 SetThreadSettings(set);
             }
             if (set.PerTitleUpdateSchedule != _settings?.PerTitleUpdateSchedule ||
-                set.PerSourceUpdateSchedule != _settings?.PerSourceUpdateSchedule || set.ExtensionsCheckForUpdateSchedule!=_settings?.ExtensionsCheckForUpdateSchedule)
+                set.PerSourceUpdateSchedule != _settings?.PerSourceUpdateSchedule || set.ExtensionsCheckForUpdateSchedule!=_settings?.ExtensionsCheckForUpdateSchedule ||
+                set.LibraryScanIntervalHours != _settings?.LibraryScanIntervalHours)
             {
                 await SetTimesSettingsAsync(set, token).ConfigureAwait(false);
             }

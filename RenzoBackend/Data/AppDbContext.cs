@@ -1,4 +1,4 @@
-using RenzoBackend.Models;
+﻿using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -494,6 +494,74 @@ namespace RenzoBackend.Data
                 entity.HasIndex(p => new { p.UserId, p.PkgName, p.PreferenceIndex }).IsUnique()
                     .HasDatabaseName("IX_UserProviderPreference_User_Pkg_Index");
             });
+        }
+
+        /// <summary>
+        /// Change counters for the library-wide read paths (see
+        /// <see cref="Services.Series.LibrarySnapshotCache"/>). A save that
+        /// touches a series or one of its sources (chapter list included) bumps
+        /// that series; a save that touches a setting bumps everything, since
+        /// settings shape the derived data (categories come from the folder
+        /// settings).
+        /// </summary>
+        public static long LibraryVersion => Interlocked.Read(ref _libraryVersion);
+        private static long _libraryVersion;
+        private static long _seriesCounter;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, long> SeriesVersions = new();
+
+        public static long SeriesVersion(Guid seriesId) => SeriesVersions.TryGetValue(seriesId, out long v) ? v : 0;
+
+        /// <summary>For writes that bypass the change tracker (raw SQL, ExecuteUpdate).</summary>
+        public static void BumpLibraryVersion() => Interlocked.Increment(ref _libraryVersion);
+
+        public static void BumpSeries(Guid seriesId) =>
+            SeriesVersions[seriesId] = Interlocked.Increment(ref _seriesCounter);
+
+        private (HashSet<Guid> Series, bool Global) PendingLibraryChanges()
+        {
+            var series = new HashSet<Guid>();
+            bool global = false;
+            foreach (var e in ChangeTracker.Entries())
+            {
+                if (e.State is not (EntityState.Added or EntityState.Modified or EntityState.Deleted))
+                    continue;
+                switch (e.Entity)
+                {
+                    case SeriesEntity s: series.Add(s.Id); break;
+                    case SeriesProviderEntity p:
+                        series.Add(p.SeriesId);
+                        // A source re-parented onto another series changes both.
+                        if (e.State == EntityState.Modified && e.OriginalValues[nameof(SeriesProviderEntity.SeriesId)] is Guid was)
+                            series.Add(was);
+                        break;
+                    case SettingEntity: global = true; break;
+                }
+            }
+            return (series, global);
+        }
+
+        private static void ApplyLibraryChanges((HashSet<Guid> Series, bool Global) changes)
+        {
+            foreach (Guid id in changes.Series)
+                BumpSeries(id);
+            if (changes.Global)
+                BumpLibraryVersion();
+        }
+
+        public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        {
+            var changes = PendingLibraryChanges();
+            int n = base.SaveChanges(acceptAllChangesOnSuccess);
+            ApplyLibraryChanges(changes);
+            return n;
+        }
+
+        public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+        {
+            var changes = PendingLibraryChanges();
+            int n = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken).ConfigureAwait(false);
+            ApplyLibraryChanges(changes);
+            return n;
         }
     }
 }

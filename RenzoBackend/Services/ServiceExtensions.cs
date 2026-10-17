@@ -1,4 +1,4 @@
-using RenzoBackend.Extensions;
+﻿using RenzoBackend.Extensions;
 using RenzoBackend.Migration;
 using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.Auth;
@@ -49,6 +49,7 @@ namespace RenzoBackend.Services
         public static IServiceCollection AddSeriesServices(this IServiceCollection services)
         {
             // Specialized series services
+            services.TryAddSingleton<LibrarySnapshotCache>();
             services.TryAddScoped<SeriesQueryService>();
             services.TryAddScoped<SeriesCommandService>();
             services.TryAddScoped<SeriesProviderService>();

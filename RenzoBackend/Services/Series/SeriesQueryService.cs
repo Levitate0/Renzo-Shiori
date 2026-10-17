@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Extensions;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
@@ -30,10 +30,13 @@ namespace RenzoBackend.Services.Series
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ReadStateService _readState;
         private readonly ILogger<SeriesQueryService> _logger;
+        private readonly LibrarySnapshotCache _snapshots;
 
         public SeriesQueryService(AppDbContext db, SettingsService settings, ProviderCacheService providerCache,
-            IMemoryCache memoryCache, IServiceScopeFactory scopeFactory, ReadStateService readState, ILogger<SeriesQueryService> logger)
+            IMemoryCache memoryCache, IServiceScopeFactory scopeFactory, ReadStateService readState, ILogger<SeriesQueryService> logger,
+            LibrarySnapshotCache snapshots)
         {
+            _snapshots = snapshots;
             _db = db;
             _settings = settings;
             _providerCache = providerCache;
@@ -124,11 +127,31 @@ namespace RenzoBackend.Services.Series
         /// <param name="allowAll">True for an Owner-level requester viewing every library (requester's own series still list first isn't guaranteed; callers wanting a specific user's library should pass that user's id as requesterId instead).</param>
         public async Task<List<SeriesInfoDto>> GetLibraryAsync(Guid requesterId, bool allowAll, CancellationToken token = default)
         {
-            IQueryable<Models.Database.SeriesEntity> query = _db.Series.Include(s => s.Sources).AsNoTracking();
-            if (!allowAll)
-                query = query.Where(s => s.OwnerId == requesterId || s.OwnerId == Guid.Empty);
-            List<Models.Database.SeriesEntity> series = await query.ToListAsync(token);
-            return series.Select(a => a.ToSeriesInfo(_settings.DirectSettings)).ToList();
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            List<LibrarySnapshotCache.Snapshot> snaps = await _snapshots.GetAsync(_db, settings, requesterId, allowAll, token).ConfigureAwait(false);
+            // Deserialized per request: the controller rewrites thumbnail URLs on
+            // what it returns, so nothing handed out may be shared.
+            return snaps.Select(sn => JsonSerializer.Deserialize<SeriesInfoDto>(sn.InfoJson)!).ToList();
+        }
+
+        /// <summary>
+        /// Every chapter of the library flattened to Updates-feed rows, newest
+        /// first. The rows are templates: callers copy the ones they return.
+        /// </summary>
+        private async Task<(List<UpdateFeedItemDto> Items, Dictionary<Guid, string> StorageById)> GetUpdateRowsAsync(Guid requesterId, bool allowAll, CancellationToken token)
+        {
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            List<LibrarySnapshotCache.Snapshot> snaps = await _snapshots.GetAsync(_db, settings, requesterId, allowAll, token).ConfigureAwait(false);
+            // Stable sort: equal timestamps keep their order, so paging never
+            // shows a row twice.
+            List<UpdateFeedItemDto> items = snaps
+                .SelectMany(sn => sn.UpdateRows)
+                .OrderByDescending(i => i.Timestamp)
+                .ToList();
+            Dictionary<Guid, string> storageById = snaps
+                .Where(sn => !string.IsNullOrWhiteSpace(sn.StoragePath))
+                .ToDictionary(sn => sn.Id, sn => sn.StoragePath!);
+            return (items, storageById);
         }
 
         /// <summary>
@@ -148,71 +171,25 @@ namespace RenzoBackend.Services.Series
         /// <param name="token">Cancellation token</param>
         public async Task<List<UpdateFeedItemDto>> GetUpdatesFeedAsync(int start, int count, Guid requesterId, bool allowAll, CancellationToken token = default)
         {
-            IQueryable<Models.Database.SeriesEntity> seriesQuery = _db.Series.Include(s => s.Sources).AsNoTracking();
-            if (!allowAll)
-                seriesQuery = seriesQuery.Where(s => s.OwnerId == requesterId || s.OwnerId == Guid.Empty);
-            List<Models.Database.SeriesEntity> series = await seriesQuery.ToListAsync(token).ConfigureAwait(false);
+            (List<UpdateFeedItemDto> rows, Dictionary<Guid, string> storageById) =
+                await GetUpdateRowsAsync(requesterId, allowAll, token).ConfigureAwait(false);
 
-            // Cap per-series so a huge back-catalogue can't dominate the merge; the
-            // global feed only surfaces the most recent releases anyway.
-            const int perSeriesCap = 300;
-
-            // Suwayomi-style "found" time: when the update scan first discovered a
-            // chapter (DateFetched). Chapters recorded before that was tracked fall
-            // back to a stable historical date (real publish date, else download
-            // date) so they sort sensibly instead of flooding the top.
-            static DateTime? FoundTime(Models.Chapter c) =>
-                c.DateFetched
-                ?? (Extensions.ModelExtensions.HasRealUploadDate(c.ProviderUploadDate) ? c.ProviderUploadDate : null)
-                ?? c.DownloadDate;
-
-            List<UpdateFeedItemDto> items = new();
-            foreach (Models.Database.SeriesEntity s in series)
-            {
-                // One entry per chapter number. When several sources carry the same
-                // chapter, use the EARLIEST time it was found on any of them, so
-                // adding a new source doesn't resurface a whole back-catalogue.
-                var chapterEvents = s.Sources
-                    .SelectMany(p => p.Chapters, (p, c) => (Provider: p, Chapter: c, Found: FoundTime(c)))
-                    .Where(x => !x.Chapter.IsDeleted && x.Chapter.Number != null && x.Found != null)
-                    .GroupBy(x => x.Chapter.Number)
-                    .Select(g => g.OrderBy(x => x.Found).First()) // earliest-found row for this chapter
-                    .OrderByDescending(x => x.Found)
-                    .Take(perSeriesCap)
-                    .ToList();
-
-                foreach ((SeriesProviderEntity p, Models.Chapter c, DateTime? found) in chapterEvents)
-                {
-                    items.Add(new UpdateFeedItemDto
-                    {
-                        SeriesId = s.Id,
-                        SeriesTitle = s.Title,
-                        ThumbnailUrl = s.ThumbnailUrl,
-                        Kind = UpdateFeedItemDto.KindNewChapter,
-                        ChapterNumber = c.Number,
-                        ChapterName = c.Name,
-                        Provider = p.Provider,
-                        Timestamp = found!.Value
-                    });
-                }
-
-                if (s.DateAdded != null)
-                {
-                    items.Add(new UpdateFeedItemDto
-                    {
-                        SeriesId = s.Id,
-                        SeriesTitle = s.Title,
-                        ThumbnailUrl = s.ThumbnailUrl,
-                        Kind = UpdateFeedItemDto.KindSeriesAdded,
-                        Timestamp = s.DateAdded.Value
-                    });
-                }
-            }
-
-            List<UpdateFeedItemDto> page = items
-                .OrderByDescending(i => i.Timestamp)
-                .Skip(start)
+            // Copies: the cached rows are shared, and both the read flag below and
+            // the controller's thumbnail rewrite mutate what is returned.
+            List<UpdateFeedItemDto> page = rows
+                .Skip(Math.Max(0, start))
                 .Take(count)
+                .Select(r => new UpdateFeedItemDto
+                {
+                    SeriesId = r.SeriesId,
+                    SeriesTitle = r.SeriesTitle,
+                    ThumbnailUrl = r.ThumbnailUrl,
+                    Kind = r.Kind,
+                    ChapterNumber = r.ChapterNumber,
+                    ChapterName = r.ChapterName,
+                    Provider = r.Provider,
+                    Timestamp = r.Timestamp,
+                })
                 .ToList();
 
             // Flag chapters the requester has already finished so the UI can grey
@@ -227,9 +204,6 @@ namespace RenzoBackend.Services.Series
                     .FirstOrDefaultAsync(token).ConfigureAwait(false);
                 if (!string.IsNullOrEmpty(username))
                 {
-                    Dictionary<Guid, string> storageById = series
-                        .Where(s => !string.IsNullOrWhiteSpace(s.StoragePath))
-                        .ToDictionary(s => s.Id, s => s.StoragePath);
                     Dictionary<Guid, HashSet<decimal>> completedBySeries = new();
                     foreach (UpdateFeedItemDto item in page)
                     {
@@ -293,14 +267,12 @@ namespace RenzoBackend.Services.Series
             if (string.IsNullOrEmpty(username))
                 return [];
 
-            IQueryable<Models.Database.SeriesEntity> seriesQuery = _db.Series.Include(s => s.Sources).AsNoTracking();
-            if (!allowAll)
-                seriesQuery = seriesQuery.Where(s => s.OwnerId == requesterId || s.OwnerId == Guid.Empty);
-            List<Models.Database.SeriesEntity> series = await seriesQuery.ToListAsync(token).ConfigureAwait(false);
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            List<LibrarySnapshotCache.Snapshot> series = await _snapshots.GetAsync(_db, settings, requesterId, allowAll, token).ConfigureAwait(false);
 
             // Flat list of "you read this chapter then" events.
-            var events = new List<(Models.Database.SeriesEntity Series, HistoryChapterDto Chapter)>();
-            foreach (Models.Database.SeriesEntity s in series)
+            var events = new List<(LibrarySnapshotCache.Snapshot Series, HistoryChapterDto Chapter)>();
+            foreach (LibrarySnapshotCache.Snapshot s in series)
             {
                 if (string.IsNullOrWhiteSpace(s.StoragePath))
                     continue;
@@ -316,26 +288,18 @@ namespace RenzoBackend.Services.Series
                 if (states.Count == 0)
                     continue;
 
-                // Chapter names live on the series, not on read state. Built once
-                // per series rather than per event.
-                Dictionary<decimal, Models.Chapter> byNumber = s.Sources
-                    .SelectMany(p => p.Chapters)
-                    .Where(c => !c.IsDeleted && c.Number != null)
-                    .GroupBy(c => c.Number!.Value)
-                    .ToDictionary(g => g.Key, g => g.First());
-
                 foreach (Models.ReadState.ChapterReadState st in states)
                 {
                     // A state row exists as soon as a chapter is touched; only the
                     // ones with a real timestamp are history.
                     if (st.LastReadAt == default || st.LastReadAt.Year <= 1971)
                         continue;
-                    byNumber.TryGetValue(st.ChapterNumber, out Models.Chapter? ch);
+                    bool known = s.Chapters.TryGetValue(st.ChapterNumber, out var ch);
                     events.Add((s, new HistoryChapterDto
                     {
                         ChapterNumber = st.ChapterNumber,
-                        ChapterName = ch?.Name,
-                        Filename = st.LastReadFilename ?? ch?.Filename,
+                        ChapterName = known ? ch.Name : null,
+                        Filename = st.LastReadFilename ?? (known ? ch.Filename : null),
                         ReadAt = st.LastReadAt,
                         Progress = st.Progress,
                         Completed = st.IsCompleted,
@@ -352,7 +316,7 @@ namespace RenzoBackend.Services.Series
             int i = 0;
             while (i < events.Count && entries.Count < start + count + HistoryMaxEntries)
             {
-                Models.Database.SeriesEntity s = events[i].Series;
+                LibrarySnapshotCache.Snapshot s = events[i].Series;
                 int j = i + 1;
                 while (j < events.Count && events[j].Series.Id == s.Id)
                     j++;

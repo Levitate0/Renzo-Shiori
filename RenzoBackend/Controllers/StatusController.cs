@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Models.Enums;
@@ -128,13 +128,19 @@ public class StatusController : ControllerBase
             // Get all series that use these providers — scoped to the requester's
             // own library first, so provider alerts on another user's series never
             // surface here.
-            var seriesLookupQuery = _db.Series.Include(s => s.Sources).AsNoTracking();
+            // Ids only — loading the series with their sources pulled every
+            // chapter list in the library just to read the source ids.
+            var seriesLookupQuery = _db.Series.AsNoTracking();
             if (!allowAll)
                 seriesLookupQuery = seriesLookupQuery.Where(s => s.OwnerId == CurrentUserId || s.OwnerId == Guid.Empty);
             var seriesLookup = await seriesLookupQuery
                 .ToListAsync(token)
                 .ConfigureAwait(false);
-            var visibleProviderIds = new HashSet<Guid>(seriesLookup.SelectMany(s => s.Sources.Select(sp => sp.Id)));
+            var visibleSeriesIds = seriesLookup.Select(s => s.Id).ToList();
+            var visibleProviderIds = new HashSet<Guid>(await _db.SeriesProviders
+                .Where(sp => visibleSeriesIds.Contains(sp.SeriesId))
+                .Select(sp => sp.Id)
+                .ToListAsync(token).ConfigureAwait(false));
 
             var providers = await _db.SeriesProviders
                 .Where(p => providerIds.Contains(p.Id) && visibleProviderIds.Contains(p.Id))
@@ -226,11 +232,17 @@ public class StatusController : ControllerBase
 
             if (!allowAll)
             {
-                var seriesQuery = _db.Series.Include(s => s.Sources).AsNoTracking()
-                    .Where(s => s.OwnerId == CurrentUserId || s.OwnerId == Guid.Empty);
-                var ownedSeries = await seriesQuery.ToListAsync(token).ConfigureAwait(false);
-                var ownedSeriesIds = new HashSet<Guid>(ownedSeries.Select(s => s.Id));
-                var ownedProviderIds = new HashSet<Guid>(ownedSeries.SelectMany(s => s.Sources.Select(sp => sp.Id)));
+                // Ids only, for the same reason as the provider listing above:
+                // this is the nav badge, and it used to parse every chapter list.
+                Guid me = CurrentUserId;
+                var ownedSeriesIds = new HashSet<Guid>(await _db.Series.AsNoTracking()
+                    .Where(s => s.OwnerId == me || s.OwnerId == Guid.Empty)
+                    .Select(s => s.Id)
+                    .ToListAsync(token).ConfigureAwait(false));
+                var ownedProviderIds = new HashSet<Guid>(await _db.SeriesProviders.AsNoTracking()
+                    .Where(sp => _db.Series.Any(s => s.Id == sp.SeriesId && (s.OwnerId == me || s.OwnerId == Guid.Empty)))
+                    .Select(sp => sp.Id)
+                    .ToListAsync(token).ConfigureAwait(false));
                 activeAlerts = activeAlerts.Where(h =>
                     (h.TargetType == HealthStatusTargetType.Series && ownedSeriesIds.Contains(h.TargetId)) ||
                     (h.TargetType == HealthStatusTargetType.Provider && ownedProviderIds.Contains(h.TargetId))

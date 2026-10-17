@@ -650,6 +650,13 @@ public class AuthController : ControllerBase
         if (!success)
             return BadRequest(new { error = "Current password is incorrect" });
 
+        // Sign out every OTHER remembered device: changing a password is what
+        // a user does when they think someone else has it. This device stays.
+        int revoked = await _refreshSessions
+            .RevokeAllAsync(user.Id, Request.Cookies["refresh_token"], token).ConfigureAwait(false);
+        if (revoked > 0)
+            _logger.LogInformation("Password change for '{Username}' signed out {Count} other device(s).", user.Username, revoked);
+
         return Ok(new { success = true });
     }
 
@@ -741,6 +748,9 @@ public class AuthController : ControllerBase
         user.RefreshTokenHash = null;
         user.RefreshTokenExpiresAt = null;
         await _userCommandService.SetPasswordAsync(user, request.NewPassword, token);
+        // The per-device sessions are the ones that actually keep a stolen
+        // sign-in alive; the column above is legacy.
+        await _refreshSessions.RevokeAllAsync(user.Id, token: token).ConfigureAwait(false);
 
         _logger.LogInformation("Password reset completed for '{Username}'.", user.Username);
         return Ok(new { success = true });

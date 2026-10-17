@@ -218,6 +218,32 @@ public class RefreshSessionService
         return true;
     }
 
+    /// <summary>
+    /// Revokes every remembered device of a user, optionally sparing the one
+    /// making the request. A password change or reset has to end the sessions
+    /// it is meant to protect against: since sign-ins moved to one row per
+    /// device, clearing the legacy column on the user revoked nothing.
+    /// </summary>
+    public async Task<int> RevokeAllAsync(Guid userId, string? exceptRawToken = null, CancellationToken token = default)
+    {
+        DateTime now = DateTime.UtcNow;
+        List<RefreshSessionEntity> live = await _db.RefreshSessions
+            .Where(s => s.UserId == userId && s.RevokedAt == null)
+            .ToListAsync(token).ConfigureAwait(false);
+        int count = 0;
+        foreach (RefreshSessionEntity s in live)
+        {
+            if (exceptRawToken != null && _jwt.ValidateRefreshToken(exceptRawToken, s.TokenHash))
+                continue;
+            s.RevokedAt = now;
+            RecentRotations.TryRemove(s.Id, out _);
+            count++;
+        }
+        if (count > 0)
+            await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        return count;
+    }
+
     /// <summary>Live (unrevoked, unexpired) sessions for the device list.</summary>
     public async Task<List<RefreshSessionEntity>> ListAsync(Guid userId, CancellationToken token = default)
     {
