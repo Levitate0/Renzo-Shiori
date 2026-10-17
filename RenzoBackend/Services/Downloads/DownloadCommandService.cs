@@ -1023,6 +1023,22 @@ namespace RenzoBackend.Services.Downloads
             // the entry. Resolved through a scope because SeriesCommandService
             // depends on THIS service — taking it as a constructor dependency would
             // be a cycle.
+            //
+            // The chapter's queue row is the one THIS job is running under: the key
+            // is series+chapter, the same one the re-queue below uses. Enqueue skips
+            // a key that is still Running ("already running or waiting. Skipping..."),
+            // so every step-down was silently dropped — and because the call still
+            // reported Queued, the job then closed its row and the chapter was
+            // queued NOWHERE until a later scan found it (165 skips in ten minutes
+            // once retries were cut to 6). Releasing the row first lets the enqueue
+            // reuse it for the new source; the job's own close-on-Handled only
+            // touches a row that is still Running, so it leaves the new one alone.
+            string rowKey = $"{JobType.Download}_{download.SeriesId}|{number.FormatDecimal()}";
+            await _db.Queues
+                .Where(q => q.Key == rowKey && q.Status == QueueStatus.Running)
+                .ExecuteUpdateAsync(u => u.SetProperty(q => q.Status, QueueStatus.Completed), token)
+                .ConfigureAwait(false);
+
             using IServiceScope scope = _scopeFactory.CreateScope();
             var seriesCommand = scope.ServiceProvider.GetRequiredService<Series.SeriesCommandService>();
             Series.RedownloadResult result = await seriesCommand
