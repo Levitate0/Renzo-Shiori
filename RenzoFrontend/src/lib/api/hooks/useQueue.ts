@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { getProgressHub } from '../signalr/progressHub';
 import { JobType, ProgressStatus } from '../types';
 import type { ProgressState, DownloadCardInfo } from '../types';
@@ -9,7 +9,7 @@ import type { ProgressState, DownloadCardInfo } from '../types';
 // lists from the downloads API and removes entries through
 // useManageErrorDownload, which is the same endpoint Retry already used.
 
-interface DownloadProgress {
+export interface DownloadProgress {
   id: string;
   cardInfo: DownloadCardInfo;
   percentage: number;
@@ -18,78 +18,114 @@ interface DownloadProgress {
   errorMessage?: string;
 }
 
-export function useDownloadProgress() {
-  const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({});
-  
-  useEffect(() => {
-    // Only run on client side
-    if (typeof window === 'undefined') {
-      return;
-    }
+/*
+ * The live download list, kept once for the whole app rather than per
+ * component. Each consumer (the top-bar downloads panel, the queue page) used
+ * to build its own copy from the events it saw after it mounted, so changing
+ * page started from an empty list, and nothing removed a download whose end
+ * was missed — one that finished during a reconnect or a server restart stayed
+ * "in progress" until the page was reloaded. The server now sends the whole
+ * list on every (re)connect ("ActiveDownloads"), and that replaces this one.
+ */
+type DownloadMap = Record<string, DownloadProgress>;
 
-    let unsubscribe: (() => void) | null = null;
-    
-    const setupConnection = async () => {
-      try {
-        await getProgressHub().startConnection();
-        
-        const progressListener = (progress: ProgressState) => {
-          // Only process Download job types
-          if (progress.jobType === JobType.Download) {
-            setDownloads(prev => {
-              const current = prev[progress.id];
-              
-              // If this is a completed or failed download, remove it from the visual stack
-              if (progress.progressStatus === ProgressStatus.Completed || 
-                  progress.progressStatus === ProgressStatus.Failed) {
-                const { [progress.id]: removed, ...rest } = prev;
-                return rest;
-              }
-              
-              // For new downloads or updates, use the download payload
-              let cardInfo = current?.cardInfo;
-              if (progress.download && !cardInfo) {
-                cardInfo = progress.download;
-              }
-              
-              // If we don't have card info yet, skip this update
-              if (!cardInfo) {
-                return prev;
-              }
-              
-              return {
-                ...prev,
-                [progress.id]: {
-                  id: progress.id,
-                  cardInfo,
-                  percentage: progress.percentage,
-                  message: progress.message,
-                  status: progress.progressStatus,
-                  errorMessage: progress.errorMessage,
-                }
-              };
-            });
-          }
-        };
-        
-        unsubscribe = getProgressHub().onProgress(progressListener);
-      } catch (error) {
-        console.error('Failed to setup SignalR connection for downloads:', error);
-      }
-    };
+const EMPTY: DownloadProgress[] = [];
+let current: DownloadMap = {};
+let currentList: DownloadProgress[] = EMPTY;
+const subscribers = new Set<() => void>();
+let stopFeed: (() => void) | null = null;
 
-    void setupConnection();
+function publish(next: DownloadMap): void {
+  current = next;
+  currentList = Object.values(next);
+  subscribers.forEach((notify) => notify());
+}
 
-    return () => {
-      unsubscribe?.();
-    };
-  }, []);
+function isFinished(status: ProgressStatus): boolean {
+  return status === ProgressStatus.Completed || status === ProgressStatus.Failed;
+}
 
-  // Convert downloads object to array for easier rendering
-  const downloadsList = Object.values(downloads);
-  
+function toEntry(progress: ProgressState, cardInfo: DownloadCardInfo): DownloadProgress {
   return {
-    downloads: downloadsList,
-    downloadCount: downloadsList.length,
+    id: progress.id,
+    cardInfo,
+    percentage: progress.percentage,
+    message: progress.message,
+    status: progress.progressStatus,
+    errorMessage: progress.errorMessage,
+  };
+}
+
+function applyProgress(progress: ProgressState): void {
+  if (progress.jobType !== JobType.Download) return;
+  // A completed or failed download leaves the list.
+  if (isFinished(progress.progressStatus)) {
+    if (!(progress.id in current)) return;
+    const { [progress.id]: _finished, ...rest } = current;
+    publish(rest);
+    return;
+  }
+  // Nothing to show until an event carries the download's card.
+  const cardInfo = current[progress.id]?.cardInfo ?? progress.download;
+  if (!cardInfo) return;
+  publish({ ...current, [progress.id]: toEntry(progress, cardInfo) });
+}
+
+function applySnapshot(states: ProgressState[] | null | undefined): void {
+  const next: DownloadMap = {};
+  for (const state of states ?? []) {
+    if (state.jobType !== JobType.Download || !state.download || isFinished(state.progressStatus)) continue;
+    next[state.id] = toEntry(state, state.download);
+  }
+  publish(next);
+}
+
+function startFeed(): void {
+  if (stopFeed || typeof window === 'undefined') return;
+  const hub = getProgressHub();
+  const offProgress = hub.onProgress(applyProgress);
+  const offSnapshot = hub.onActiveDownloads(applySnapshot);
+  stopFeed = () => {
+    offProgress();
+    offSnapshot();
+  };
+  hub.startConnection().catch((error: unknown) => {
+    console.error('Failed to setup SignalR connection for downloads:', error);
+  });
+  // The client's own reconnect gives up after four tries; this restarts it
+  // every 30 s while the tab is visible, so the list never goes quiet for good.
+  hub.startHealthCheck();
+}
+
+/**
+ * Signing out: the connection is authenticated as the account that just left,
+ * so it is closed and the list emptied. The next sign-in opens a new one.
+ */
+export async function stopDownloadFeed(): Promise<void> {
+  stopFeed?.();
+  stopFeed = null;
+  publish({});
+  const hub = getProgressHub();
+  hub.stopHealthCheck();
+  await hub.stopConnection();
+}
+
+function subscribe(notify: () => void): () => void {
+  subscribers.add(notify);
+  return () => {
+    subscribers.delete(notify);
+  };
+}
+
+const getSnapshot = (): DownloadProgress[] => currentList;
+const getServerSnapshot = (): DownloadProgress[] => EMPTY;
+
+// Hook for live download progress via SignalR
+export function useDownloadProgress() {
+  useEffect(startFeed, []);
+  const downloads = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return {
+    downloads,
+    downloadCount: downloads.length,
   };
 }

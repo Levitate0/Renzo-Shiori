@@ -135,173 +135,187 @@ export function CommandBar() {
       style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
     >
       {/* ─── Primary bar (56px) ─────────────────────────────────────── */}
-      <div className="relative flex h-14 items-center gap-3 px-3 lg:px-5">
-        {/* Mobile: hamburger → sheet drawer with section list */}
-        <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-          <SheetTrigger asChild>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="lg:hidden h-9 w-9 shrink-0"
-              aria-label="Open navigation menu"
-              data-tour="nav"
-            >
-              <Menu className="h-5 w-5" />
-            </Button>
-          </SheetTrigger>
-          <SheetContent
-            side="left"
-            className="w-72 p-0 overflow-auto"
-            aria-describedby={undefined}
-            style={{
-              paddingTop: "env(safe-area-inset-top, 0px)",
-              paddingBottom: "env(safe-area-inset-bottom, 0px)",
-            }}
-          >
-            <div className="flex items-center px-4 py-3 border-b">
-              <RenzoBanner className="h-8" />
-            </div>
-            <SectionList onNavigate={() => setSheetOpen(false)} />
-
-            {/* Drawer footer — view mode, download status + project links,
-                restored from the old sidebar bottom group. */}
-            <div className="mt-2 space-y-3 border-t px-3 pt-3">
-              <OnlineOfflinePill className="sm:hidden" />
-              <DownloadStatus variant="drawer" />
-              <ExternalLinks />
-            </div>
-          </SheetContent>
-        </Sheet>
-
-        {/* Logo (always visible). Wordmark hidden when mobile search expands. */}
-        <Link
-          href="/library"
-          className="flex items-center gap-2 shrink-0"
-          aria-label="Renzo Shiori home"
-        >
-          <RenzoLogo className="h-7 w-7 object-contain" />
-          <AnimatePresence>
-            {!mobileSearchOpen && (
-              <motion.span
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: "auto" }}
-                exit={{ opacity: 0, width: 0 }}
-                transition={{ duration: 0.15 }}
-                className="hidden md:inline text-sm font-semibold text-foreground whitespace-nowrap overflow-hidden"
+      {/* Desktop is a three-column grid: logo | section pills | right cluster.
+          The side columns are at least their content and otherwise share the
+          leftover space equally, so the pills sit at the true centre while
+          there is room and slide aside (then scroll) when there isn't — they
+          used to be absolutely centred and, below ~1900px, ran under the
+          search box. Same rule as the Hub's CenterClampedBar. */}
+      <div className="relative flex h-14 items-center gap-3 px-3 lg:grid lg:grid-cols-[minmax(max-content,1fr)_minmax(0,auto)_minmax(max-content,1fr)] lg:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          {/* Mobile: hamburger → sheet drawer with section list */}
+          <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+            <SheetTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="lg:hidden h-9 w-9 shrink-0"
+                aria-label="Open navigation menu"
+                data-tour="nav"
               >
-                Renzo Shiori
-              </motion.span>
-            )}
-          </AnimatePresence>
-        </Link>
-
-        {/* Desktop section pills — absolutely centered in the bar so they sit in
-            the visual center regardless of logo / right-cluster widths. Capped at
-            60vw so a long section list can't overlap the logo or right cluster. */}
-        <div className="hidden lg:flex absolute left-1/2 -translate-x-1/2 pointer-events-none max-w-[60vw]">
-          <div className="pointer-events-auto min-w-0" data-tour="nav">
-            <SectionPills />
-          </div>
-        </div>
-
-        {/* Spacer — pushes search/avatar/theme cluster to the right edge. The
-            desktop section pills are absolutely centered above this row, so we
-            need a normal flex spacer at every breakpoint. */}
-        <div className="flex-1" />
-
-        {/* Desktop search input */}
-        {!isSearchDisabled && (
-          <div className="hidden lg:flex relative items-center shrink-0" data-tour="search">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-            <Input
-              ref={desktopInputRef}
-              type="search"
-              placeholder={placeholder}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              disabled={isSearchDisabled}
-              className="w-56 xl:w-72 pl-9 pr-16 h-9 bg-muted/50 border-border/60 focus:bg-background transition-colors [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
-            />
-            {searchTerm ? (
-              <button
-                onClick={() => setSearchTerm("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                aria-label="Clear search"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            ) : modifierKey ? (
-              // Was hardcoded to ⌘, which is wrong for everyone not on a Mac —
-              // and the handler has always accepted Ctrl too, so the hint was
-              // the only part that lied. Rendered only once the platform is
-              // known (see useModifierKeyLabel) so nobody sees the wrong key first.
-              <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none hidden xl:inline-flex items-center gap-0.5 rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                <span>{modifierKey}</span>
-                <span>K</span>
-              </kbd>
-            ) : null}
-          </div>
-        )}
-
-        {/* Mobile search expand */}
-        <div className="lg:hidden flex items-center gap-1 shrink-0">
-          <AnimatePresence>
-            {mobileSearchOpen && (
-              <motion.div
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: "auto" }}
-                exit={{ opacity: 0, width: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="relative flex items-center">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                  <input
-                    ref={mobileInputRef}
-                    type="search"
-                    placeholder={placeholder}
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    disabled={isSearchDisabled}
-                    className="w-44 pl-8 pr-2 h-9 rounded-lg bg-muted/70 border border-border/60 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 focus:bg-background transition-all [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
-                  />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {!isSearchDisabled && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-9 w-9 shrink-0"
-              onClick={() => {
-                if (mobileSearchOpen && searchTerm) setSearchTerm("");
-                setMobileSearchOpen((v) => !v);
+                <Menu className="h-5 w-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent
+              side="left"
+              className="w-72 p-0 overflow-auto"
+              aria-describedby={undefined}
+              style={{
+                paddingTop: "env(safe-area-inset-top, 0px)",
+                paddingBottom: "env(safe-area-inset-bottom, 0px)",
               }}
-              aria-label={mobileSearchOpen ? "Close search" : "Open search"}
-              data-tour="search"
             >
-              {mobileSearchOpen ? (
-                <X className="h-5 w-5" />
-              ) : (
-                <Search className="h-5 w-5" />
+              <div className="flex items-center px-4 py-3 border-b">
+                <RenzoBanner className="h-8" />
+              </div>
+              <SectionList onNavigate={() => setSheetOpen(false)} />
+
+              {/* Drawer footer — view mode, download status + project links,
+                  restored from the old sidebar bottom group. */}
+              <div className="mt-2 space-y-3 border-t px-3 pt-3">
+                <OnlineOfflinePill className="sm:hidden" />
+                <DownloadStatus variant="drawer" />
+                <ExternalLinks />
+              </div>
+            </SheetContent>
+          </Sheet>
+
+          {/* Logo (always visible). Wordmark hidden when mobile search expands. */}
+          <Link
+            href="/library"
+            className="flex items-center gap-2 shrink-0"
+            aria-label="Renzo Shiori home"
+          >
+            <RenzoLogo className="h-7 w-7 object-contain" />
+            <AnimatePresence>
+              {!mobileSearchOpen && (
+                <motion.span
+                  initial={{ opacity: 0, width: 0 }}
+                  animate={{ opacity: 1, width: "auto" }}
+                  exit={{ opacity: 0, width: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="hidden md:inline text-sm font-semibold text-foreground whitespace-nowrap overflow-hidden"
+                >
+                  Renzo Shiori
+                </motion.span>
               )}
-            </Button>
+            </AnimatePresence>
+          </Link>
+        </div>
+
+        {/* Desktop section pills — the grid's middle column, capped at 60vw;
+            a block so the pills' own overflow-x-auto row scrolls when the
+            column is squeezed. */}
+        <div className="hidden lg:block min-w-0 max-w-[60vw]" data-tour="nav">
+          <SectionPills />
+        </div>
+
+        {/* Mobile spacer — pushes the right cluster to the edge. */}
+        <div className="flex-1 lg:hidden" />
+
+        <div className="flex min-w-0 items-center justify-end gap-3">
+          {/* Desktop search input */}
+          {!isSearchDisabled && (
+            <div className="hidden lg:flex relative items-center shrink-0" data-tour="search">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+              <Input
+                ref={desktopInputRef}
+                type="search"
+                placeholder={placeholder}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                disabled={isSearchDisabled}
+                className="w-56 xl:w-72 pl-9 pr-16 h-9 bg-muted/50 border-border/60 focus:bg-background transition-colors [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
+              />
+              {searchTerm ? (
+                <button
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label="Clear search"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : modifierKey ? (
+                // Was hardcoded to ⌘, which is wrong for everyone not on a Mac —
+                // and the handler has always accepted Ctrl too, so the hint was
+                // the only part that lied. Rendered only once the platform is
+                // known (see useModifierKeyLabel) so nobody sees the wrong key first.
+                <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none hidden xl:inline-flex items-center gap-0.5 rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  <span>{modifierKey}</span>
+                  <span>K</span>
+                </kbd>
+              ) : null}
+            </div>
           )}
-        </div>
 
-        {/* Online/Offline view-mode pill — native shells only, hidden on web */}
-        <OnlineOfflinePill className="hidden sm:inline-flex" />
+          {/* Mobile search expand */}
+          <div className="lg:hidden flex items-center gap-1 shrink-0">
+            <AnimatePresence>
+              {mobileSearchOpen && (
+                <motion.div
+                  initial={{ opacity: 0, width: 0 }}
+                  animate={{ opacity: 1, width: "auto" }}
+                  exit={{ opacity: 0, width: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="relative flex items-center">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                    <input
+                      ref={mobileInputRef}
+                      type="search"
+                      placeholder={placeholder}
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      disabled={isSearchDisabled}
+                      className="w-44 pl-8 pr-2 h-9 rounded-lg bg-muted/70 border border-border/60 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 focus:bg-background transition-all [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-        {/* Download status badges (desktop) — active / queued / failed counts,
-            restored from the old sidebar. Links to the queue. */}
-        <div className="hidden lg:flex items-center shrink-0">
-          <DownloadStatus variant="bar" />
-        </div>
+            {!isSearchDisabled && (
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-9 w-9 shrink-0"
+                onClick={() => {
+                  if (mobileSearchOpen && searchTerm) setSearchTerm("");
+                  setMobileSearchOpen((v) => !v);
+                }}
+                aria-label={mobileSearchOpen ? "Close search" : "Open search"}
+                data-tour="search"
+              >
+                {mobileSearchOpen ? (
+                  <X className="h-5 w-5" />
+                ) : (
+                  <Search className="h-5 w-5" />
+                )}
+              </Button>
+            )}
+          </div>
 
-        {/* User avatar */}
-        <div className="flex items-center shrink-0" data-tour="account">
-          <UserAvatarDropdown size="md" />
+          {/* Online/Offline view-mode pill — native shells only, hidden on web */}
+          <OnlineOfflinePill className="hidden sm:inline-flex" />
+
+          {/* Download status — active / queued / failed counts (desktop) or one
+              compact button while something downloads (mobile); either opens
+              the live downloads panel. */}
+          <div className="hidden lg:flex items-center shrink-0">
+            <DownloadStatus variant="bar" />
+          </div>
+          {/* Hidden while mobile search is open: the input needs the room, and
+              with it the bar would be wider than a 390px phone. */}
+          {!mobileSearchOpen && (
+            <div className="lg:hidden flex items-center shrink-0">
+              <DownloadStatus variant="icon" />
+            </div>
+          )}
+
+          {/* User avatar */}
+          <div className="flex items-center shrink-0" data-tour="account">
+            <UserAvatarDropdown size="md" />
+          </div>
         </div>
       </div>
 

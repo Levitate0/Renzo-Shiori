@@ -7,6 +7,7 @@ import { ensureImageToken } from '../imageToken';
 export class ProgressHub {
   private connection: any = null;
   private listeners: ((progress: ProgressState) => void)[] = [];
+  private snapshotListeners: ((states: ProgressState[]) => void)[] = [];
   private isInitialized = false;
   private signalR: any = null;
   private healthCheckInterval: NodeJS.Timeout | null = null;
@@ -48,6 +49,12 @@ export class ProgressHub {
 
       this.connection.on('Progress', (progress: ProgressState) => {
         this.listeners.forEach(listener => listener(progress));
+      });
+
+      // Sent by the server first on every (re)connect: the downloads running
+      // right now, replacing whatever a listener held before the drop.
+      this.connection.on('ActiveDownloads', (states: ProgressState[]) => {
+        this.snapshotListeners.forEach(listener => listener(states));
       });
 
       // Add connection state event handlers
@@ -146,7 +153,9 @@ export class ProgressHub {
     const signalR = await this.loadSignalR();
     if (!signalR || !this.connection) return;
 
-    if (this.connection.state === signalR.HubConnectionState.Connected) {
+    // Any live state, not just Connected: a connection still reconnecting
+    // would otherwise come back after the caller asked for it to stop.
+    if (this.connection.state !== signalR.HubConnectionState.Disconnected) {
       try {
         await this.connection.stop();
       } catch (err) {
@@ -183,8 +192,20 @@ export class ProgressHub {
     };
   }
 
+  onActiveDownloads(callback: (states: ProgressState[]) => void): () => void {
+    this.snapshotListeners.push(callback);
+
+    return () => {
+      const index = this.snapshotListeners.indexOf(callback);
+      if (index > -1) {
+        this.snapshotListeners.splice(index, 1);
+      }
+    };
+  }
+
   dispose(): void {
     this.listeners = [];
+    this.snapshotListeners = [];
     this.stopHealthCheck();
     if (this.connection) {
       void this.stopConnection();

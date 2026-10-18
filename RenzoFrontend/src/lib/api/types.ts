@@ -732,6 +732,8 @@ export interface DownloadCardInfo {
   chapterNumber?: number;
   chapterName: string;
   thumbnailUrl?: string;
+  /** The library series the download belongs to. */
+  seriesId?: string;
 }
 
 export interface LatestSeriesInfo {

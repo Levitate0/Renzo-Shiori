@@ -4,7 +4,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { useRouter } from 'next/navigation';
 import { SESSION_EXPIRED_EVENT } from '@/lib/api/client';
 import { userService } from '@/lib/api/services/userService';
-import { ensureImageToken } from '@/lib/api/imageToken';
+import { clearImageToken, ensureImageToken } from '@/lib/api/imageToken';
+import { stopDownloadFeed } from '@/lib/api/hooks/useQueue';
 import { type User, type AuthStatus, UserLevel } from '@/lib/api/types';
 
 // Cookie helpers for user session persistence (works across tabs/windows)
@@ -214,7 +215,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         sessionStorage.removeItem('renzo_token');
         localStorage.removeItem('renzo_selected_user');
+        clearImageToken();
       } catch { /* private mode */ }
+      void stopDownloadFeed();
       clearSessionCookie();
       setSelectedUsername(null);
       setUser(null);
@@ -268,6 +271,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     sessionStorage.removeItem('renzo_token');
     localStorage.removeItem('renzo_selected_user');
+    // Both still belong to the account that is leaving: the image token would
+    // load the next account's covers as this one, and the live connection
+    // would keep streaming this account's downloads into the next session.
+    clearImageToken();
+    void stopDownloadFeed();
     clearSessionCookie();
     setSelectedUsername(null);
     setUser(null);

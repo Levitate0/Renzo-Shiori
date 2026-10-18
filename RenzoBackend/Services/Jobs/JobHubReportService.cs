@@ -46,6 +46,23 @@ public class JobHubReportService : IReportProgress
     public static ProgressState? GetLastProgress(RenzoBackend.Models.Enums.JobType jobType) =>
         _lastProgress.TryGetValue(jobType, out ProgressState? state) ? state : null;
 
+    // Downloads running right now, by job id, as last reported. A client that
+    // connects or reconnects is sent this first ("ActiveDownloads"), so its
+    // live list starts from the truth rather than from whatever it held when
+    // it dropped — a download that finished while it was away used to stay
+    // "in progress" on its screen until the page was reloaded.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ProgressState> _activeDownloads = new();
+
+    /// <summary>
+    /// The downloads in progress that <paramref name="user"/> may see: their
+    /// own, or every one for an Owner-level account (the same scoping as the
+    /// live broadcast).
+    /// </summary>
+    public static List<ProgressState> ActiveDownloadsFor(UserEntity user) =>
+        _activeDownloads.Values
+            .Where(s => user.Level == RenzoBackend.Models.Enums.UserLevel.Owner || s.OwnerId == null || s.OwnerId == Guid.Empty || s.OwnerId == user.Id)
+            .ToList();
+
     /// <summary>
     /// Reports job progress updates to SignalR clients
     /// </summary>
@@ -54,6 +71,13 @@ public class JobHubReportService : IReportProgress
     public Task ReportProgressAsync(ProgressState state)
     {
         _lastProgress[state.JobType] = state;
+        if (state.JobType == RenzoBackend.Models.Enums.JobType.Download)
+        {
+            if (state.ProgressStatus is RenzoBackend.Models.Enums.ProgressStatus.Completed or RenzoBackend.Models.Enums.ProgressStatus.Failed)
+                _activeDownloads.TryRemove(state.Id, out _);
+            else
+                _activeDownloads[state.Id] = state;
+        }
         // Per-user library isolation: a job tied to a specific owner (currently
         // Download jobs — see DownloadCommandService) only broadcasts to that
         // owner's connections plus Owner-level accounts (who can already view

@@ -11,6 +11,7 @@ public static class DownloadSummaryExtensions
 
         return new DownloadSummary
         {
+            SeriesId = download.SeriesId,
             Title = download.Title,
             Provider = download.ProviderName,
             Scanlator = download.Scanlator,
@@ -54,7 +55,8 @@ public static class DownloadSummaryExtensions
             Title = summary.Title,
             ChapterNumber = summary.ChapterNumber,
             ChapterName = summary.ChapterName,
-            ThumbnailUrl = summary.ThumbnailUrl
+            ThumbnailUrl = summary.ThumbnailUrl,
+            SeriesId = summary.SeriesId
         };
     }
 }

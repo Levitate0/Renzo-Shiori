@@ -32,6 +32,10 @@ namespace RenzoBackend.Hubs
                 await Groups.AddToGroupAsync(Context.ConnectionId, UserGroup(user.Id)).ConfigureAwait(false);
                 if (user.Level == UserLevel.Owner)
                     await Groups.AddToGroupAsync(Context.ConnectionId, OwnersGroup).ConfigureAwait(false);
+                // What is downloading right now, sent ahead of any live event:
+                // clients replace their list with it, so one that reconnects
+                // drops downloads that ended while it was away.
+                await Clients.Caller.SendAsync("ActiveDownloads", Services.Jobs.JobHubReportService.ActiveDownloadsFor(user)).ConfigureAwait(false);
             }
             await base.OnConnectedAsync().ConfigureAwait(false);
         }

@@ -35,7 +35,6 @@ import { useAuth } from "@/contexts/auth-context";
 import { userService } from "@/lib/api/services/userService";
 import { seriesService } from "@/lib/api/services/seriesService";
 import { parsePriorityPrefs, mergePriorityPrefs } from "@/lib/utils/priority-prefs";
-import { useRegisterBottomBar } from "@/contexts/bottom-bar-context";
 
 /**
  * Builds the editable working list: the saved default order, filtered down to
@@ -141,7 +140,6 @@ export function DefaultPriorityOrderTab() {
   const { toast } = useToast();
   const [saving, setSaving] = React.useState(false);
   const [applyingToAll, setApplyingToAll] = React.useState(false);
-  const applyBarRef = useRegisterBottomBar("default-priority-order-apply-bar", true);
 
   const installedNames = React.useMemo(
     () =>
@@ -328,11 +326,9 @@ export function DefaultPriorityOrderTab() {
 
       {/* Sticky apply bar — stays visible while the list above scrolls, so a
           long source list never hides the way to actually commit a reorder.
-          z-40 (above the ActivityDock's z-30): both are anchored near the
-          bottom of the viewport, and without this the floating download dock
-          would paint over the bar and swallow clicks on Apply/Revert. */}
+          z-40 keeps it above the rows scrolling underneath, including one
+          being dragged (z-20). */}
       <div
-        ref={applyBarRef}
         className="sticky bottom-0 z-40 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80"
       >
         <span className="text-xs text-muted-foreground">

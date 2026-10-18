@@ -13,6 +13,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type React from "react";
+import { useEffect, useRef } from "react";
 
 import { usePermission } from "@/hooks/use-permission";
 import { useDownloadsMetrics } from "@/lib/api/hooks/useDownloads";
@@ -90,12 +91,37 @@ export function useSections(): SectionDef[] {
 export function SectionPills() {
   const pathname = usePathname();
   const sections = useSections();
+  const navRef = useRef<HTMLElement>(null);
 
   const isActive = (href: string) =>
     pathname === href || pathname.startsWith(href + "/");
 
+  // On a narrow desktop window the command bar squeezes this row and it
+  // scrolls; keep the current section's pill in view instead of leaving it
+  // past the edge. Only this row scrolls — the page itself never moves.
+  useEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const reveal = () => {
+      const pill = nav.querySelector<HTMLElement>('[aria-current="page"]');
+      if (!pill || nav.scrollWidth <= nav.clientWidth) return;
+      const row = nav.getBoundingClientRect();
+      const box = pill.getBoundingClientRect();
+      if (box.left < row.left) nav.scrollLeft -= row.left - box.left + 8;
+      else if (box.right > row.right) nav.scrollLeft += box.right - row.right + 8;
+    };
+    // Pills change width after the first paint (the web font, the Queue
+    // badge), which moves the current one; follow those changes. A manual
+    // scroll changes no size, so it is left alone.
+    const observer = new ResizeObserver(reveal);
+    observer.observe(nav);
+    nav.querySelectorAll("a").forEach((pill) => observer.observe(pill));
+    return () => observer.disconnect();
+  }, [pathname, sections.length]);
+
   return (
     <nav
+      ref={navRef}
       aria-label="Primary"
       className="flex items-center gap-1 overflow-x-auto scrollbar-hide"
     >

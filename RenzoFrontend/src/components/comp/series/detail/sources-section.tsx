@@ -33,7 +33,6 @@ import {
 } from "@/lib/api/types";
 import { AddSeries } from "@/components/comp/series/add-series";
 import { ProviderCard } from "./provider-card";
-import { useRegisterBottomBar } from "@/contexts/bottom-bar-context";
 
 export interface ProviderSwitchState {
   useTitle: boolean;
@@ -146,10 +145,6 @@ export function SourcesSection({
   onRevertToDefault,
   canEdit,
 }: SourcesSectionProps) {
-  const applyBarRef = useRegisterBottomBar(
-    "sources-section-apply-bar",
-    canEdit && providers.length > 1,
-  );
   // Show sources in the (possibly unsaved) local priority order so the drag
   // handle / up-down controls line up with what's on screen.
   const orderIndex = new Map(orderIds.map((id, i) => [id, i]));
@@ -304,11 +299,9 @@ export function SourcesSection({
           matter how far the source list scrolls. Only shown once there are 2+
           sources (nothing to reorder with fewer) and canEdit. */}
       {canEdit && providers.length > 1 && (
-        // z-40 (above the ActivityDock's z-30) — both are anchored near the
-        // bottom of the viewport; without this the floating download dock
-        // paints over this bar and swallows clicks on Apply/Revert.
+        // z-40 keeps it above the rows scrolling underneath, including one
+        // being dragged (z-20).
         <div
-          ref={applyBarRef}
           className="sticky bottom-0 z-40 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80"
         >
           <span className="text-xs text-muted-foreground">

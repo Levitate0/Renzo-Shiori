@@ -8,6 +8,7 @@ namespace RenzoBackend.Models;
 public class DownloadSummary : DownloadSummaryBase
 {
     public Guid Id { get; set; }
+    public Guid? SeriesId { get; set; }
     public decimal? ChapterNumber { get; set; }
     public string? ChapterTitle { get; set; }
     public DateTime? DownloadDateUTC { get; set; }

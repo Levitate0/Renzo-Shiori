@@ -160,6 +160,22 @@ namespace RenzoBackend.Services.Downloads
             // never see this download's progress/thumbnail/title.
             Guid? downloadOwnerId = await _db.Series.Where(s => s.Id == ch.SeriesId).Select(s => (Guid?)s.OwnerId).FirstOrDefaultAsync(token).ConfigureAwait(false);
             ProgressReporter reporter = _reportingService.CreateReporter(job, downloadOwnerId);
+            JobResult result = JobResult.Failed;
+            try
+            {
+                result = await DownloadChapterCoreAsync(ch, reporter, token).ConfigureAwait(false);
+                return result;
+            }
+            finally
+            {
+                // Several exits (a step-down to another source, a throw) leave
+                // the run reported as started; close it so live lists drop it.
+                reporter.End(result == JobResult.Success);
+            }
+        }
+
+        private async Task<JobResult> DownloadChapterCoreAsync(ChapterDownload ch, ProgressReporter reporter, CancellationToken token)
+        {
             DownloadSummary downloadSummary;
 
             var appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
@@ -270,7 +286,7 @@ namespace RenzoBackend.Services.Downloads
                     // chapters from each triggering a login. If it's really unowned,
                     // this fetch throws the same error again and we fall through to
                     // the lock exactly as before — no retry loop, no queue change.
-                    if (downloadOwnerId is Guid oid &&
+                    if (reporter.OwnerId is Guid oid &&
                         await _siteAuth.EnsureLoggedInRateLimitedAsync(oid, src.Name, token).ConfigureAwait(false))
                     {
                         pageFailure = null;
