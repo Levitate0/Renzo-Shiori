@@ -193,9 +193,8 @@ const PREFETCH_PAGES_STREAM = 6;
 /**
  * How long after a finger leaves the strip its scrolling still counts as the
  * flick's momentum, for "Stop flicks at chapter breaks". A hard flick on a
- * phone coasts for two to three seconds; nothing else scrolls the strip in
- * that window except a tap-zone step, and stopping one of those at a break is
- * the same courtesy.
+ * phone coasts for two to three seconds. A wheel turn, a key or a tap-zone
+ * step closes the window early, so only a flick is ever stopped (as on the Hub).
  */
 const BREAK_FLING_WINDOW_MS = 4000;
 /**
@@ -451,9 +450,11 @@ function ReaderInner() {
   // chapter) are distinguished from the initial at-top state (which should not).
   const lastScrollTopRef = useRef(0);
   // Whether a finger is on the strip, and when the last one lifted — what tells
-  // a flick's momentum apart from a drag (see the scroll tracker).
+  // a flick's momentum apart from a drag (see the scroll tracker). -Infinity
+  // means no flick is coasting, which is also what the wheel, keys and tap-zone
+  // steps set it to.
   const touchingRef = useRef(false);
-  const releasedAtRef = useRef(0);
+  const releasedAtRef = useRef(-Infinity);
   // Keys of the breaks already behind the current flick (see onTouchEnd).
   const breaksBehindRef = useRef<Set<string>>(new Set());
   // The page a freshly-opened chapter should land on: 0 = top (a new chapter
@@ -1523,7 +1524,7 @@ function ReaderInner() {
               recentre();
               requestAnimationFrame(() => { recentre(); scroller.style.overflowY = ""; });
             });
-            releasedAtRef.current = 0;
+            releasedAtRef.current = -Infinity;
             st = scroller.scrollTop;
             break;
           }
@@ -1633,18 +1634,23 @@ function ReaderInner() {
       if (frame) return;                  // coalesce to one measure per frame
       frame = requestAnimationFrame(update);
     };
+    // The wheel never flicks: whatever it moves is the wheel's, not the
+    // momentum of a flick that ended just before.
+    const onWheel = () => { releasedAtRef.current = -Infinity; };
 
     measureRef.current = update;
     scroller.addEventListener("scroll", onScroll, { passive: true });
     scroller.addEventListener("touchstart", onTouchStart, { passive: true });
     scroller.addEventListener("touchend", onTouchEnd, { passive: true });
     scroller.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    scroller.addEventListener("wheel", onWheel, { passive: true });
     update();
     return () => {
       scroller.removeEventListener("scroll", onScroll);
       scroller.removeEventListener("touchstart", onTouchStart);
       scroller.removeEventListener("touchend", onTouchEnd);
       scroller.removeEventListener("touchcancel", onTouchEnd);
+      scroller.removeEventListener("wheel", onWheel);
       if (frame) cancelAnimationFrame(frame);
       // A momentum stop releases the scroller two frames later; don't leave
       // it locked if this re-subscribes in between.
@@ -1700,6 +1706,8 @@ function ReaderInner() {
       // adjustable step instead of turning a page: right = forward, left = back.
       const scroller = scrollRef.current;
       if (!scroller) { toggle(); return; }
+      // A step, not a flick: never stopped at a break (Hub: animateScrollBy).
+      releasedAtRef.current = -Infinity;
       const amount = scroller.clientHeight * (settings.tapAdvancePct / 100);
       if (x > 0.7) scroller.scrollBy({ top: amount, behavior: "smooth" });        // forward
       else if (x < 0.3) scroller.scrollBy({ top: -amount, behavior: "smooth" });  // back
@@ -1733,6 +1741,7 @@ function ReaderInner() {
   // past the first into the previous one's last page. next/prevChapter jump a
   // whole chapter from anywhere.
   const runAction = useCallback((action: HotkeyAction) => {
+    releasedAtRef.current = -Infinity;  // key steps aren't flicks either
     const scroller = scrollRef.current;
     const amount = (scroller?.clientHeight ?? 600) * (settings.tapAdvancePct / 100);
     switch (action) {
