@@ -23,7 +23,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowLeft, Bookmark, Check, ChevronLeft, ChevronRight, Download, ExternalLink, List, Loader2, Lock, Search, Settings2, Trash2, X,
+  ArrowLeft, Bookmark, Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsDown, Download, ExternalLink, List, Loader2, Lock, Search, Settings2, Trash2, X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -136,6 +136,7 @@ interface ReaderSettings {
   tapAdvancePct: number;   // continuous click-to-scroll step, as % of viewport height
   infiniteScroll: boolean; // continuous: append the next chapter at the bottom
   chapterTransition: boolean; // show a "finished / up next" screen between chapters (paged: its own page)
+  pauseAtBreaks: boolean;  // continuous: a flick stops at a chapter break instead of carrying on into the next chapter
   autoMarkRead: boolean;
   autoClearCache: boolean;  // clear the streamed-page cache when leaving the reader
   hotkeys: Hotkeys;
@@ -153,6 +154,7 @@ const DEFAULT_SETTINGS: ReaderSettings = {
   tapAdvancePct: 80,
   infiniteScroll: true,
   chapterTransition: true,
+  pauseAtBreaks: true,
   autoMarkRead: true,
   autoClearCache: true,
   hotkeys: DEFAULT_HOTKEYS,
@@ -188,6 +190,20 @@ const PREFETCH_PAGES = 2;
  * next chapter opens from the archive in well under the short distance.
  */
 const PREFETCH_PAGES_STREAM = 6;
+/**
+ * How long after a finger leaves the strip its scrolling still counts as the
+ * flick's momentum, for "Stop flicks at chapter breaks". A hard flick on a
+ * phone coasts for two to three seconds; nothing else scrolls the strip in
+ * that window except a tap-zone step, and stopping one of those at a break is
+ * the same courtesy.
+ */
+const BREAK_FLING_WINDOW_MS = 4000;
+/**
+ * A break whose middle is this close below the screen's middle when a flick
+ * starts counts as one the reader is parked on, so the flick isn't stopped by
+ * it — a finger jitters a few px before it lets go.
+ */
+const BREAK_PARKED_SLOP_PX = 8;
 
 /**
  * How old the chapter list (each chapter's downloaded/streamed state) may get
@@ -356,26 +372,34 @@ function ReaderInner() {
   // chapter change is never a silent blank screen, and the toast shown once it lands.
   const [openingLabel, setOpeningLabel] = useState<string | null>(null);
   const [arrivedLabel, setArrivedLabel] = useState<string | null>(null);
+  // One timer for the arrival pill, whoever raised it — a chapter opening or
+  // the strip scrolling into the next chapter — so a newer pill is never cut
+  // short by an older one's timer.
+  const arrivedTimerRef = useRef<number | null>(null);
   // Client-side strip detection for preview mode (naturalWidth/Height as images load)
   const [detectedMode, setDetectedMode] = useState<"webtoon" | "longstrip" | "paged" | null>(null);
   const loadedDimsRef = useRef<Map<number, { w: number; h: number }>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  // Inter-chapter buffer dividers (keyed by segment index `si`): a full-screen
-  // block that collapses to a sliver once it is no longer needed at that size.
+  // Chapter breaks between segments (keyed by the key of the segment AFTER the
+  // break — an index would shift under every prepend and prune): a full-screen
+  // block that settles to its resting height once it is no longer needed at
+  // full size.
   //
   // Full height is what the end-of-strip block uses while the next chapter is
   // still loading — it reads as a real page, gives the buttons room, and (see
   // the render comment) guarantees the scroll tracker clearance below a
   // short/wide last page whose box collapses when it finally loads. Once the
   // next chapter's pages are actually below it, that clearance comes from the
-  // chapter itself and a screen of empty transition is just scrolling the user
-  // has to do for nothing — so it shrinks to a one-line sliver.
+  // chapter itself, so it drops to 60% of the screen: still a break nobody
+  // scrolls past without noticing (it used to drop to one line of dim text,
+  // which people did — straight into the next chapter, none the wiser), but
+  // not a whole screen of nothing at every chapter.
   //
   // It only ever collapses while fully off-screen. Shrinking a block the reader
   // is looking at would yank the page out from under them.
-  const dividerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const [collapsedDividers, setCollapsedDividers] = useState<Set<number>>(new Set());
+  const dividerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [collapsedDividers, setCollapsedDividers] = useState<Set<string>>(new Set());
   // Mirrors `collapsedDividers` for the scroll-driven update() closure below
   // (same reason maybeAppendRef exists: a useEffect-subscribed scroll listener
   // would otherwise read a stale value captured whenever it last resubscribed).
@@ -385,6 +409,9 @@ function ReaderInner() {
   // about to shrink: losing height above the reader would otherwise slide the
   // content up under them. Consumed by the layout effect that re-anchors.
   const dividerCollapseAdjustRef = useRef<number | null>(null);
+  // `settings.pauseAtBreaks`, for the same scroll-driven closure.
+  const pauseAtBreaksRef = useRef(settings.pauseAtBreaks);
+  useEffect(() => { pauseAtBreaksRef.current = settings.pauseAtBreaks; }, [settings.pauseAtBreaks]);
   const progressSentRef = useRef<{ key: string; page: number; at: number }>({ key: "", page: -1, at: 0 });
   // Progress reporting is "armed" a moment after a chapter loads, so the position
   // churn during initial layout/resume doesn't get written as real reading.
@@ -423,6 +450,12 @@ function ReaderInner() {
   // Last scroll position, so upward scrolls (which should prepend the previous
   // chapter) are distinguished from the initial at-top state (which should not).
   const lastScrollTopRef = useRef(0);
+  // Whether a finger is on the strip, and when the last one lifted — what tells
+  // a flick's momentum apart from a drag (see the scroll tracker).
+  const touchingRef = useRef(false);
+  const releasedAtRef = useRef(0);
+  // Keys of the breaks already behind the current flick (see onTouchEnd).
+  const breaksBehindRef = useRef<Set<string>>(new Set());
   // The page a freshly-opened chapter should land on: 0 = top (a new chapter
   // always starts at the top, never inheriting the previous chapter's scroll),
   // or the resume page when re-opening a partially-read chapter.
@@ -541,6 +574,10 @@ function ReaderInner() {
       setAppended([]);
       setPrepended([]);
       setPrimaryHidden(false);
+      // A fresh strip starts with every break at full height again — a key
+      // collapsed in the last one would otherwise arrive pre-shrunk, possibly
+      // right under the reader.
+      setCollapsedDividers(new Set());
       pruneAnchorRef.current = null;
       setActiveSegIndex(0);
       activeSegIndexRef.current = 0;
@@ -950,15 +987,43 @@ function ReaderInner() {
     reportProgressFor(seg.chapterNumber, seg.filename, currentPage, seg.pageCount);
   }, [isContinuous, activeSegIndex, currentPage, segments, reportProgressFor]);
 
+  // The brief chapter-name pill at the top. Its timer lives in a ref, not in an
+  // effect cleanup: the effect below clears openingLabel, which re-ran it and
+  // cancelled its own timer, so the pill used to stay up until the next
+  // chapter change instead of for two seconds.
+  const flashArrived = useCallback((label: string) => {
+    setArrivedLabel(label);
+    if (arrivedTimerRef.current != null) window.clearTimeout(arrivedTimerRef.current);
+    arrivedTimerRef.current = window.setTimeout(() => {
+      arrivedTimerRef.current = null;
+      setArrivedLabel(null);
+    }, 2000);
+  }, []);
+  useEffect(() => () => {
+    if (arrivedTimerRef.current != null) window.clearTimeout(arrivedTimerRef.current);
+  }, []);
+
   // Once the new chapter's pages are ready, swap the "Opening…" overlay for a
   // brief confirmation banner so the switch is never ambiguous.
   useEffect(() => {
     if (loading || !openingLabel) return;
-    setArrivedLabel(openingLabel);
+    flashArrived(openingLabel);
     setOpeningLabel(null);
-    const t = setTimeout(() => setArrivedLabel(null), 2000);
-    return () => clearTimeout(t);
-  }, [loading, openingLabel]);
+  }, [loading, openingLabel, flashArrived]);
+
+  // The same pill when the continuous strip scrolls from one chapter into
+  // another, so a new chapter announces itself even to someone moving too fast
+  // to read the break. Keyed on the chapter, not the segment index, which
+  // shifts under prepends and prunes without the reader moving. A fresh load
+  // starts over, so opening a chapter isn't announced twice.
+  const crossedFromRef = useRef<string | null>(null);
+  const activeSegId = `${activeSeg.key}:${activeSeg.chapterNumber ?? activeSeg.previewIndex}`;
+  useEffect(() => {
+    if (!isContinuous || loading) { crossedFromRef.current = null; return; }
+    const from = crossedFromRef.current;
+    crossedFromRef.current = activeSegId;
+    if (from != null && from !== activeSegId && activeSeg.name) flashArrived(activeSeg.name);
+  }, [isContinuous, loading, activeSegId, activeSeg.name, flashArrived]);
 
   // ── Navigation ────────────────────────────────────────────────────────
   const step = resolvedMode === "double" ? 2 : 1;
@@ -1396,12 +1461,76 @@ function ReaderInner() {
     if (!scroller) return;
 
     let frame = 0;
+    // Finger state for "Stop flicks at chapter breaks", in refs because this
+    // effect re-subscribes on every append — exactly when a flick is most
+    // likely to be coasting. Touch events, not pointer events: the browser
+    // fires pointercancel as soon as a touch starts panning, which would read
+    // as the finger lifting mid-drag.
+    const onTouchStart = () => { touchingRef.current = true; };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length > 0) return;
+      touchingRef.current = false;
+      releasedAtRef.current = performance.now();
+      // The flick starts here. Breaks at (or just short of) the middle are
+      // behind it — above all the one the previous flick stopped on — so only
+      // a break still ahead can stop this one. (Hub: the same set, taken at
+      // fling start.)
+      const line = scroller.getBoundingClientRect().top + scroller.clientHeight / 2;
+      const behind = new Set<string>();
+      for (const [key, node] of dividerRefs.current.entries()) {
+        const r = node.getBoundingClientRect();
+        if ((r.top + r.bottom) / 2 <= line + BREAK_PARKED_SLOP_PX) behind.add(key);
+      }
+      breaksBehindRef.current = behind;
+    };
     const update = () => {
       frame = 0;
-      const st = scroller.scrollTop;
-      const scrollingUp = st < lastScrollTopRef.current - 2;
-      lastScrollTopRef.current = st;
+      let st = scroller.scrollTop;
+      const prevSt = lastScrollTopRef.current;
       const box = scroller.getBoundingClientRect();
+      // A flick coasting forward over a chapter break stops there, with the
+      // break in the middle of the screen. The break being easy to miss is
+      // only half of how people end up deep in the next chapter without
+      // meaning to; the other half is momentum carrying them through it. A
+      // finger still on the glass is never stopped — dragging past a break is
+      // deliberate — and the next flick carries on as normal.
+      if (
+        pauseAtBreaksRef.current && !touchingRef.current && st > prevSt &&
+        performance.now() - releasedAtRef.current < BREAK_FLING_WINDOW_MS
+      ) {
+        const line = box.top + scroller.clientHeight / 2;
+        const moved = st - prevSt;
+        for (const [key, node] of dividerRefs.current.entries()) {
+          if (breaksBehindRef.current.has(key)) continue;
+          const r = node.getBoundingClientRect();
+          const center = (r.top + r.bottom) / 2;
+          // Crossed the middle since the last frame.
+          if (center <= line && center + moved > line) {
+            // Nothing in the DOM cancels momentum directly; a scroller that
+            // stops being scrollable for a moment drops it.
+            scroller.style.overflowY = "hidden";
+            scroller.scrollTop = st - (line - center);
+            // The engine can still apply a frame or two of its own momentum
+            // before it sees the lock (40px, in testing): re-centre once it
+            // has, then unlock.
+            const recentre = () => {
+              if (!node.isConnected) return;
+              const r2 = node.getBoundingClientRect();
+              const line2 = scroller.getBoundingClientRect().top + scroller.clientHeight / 2;
+              scroller.scrollTop += (r2.top + r2.bottom) / 2 - line2;
+            };
+            requestAnimationFrame(() => {
+              recentre();
+              requestAnimationFrame(() => { recentre(); scroller.style.overflowY = ""; });
+            });
+            releasedAtRef.current = 0;
+            st = scroller.scrollTop;
+            break;
+          }
+        }
+      }
+      const scrollingUp = st < prevSt - 2;
+      lastScrollTopRef.current = st;
       const probe = box.top + scroller.clientHeight / 3;
       let current = 0;
       const entries = [...pageRefs.current.entries()].sort((a, b) => a[0] - b[0]);
@@ -1470,23 +1599,24 @@ function ReaderInner() {
       if (scrollingUp) maybePrependRef.current();
       pruneWindowRef.current(si, current);
 
-      // Collapse a divider to its sliver once it is fully off-screen — above
-      // or below. Below is the common case and the point of the whole thing:
-      // infinite scroll appends the next chapter well before the reader gets
-      // there, so by the time they arrive the transition is already a sliver
-      // and they never scroll through a screen of nothing. Never collapse one
-      // that is even partly visible; that would move the page under the reader.
+      // Settle a break to its resting height once it is fully off-screen —
+      // above or below. Below is the common case and the point of the whole
+      // thing: infinite scroll appends the next chapter well before the reader
+      // gets there, so by the time they arrive the break is already at its
+      // resting height and they never scroll through a screen of nothing.
+      // Never shrink one that is even partly visible; that would move the page
+      // under the reader.
       const sRect = scroller.getBoundingClientRect();
-      let collapse: number[] | null = null;
+      let collapse: string[] | null = null;
       let anyAbove = false;
-      for (const [si2, node] of dividerRefs.current.entries()) {
-        if (collapsedDividersRef.current.has(si2)) continue;
+      for (const [key, node] of dividerRefs.current.entries()) {
+        if (collapsedDividersRef.current.has(key)) continue;
         const r = node.getBoundingClientRect();
         const above = r.bottom < sRect.top;
         const below = r.top > sRect.bottom;
         if (!above && !below) continue;
         if (above) anyAbove = true;
-        (collapse ??= []).push(si2);
+        (collapse ??= []).push(key);
       }
       if (collapse) {
         // Height disappearing ABOVE the viewport shifts everything up; record
@@ -1494,7 +1624,7 @@ function ReaderInner() {
         if (anyAbove) dividerCollapseAdjustRef.current = scroller.scrollHeight;
         setCollapsedDividers((prev) => {
           const next = new Set(prev);
-          for (const si2 of collapse!) next.add(si2);
+          for (const key of collapse!) next.add(key);
           return next;
         });
       }
@@ -1506,10 +1636,19 @@ function ReaderInner() {
 
     measureRef.current = update;
     scroller.addEventListener("scroll", onScroll, { passive: true });
+    scroller.addEventListener("touchstart", onTouchStart, { passive: true });
+    scroller.addEventListener("touchend", onTouchEnd, { passive: true });
+    scroller.addEventListener("touchcancel", onTouchEnd, { passive: true });
     update();
     return () => {
       scroller.removeEventListener("scroll", onScroll);
+      scroller.removeEventListener("touchstart", onTouchStart);
+      scroller.removeEventListener("touchend", onTouchEnd);
+      scroller.removeEventListener("touchcancel", onTouchEnd);
       if (frame) cancelAnimationFrame(frame);
+      // A momentum stop releases the scroller two frames later; don't leave
+      // it locked if this re-subscribes in between.
+      scroller.style.overflowY = "";
     };
   }, [isContinuous, totalPages, loading, segOffsets]);
 
@@ -1846,15 +1985,19 @@ function ReaderInner() {
               </div>
             </div>
           )}
-        <div ref={scrollRef} className="h-full overflow-y-auto" onClick={handleTap}>
+        {/* @container: the chapter breaks span the whole screen (100cqw), not
+            just the page column, and cqw is the one width that excludes the
+            scrollbar — 100vw would overflow by its width. overflow-x-hidden
+            covers any subpixel left over. */}
+        <div ref={scrollRef} className="@container h-full overflow-y-auto overflow-x-hidden" onClick={handleTap}>
           <div className="mx-auto flex flex-col items-center" style={{ ...containerWidthStyle, rowGap: gap }}>
             {segments.map((seg, si) => (
               <React.Fragment key={seg.key}>
                 {si > 0 && (
-                  // Full screen until it is scrolled off, then a sliver — same
-                  // block the end of the strip shows while the next chapter is
-                  // still loading, so the transition doesn't change shape when
-                  // that chapter arrives.
+                  // Full screen until it is scrolled off, then its resting 60%
+                  // of the screen — the same block the end of the strip shows
+                  // while the next chapter is still loading, so nothing changes
+                  // shape when that chapter arrives.
                   //
                   // Full height matters only while this is the last thing in
                   // the strip: it's what guarantees the scroll tracker clearance
@@ -1862,34 +2005,31 @@ function ReaderInner() {
                   // say) whose box collapses when it finally loads, which is how
                   // that page ends up never marked read. Once the next chapter's
                   // pages sit below it, they provide that clearance many times
-                  // over and the screen of empty transition is pure scrolling
-                  // tax — so it drops to one line. The collapse is gated on
+                  // over, so it shrinks to a size that still can't be missed but
+                  // doesn't cost a screen of scrolling. The shrink is gated on
                   // being off-screen (see the tracker), so the reader never sees
                   // it happen.
+                  //
+                  // Taps fall through to the tap zones like anywhere else on
+                  // the strip; only its button keeps them.
                   <div
-                    ref={(el) => { if (el) dividerRefs.current.set(si, el); else dividerRefs.current.delete(si); }}
-                    className={`flex w-full flex-col items-center justify-center px-4 text-center text-white ${
-                      collapsedDividers.has(si) ? "py-3" : "min-h-dvh"
-                    }`}
-                    onClick={(e) => e.stopPropagation()}
+                    ref={(el) => { if (el) dividerRefs.current.set(seg.key, el); else dividerRefs.current.delete(seg.key); }}
+                    className="flex w-full justify-center"
                   >
-                    {collapsedDividers.has(si) ? (
-                      <div className="flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[11px] leading-tight">
-                        <span className="uppercase tracking-[0.15em] text-white/30">Finished</span>
-                        <span className="font-medium text-white/55">{segments[si - 1]?.name}</span>
-                        <span className="text-white/20">·</span>
-                        <span className="uppercase tracking-[0.15em] text-white/30">Up next</span>
-                        <span className="font-medium text-primary/80">{seg.name}</span>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="text-[11px] uppercase tracking-[0.15em] text-white/35">Finished</div>
-                        <div className="mt-0.5 text-sm font-medium text-white/70">{segments[si - 1]?.name}</div>
-                        <div className="mx-auto my-3 h-px w-16 bg-white/15" />
-                        <div className="text-[11px] uppercase tracking-[0.15em] text-white/35">Up next</div>
-                        <div className="mt-0.5 text-sm font-medium text-primary/90">{seg.name}</div>
-                      </>
-                    )}
+                    <ChapterBreak
+                      finishedLabel={segments[si - 1]?.name ?? ""}
+                      nextLabel={seg.name}
+                      tall={!collapsedDividers.has(seg.key)}
+                    >
+                      <p className="mt-6 text-xs text-white/40">keep scrolling to continue</p>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); router.back(); }}
+                        className="mt-3 rounded-full border border-white/15 px-3 py-1 text-xs text-white/60 transition-colors hover:bg-white/10 hover:text-white/80"
+                      >
+                        Back to series
+                      </button>
+                    </ChapterBreak>
                   </div>
                 )}
                 {Array.from({ length: seg.pageCount }, (_, i) => {
@@ -2247,6 +2387,10 @@ function ReaderInner() {
               <ToggleRow label="Infinite scroll (roll into next chapter)" checked={settings.infiniteScroll}
                 onChange={(v) => persistSettings({ ...settings, infiniteScroll: v })} />
             )}
+            {isContinuous && settings.infiniteScroll && (
+              <ToggleRow label="Stop flicks at chapter breaks" checked={settings.pauseAtBreaks}
+                onChange={(v) => persistSettings({ ...settings, pauseAtBreaks: v })} />
+            )}
             <ToggleRow label="Show page number" checked={settings.showPageNumber}
               onChange={(v) => persistSettings({ ...settings, showPageNumber: v })} />
             {!isContinuous && (
@@ -2352,6 +2496,68 @@ function ReaderInner() {
 }
 
 /**
+ * A chapter break in the continuous strip — between two chapters, and (with
+ * its buttons) at the end of the strip. Made to be noticed mid-scroll: it used
+ * to be a line of dim 11px text, which is easy to scroll straight past and end
+ * up deep in the next chapter without ever knowing one had ended.
+ *
+ * - Its own dark surface with the theme accent along both edges, so it stands
+ *   out against any artwork and on every reader background, white included.
+ * - The whole width of the screen, not just the page column (100cqw, against
+ *   the @container on the scroller).
+ * - The next chapter's name in large type.
+ *
+ * `tall` fills the screen (min-h-dvh, not a padding: see the divider render for
+ * why that height has to be guaranteed); otherwise it rests at 60%.
+ *
+ * Hub twin: ChapterBreak in ui/reader/ReaderOverlays.kt.
+ */
+function ChapterBreak({
+  finishedLabel, nextLabel, caughtUp = false, tall, children,
+}: {
+  finishedLabel: string;
+  nextLabel: string | null;
+  /** No next chapter at all: say so where "Up next" would be. */
+  caughtUp?: boolean;
+  tall: boolean;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`flex w-[100cqw] min-w-full shrink-0 flex-col items-center justify-center px-6 py-14 text-center text-white ${
+        tall ? "min-h-dvh" : "min-h-[60dvh]"
+      }`}
+      style={{
+        // The tint over a solid base, never instead of one: on the white reader
+        // background a translucent edge let the page show through.
+        background:
+          "linear-gradient(to bottom, hsl(var(--primary) / 0.16), transparent 28%, transparent 72%, hsl(var(--primary) / 0.16)) #09090b",
+        borderTop: "2px solid hsl(var(--primary) / 0.7)",
+        borderBottom: "2px solid hsl(var(--primary) / 0.7)",
+      }}
+    >
+      <CheckCircle2 className="h-8 w-8 text-primary" aria-hidden />
+      <div className="mt-3 text-xs font-semibold uppercase tracking-[0.2em] text-white/50">Finished</div>
+      <div className="mt-1 max-w-md break-words text-base font-medium text-white/80 sm:text-lg">{finishedLabel}</div>
+      <div className="my-6 flex w-full max-w-64 items-center gap-3" aria-hidden>
+        <div className="h-px flex-1 bg-white/15" />
+        {nextLabel && <ChevronsDown className="h-5 w-5 text-primary" />}
+        <div className="h-px flex-1 bg-white/15" />
+      </div>
+      {nextLabel ? (
+        <>
+          <div className="text-xs font-semibold uppercase tracking-[0.2em] text-white/50">Up next</div>
+          <div className="mt-1 max-w-lg break-words text-2xl font-bold leading-tight text-primary sm:text-3xl">{nextLabel}</div>
+        </>
+      ) : caughtUp ? (
+        <div className="text-sm text-white/50">You&apos;re all caught up.</div>
+      ) : null}
+      {children}
+    </div>
+  );
+}
+
+/**
  * Footer of a continuous (webtoon / long-strip / vertical) chapter. With infinite
  * scroll on, the next chapter appends automatically before this is reached, so it
  * mostly surfaces at the very end of a series or when appending failed.
@@ -2369,46 +2575,40 @@ function EndOfChapter({
   onExit: () => void;
 }) {
   return (
-    // min-h-dvh (not just py-14 padding, and not a vh fraction) so this
-    // fills the screen like a real page — see the matching comment on the
-    // inter-segment divider above for why the height needs to be
-    // guaranteed: a late-shrinking last-page image (e.g. a scanlator's
-    // wide/short credits banner) needs guaranteed scroll distance below it
-    // for the "am I at the bottom" page tracker to ever register it as the
-    // current page and mark it read.
-    <div
-      className="flex w-full min-h-dvh flex-col items-center justify-center gap-4 text-center"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div>
-        <div className="text-xs uppercase tracking-[0.15em] text-white/35">Finished</div>
-        <div className="mt-1 text-sm font-medium text-white/80">{chapterLabel}</div>
-      </div>
-      {hasNext && nextLabel && (
-        <div>
-          <div className="text-xs uppercase tracking-[0.15em] text-white/35">Up next</div>
-          <div className="mt-1 text-sm font-medium text-primary/90">{nextLabel}</div>
+    // Always tall, so this fills the screen like a real page — see the
+    // matching comment on the inter-segment divider above for why the height
+    // needs to be guaranteed: a late-shrinking last-page image (e.g. a
+    // scanlator's wide/short credits banner) needs guaranteed scroll distance
+    // below it for the "am I at the bottom" page tracker to ever register it as
+    // the current page and mark it read. Same block as a break, so when the
+    // next chapter lands and a break takes its place, nothing changes shape.
+    <div className="flex w-full justify-center" onClick={(e) => e.stopPropagation()}>
+      <ChapterBreak
+        finishedLabel={chapterLabel}
+        nextLabel={hasNext ? nextLabel : null}
+        caughtUp={!hasNext}
+        tall
+      >
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
+          {hasPrev && (
+            <Button variant="secondary" onClick={onPrev} className="gap-1.5">
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </Button>
+          )}
+          {hasNext ? (
+            <Button onClick={onNext} className="gap-1.5">
+              Next chapter
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button variant="secondary" onClick={onExit}>
+              Back to series
+            </Button>
+          )}
         </div>
-      )}
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        {hasPrev && (
-          <Button variant="secondary" onClick={onPrev} className="gap-1.5">
-            <ChevronLeft className="h-4 w-4" />
-            Previous
-          </Button>
-        )}
-        {hasNext ? (
-          <Button onClick={onNext} className="gap-1.5">
-            Next chapter
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        ) : (
-          <Button variant="secondary" onClick={onExit}>
-            Back to series
-          </Button>
-        )}
-      </div>
-      {hasNext && <p className="text-xs text-white/35">{infinite ? "keep scrolling to continue" : "or press →"}</p>}
+        {hasNext && <p className="mt-4 text-xs text-white/40">{infinite ? "keep scrolling to continue" : "or press →"}</p>}
+      </ChapterBreak>
     </div>
   );
 }
