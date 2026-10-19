@@ -537,6 +537,35 @@ namespace RenzoBackend.Controllers
         }
 
         /// <summary>
+        /// GET /api/serie/release-heads?since=ISO-8601 — what the Hub's new-chapter
+        /// notifications poll. See <see cref="ReleaseHeadsDto"/>.
+        /// </summary>
+        [HttpGet("release-heads")]
+        [ProducesResponseType(typeof(ReleaseHeadsDto), 200)]
+        [ProducesResponseType(500)]
+        public async Task<ActionResult<ReleaseHeadsDto>> GetReleaseHeadsAsync([FromQuery] string? since = null, [FromQuery] bool viewAll = false, CancellationToken token = default)
+        {
+            try
+            {
+                // Parsed by hand: the model binder can hand back a local-time
+                // DateTime, and every timestamp compared against is UTC.
+                DateTime? sinceUtc = null;
+                if (!string.IsNullOrWhiteSpace(since)
+                    && DateTimeOffset.TryParse(since, System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AssumeUniversal, out DateTimeOffset parsed))
+                    sinceUtc = parsed.UtcDateTime;
+                ReleaseHeadsDto result = await _queryService.GetReleaseHeadsAsync(CurrentUserId, ResolveAllowAll(viewAll), sinceUtc, token).ConfigureAwait(false);
+                await _thumb.PopulateThumbsAsync(result.Fresh, "/api/image/", token).ConfigureAwait(false);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting release heads: {Message}", ex.Message);
+                return StatusCode(500, "Error getting release heads.");
+            }
+        }
+
+        /// <summary>
         /// Gets the "Updates" feed: recently downloaded chapters and recently
         /// added series, newest first.
         /// </summary>

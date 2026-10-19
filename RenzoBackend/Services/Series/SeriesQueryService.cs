@@ -135,6 +135,54 @@ namespace RenzoBackend.Services.Series
         }
 
         /// <summary>
+        /// GET /api/serie/release-heads — see <see cref="ReleaseHeadsDto"/>. Every
+        /// series' highest chapter number, plus the chapters found at or after
+        /// <paramref name="since"/> (none when it is null, which is how a client
+        /// takes its first baseline without being handed the back-catalogue).
+        /// Built from the same snapshots as the Updates feed, so it costs a
+        /// dictionary walk, not a library parse.
+        /// </summary>
+        public async Task<ReleaseHeadsDto> GetReleaseHeadsAsync(Guid requesterId, bool allowAll, DateTime? since, CancellationToken token = default)
+        {
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            List<LibrarySnapshotCache.Snapshot> snaps = await _snapshots.GetAsync(_db, settings, requesterId, allowAll, token).ConfigureAwait(false);
+            return BuildReleaseHeads(snaps, since, DateTime.UtcNow);
+        }
+
+        /// <summary>The walk behind <see cref="GetReleaseHeadsAsync"/>, pure so it can be tested.</summary>
+        public static ReleaseHeadsDto BuildReleaseHeads(IEnumerable<LibrarySnapshotCache.Snapshot> snaps, DateTime? since, DateTime now)
+        {
+            var result = new ReleaseHeadsDto { Now = now };
+            foreach (LibrarySnapshotCache.Snapshot sn in snaps)
+            {
+                result.Series.Add(new ReleaseHeadDto { Id = sn.Id, Last = sn.LastChapter });
+                if (since == null)
+                    continue;
+                // Chapter rows are newest-found first (the series-added row, if
+                // any, comes last), so the walk stops at the first older one.
+                foreach (UpdateFeedItemDto row in sn.UpdateRows)
+                {
+                    if (row.Kind != UpdateFeedItemDto.KindNewChapter || row.ChapterNumber == null)
+                        continue;
+                    if (row.Timestamp < since.Value)
+                        break;
+                    result.Fresh.Add(new FreshChapterDto
+                    {
+                        SeriesId = sn.Id,
+                        SeriesTitle = sn.Title,
+                        ThumbnailUrl = sn.ThumbnailUrl,
+                        IsNsfw = sn.IsNsfw,
+                        ChapterNumber = row.ChapterNumber.Value,
+                        ChapterName = row.ChapterName,
+                        Found = row.Timestamp,
+                        Published = sn.Published.TryGetValue(row.ChapterNumber.Value, out DateTime p) ? p : null,
+                    });
+                }
+            }
+            return result;
+        }
+
+        /// <summary>
         /// Every chapter of the library flattened to Updates-feed rows, newest
         /// first. The rows are templates: callers copy the ones they return.
         /// </summary>

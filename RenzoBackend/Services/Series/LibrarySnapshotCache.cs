@@ -36,6 +36,12 @@ public class LibrarySnapshotCache
         public required List<UpdateFeedItemDto> UpdateRows { get; init; }
         /// <summary>Chapter number → (name, filename), for History.</summary>
         public required Dictionary<decimal, (string? Name, string? Filename)> Chapters { get; init; }
+        /// <summary>The library grid's LastChapter: the highest number on any source.</summary>
+        public required decimal? LastChapter { get; init; }
+        /// <summary>The library grid's IsNsfw (flag or classifier).</summary>
+        public required bool IsNsfw { get; init; }
+        /// <summary>Chapter number → the earliest real publish date any source gives it.</summary>
+        public required Dictionary<decimal, DateTime> Published { get; init; }
     }
 
     private readonly ConcurrentDictionary<Guid, Snapshot> _snapshots = new();
@@ -149,11 +155,24 @@ public class LibrarySnapshotCache
         // One entry per chapter number. When several sources carry the same
         // chapter, use the EARLIEST time it was found on any of them, so adding
         // a new source doesn't resurface a whole back-catalogue.
+        //
+        // Deleted rows count towards that earliest time, though they are never
+        // shown. A source that is disabled has its unread chapters marked deleted,
+        // and the backup source's copy of the same chapter used to come up as
+        // found-just-now: a chapter the reader had for weeks, back at the top of
+        // Updates as if it were new.
+        Dictionary<decimal, DateTime> firstFound = s.Sources
+            .SelectMany(p => p.Chapters)
+            .Select(c => (c.Number, Found: FoundTime(c)))
+            .Where(x => x.Number != null && x.Found != null)
+            .GroupBy(x => x.Number!.Value)
+            .ToDictionary(g => g.Key, g => g.Min(x => x.Found!.Value));
         List<UpdateFeedItemDto> rows = s.Sources
             .SelectMany(p => p.Chapters, (p, c) => (Provider: p, Chapter: c, Found: FoundTime(c)))
             .Where(x => !x.Chapter.IsDeleted && x.Chapter.Number != null && x.Found != null)
             .GroupBy(x => x.Chapter.Number)
             .Select(g => g.OrderBy(x => x.Found).First())
+            .Select(x => (x.Provider, x.Chapter, Found: firstFound[x.Chapter.Number!.Value]))
             .OrderByDescending(x => x.Found)
             .Take(PerSeriesUpdateCap)
             .Select(x => new UpdateFeedItemDto
@@ -165,7 +184,7 @@ public class LibrarySnapshotCache
                 ChapterNumber = x.Chapter.Number,
                 ChapterName = x.Chapter.Name,
                 Provider = x.Provider.Provider,
-                Timestamp = x.Found!.Value,
+                Timestamp = x.Found,
             })
             .ToList();
         if (s.DateAdded != null)
@@ -187,6 +206,16 @@ public class LibrarySnapshotCache
             .GroupBy(c => c.Number!.Value)
             .ToDictionary(g => g.Key, g => (g.First().Name, g.First().Filename));
 
+        // When each chapter came out, for release notifications: a source can
+        // carry a chapter it only found today that was published weeks ago.
+        Dictionary<decimal, DateTime> published = s.Sources
+            .SelectMany(p => p.Chapters)
+            .Where(c => !c.IsDeleted && c.Number != null
+                && Extensions.ModelExtensions.HasRealUploadDate(c.ProviderUploadDate))
+            .GroupBy(c => c.Number!.Value)
+            .ToDictionary(g => g.Key, g => g.Min(c => c.ProviderUploadDate!.Value));
+
+        SeriesInfoDto info = s.ToSeriesInfo(settings);
         return new Snapshot
         {
             Version = version,
@@ -195,7 +224,10 @@ public class LibrarySnapshotCache
             Title = s.Title,
             ThumbnailUrl = s.ThumbnailUrl,
             StoragePath = s.StoragePath,
-            InfoJson = JsonSerializer.SerializeToUtf8Bytes(s.ToSeriesInfo(settings)),
+            InfoJson = JsonSerializer.SerializeToUtf8Bytes(info),
+            LastChapter = info.LastChapter,
+            IsNsfw = info.IsNsfw,
+            Published = published,
             UpdateRows = rows,
             Chapters = chapters,
         };
