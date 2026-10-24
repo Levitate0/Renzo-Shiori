@@ -190,6 +190,9 @@ namespace RenzoBackend
             // Keeps coin/paid-site logins from silently lapsing — an expired session
             // reads as "no new chapters", not as an error.
             services.AddHostedService<Services.Background.SiteSessionRefreshService>();
+            // Follows a source to its new domain: stored links, covers and the
+            // site login move with it.
+            services.AddHostedService<Services.Background.SourceMoveService>();
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)

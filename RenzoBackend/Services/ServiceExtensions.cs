@@ -203,6 +203,8 @@ namespace RenzoBackend.Services
             services.TryAddScoped<Auth.TvPairingService>();
             services.TryAddSingleton<SiteAuth.CookieJarBridge>();
             services.TryAddSingleton<SiteAuth.SiteCredentialProtector>();
+            // Where each installed source lives now and used to (domain moves).
+            services.TryAddSingleton<Providers.SourceHostsService>();
             services.TryAddScoped<SiteAuth.CoinSiteRegistry>();
             services.TryAddScoped<SiteAuth.SiteAuthService>();
             return services;

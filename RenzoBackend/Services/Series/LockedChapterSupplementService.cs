@@ -191,12 +191,11 @@ public class LockedChapterSupplementService
             if (!api.Success || html.IndexOf("/_vcomics/", StringComparison.OrdinalIgnoreCase) < 0)
                 return result;
 
-            Match post = PostIdRegex.Match(html);
-            if (!post.Success)
+            string? postId = FindPostId(html, seriesUrl);
+            if (postId == null)
                 return result;
 
             string apiBase = api.Groups["u"].Value.TrimEnd('/');
-            string postId = post.Groups["id"].Value;
 
             string endpoint = $"{apiBase}/api/chapters?postId={postId}";
             using HttpClient http = _httpFactory.CreateClient();
@@ -275,6 +274,44 @@ public class LockedChapterSupplementService
             _logger.LogDebug(ex, "vcomics locked-chapter supplement failed for {Url}", sampleChapterUrl);
         }
         return result;
+    }
+
+    /// <summary>
+    /// The site's id for this series. The older (Astro) build serialises it as
+    /// "postId":[0,928]; the newer one (TanStack Start: Vortex Scans, 2026-10)
+    /// only as post:{id:477,slug:"…"} in its seroval payload, which the old
+    /// pattern never matched, so no locked chapter there was ever listed. The
+    /// newer forms are read next to THIS series' slug, so a recommended series
+    /// elsewhere on the page can't be picked up instead.
+    /// </summary>
+    internal static string? FindPostId(string html, string seriesUrl)
+    {
+        Match legacy = PostIdRegex.Match(html);
+        if (legacy.Success)
+            return legacy.Groups["id"].Value;
+
+        if (!Uri.TryCreate(seriesUrl, UriKind.Absolute, out Uri? uri))
+            return null;
+        string slug = uri.AbsolutePath.TrimEnd('/');
+        slug = slug[(slug.LastIndexOf('/') + 1)..];
+        if (slug.Length == 0)
+            return null;
+
+        // Both the seroval form (id:477,slug:"x") and JSON ("id":477,"slug":"x"),
+        // in either order; escaped quotes flattened first.
+        string flat = html.Replace("\\\"", "\"");
+        string s = Regex.Escape(slug);
+        foreach (string pattern in new[]
+        {
+            $@"\bid""?\s*:\s*(?<id>\d+)\s*,\s*""?slug""?\s*:\s*""{s}""",
+            $@"""?slug""?\s*:\s*""{s}""\s*,\s*""?id""?\s*:\s*(?<id>\d+)",
+        })
+        {
+            Match m = Regex.Match(flat, pattern);
+            if (m.Success)
+                return m.Groups["id"].Value;
+        }
+        return null;
     }
 
     /// <summary>

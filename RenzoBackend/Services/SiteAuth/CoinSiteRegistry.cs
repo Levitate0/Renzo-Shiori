@@ -33,6 +33,12 @@ public class CoinSiteDefinition
     public string? SubmitValue { get; set; }
     public string SessionCookieName { get; set; } = "";
     public bool Confirmed { get; set; }
+    /// <summary>
+    /// The site answered the sign-in with "complete the captcha". The endpoint is
+    /// right, but only a person can sign in, on the site itself; Renzo Shiori
+    /// then works from the session cookie they paste.
+    /// </summary>
+    public bool CaptchaRequired { get; set; }
 }
 
 /// <summary>
@@ -51,6 +57,7 @@ public class CoinSiteRegistry
 {
     private readonly AppDbContext _db;
     private readonly ProviderCacheService _providerCache;
+    private readonly SourceHostsService _hosts;
     private readonly ILogger _logger;
     private readonly string _localFile;
     private readonly string _extensionsDir;
@@ -75,13 +82,19 @@ public class CoinSiteRegistry
     private static readonly Dictionary<string, (string? web, string? api)> _extractCache = new(StringComparer.OrdinalIgnoreCase);
     private static Dictionary<long, string>? _coinScan;
     private static Dictionary<long, string>? _allScan;
+    // The install's stamp the two scans above were taken at. They used to be
+    // kept for the whole process, so an extension installed after startup
+    // (Vortex Scans, 2026-10-24) wasn't recognised as a coin site until the
+    // next restart.
+    private static DateTime _scanStamp;
     private bool _loaded;
 
-    public CoinSiteRegistry(AppDbContext db, ProviderCacheService providerCache,
+    public CoinSiteRegistry(AppDbContext db, ProviderCacheService providerCache, SourceHostsService hosts,
         IConfiguration config, ILogger<CoinSiteRegistry> logger)
     {
         _db = db;
         _providerCache = providerCache;
+        _hosts = hosts;
         _logger = logger;
         string runtimeDir = config["runtimeDirectory"] ?? ".";
         _localFile = Path.Combine(runtimeDir, "site-logins.local.json");
@@ -174,6 +187,7 @@ public class CoinSiteRegistry
     {
         lock (_lock)
         {
+            InvalidateScansIfInstallChanged();
             if (_coinScan != null)
                 return _coinScan;
         }
@@ -222,6 +236,7 @@ public class CoinSiteRegistry
     {
         lock (_lock)
         {
+            InvalidateScansIfInstallChanged();
             if (_allScan != null)
                 return _allScan;
         }
@@ -260,6 +275,23 @@ public class CoinSiteRegistry
         return map;
     }
 
+    /// <summary>Called under <c>_lock</c>. Every install, update or removal rewrites the repository file.</summary>
+    private void InvalidateScansIfInstallChanged()
+    {
+        DateTime stamp;
+        try
+        {
+            string repo = Path.Combine(_extensionsDir, "local_repository.json");
+            stamp = File.Exists(repo) ? File.GetLastWriteTimeUtc(repo) : DateTime.MinValue;
+        }
+        catch { return; }
+        if (stamp == _scanStamp)
+            return;
+        _scanStamp = stamp;
+        _coinScan = null;
+        _allScan = null;
+    }
+
     private static bool PrefsLookCoinGated(JsonElement prefs)
     {
         foreach (JsonElement pref in prefs.EnumerateArray())
@@ -277,12 +309,10 @@ public class CoinSiteRegistry
 
     public async Task<CoinSiteDefinition?> GetDefinitionAsync(string provider, CancellationToken token = default)
     {
-        EnsureLoaded();
-        lock (_lock)
-        {
-            if (_local.TryGetValue(provider, out var confirmed) && confirmed.Confirmed)
-                return confirmed;
-        }
+        var live = await LiveSiteAsync(provider, token).ConfigureAwait(false);
+        CoinSiteDefinition? local = FreshLocal(provider, live);
+        if (local is { Confirmed: true })
+            return local;
         var all = await GetCoinSitesAsync(token).ConfigureAwait(false);
         var coin = all.FirstOrDefault(d => d.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase));
         if (coin != null)
@@ -345,14 +375,19 @@ public class CoinSiteRegistry
 
     private async Task<CoinSiteDefinition> BuildDefinitionAsync(string provider, string extDir, CancellationToken token)
     {
-        // Local confirmed definition wins outright.
-        lock (_lock)
-        {
-            if (_local.TryGetValue(provider, out var local) && local.Confirmed)
-                return local;
-        }
+        // Local confirmed definition wins outright (moved to the site's current
+        // host first, if the extension has moved on).
+        var site = await LiveSiteAsync(provider, token).ConfigureAwait(false);
+        string? live = site.Host;
+        CoinSiteDefinition? local = FreshLocal(provider, site);
+        if (local is { Confirmed: true })
+            return local;
 
         (string? web, string? api) = ExtractHosts(extDir);
+        // The extension's own base URL beats a scan of its code (which can still
+        // carry the old domain) and a stored series URL (which certainly does).
+        if (live != null)
+            web = "https://" + live;
         // Fall back to the domain of a series URL for this source.
         if (string.IsNullOrEmpty(web))
             web = await DomainFromSeriesUrlAsync(provider, token).ConfigureAwait(false);
@@ -387,11 +422,102 @@ public class CoinSiteRegistry
                 def.SessionCookieName = saved.SessionCookieName;
                 def.SubmitField = saved.SubmitField;
                 def.SubmitValue = saved.SubmitValue;
+                def.CaptchaRequired = saved.CaptchaRequired;
+                // Already moved to the live host by FreshLocal.
                 if (!string.IsNullOrEmpty(saved.Domain)) def.Domain = saved.Domain;
                 if (saved.ApiBase != null) def.ApiBase = saved.ApiBase;
             }
         }
         return def;
+    }
+
+    /// <summary>
+    /// The host the installed extension uses for this provider now (its own base
+    /// URL), or null when it isn't installed.
+    /// </summary>
+    /// <summary>
+    /// The installed extension's current host for this provider, and the hosts
+    /// earlier versions of the same source used.
+    /// </summary>
+    private async Task<(string? Host, IReadOnlyCollection<string> Previous)> LiveSiteAsync(string provider, CancellationToken token)
+    {
+        List<Models.Database.ProviderStorageEntity> providers =
+            await _providerCache.GetCachedProvidersAsync(token).ConfigureAwait(false);
+        foreach (var p in providers.Where(x => x.Name.Equals(provider, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!long.TryParse(p.SourceSourceId, out long sid))
+                continue;
+            Uri? u = _hosts.CurrentBaseUrl(sid);
+            if (u != null && !string.IsNullOrEmpty(u.Host))
+                return (u.Host.ToLowerInvariant(), _hosts.PreviousHosts(sid));
+        }
+        return (null, Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// The locally saved definition for a provider, moved to the site's current
+    /// host first when the extension has moved on. The move is saved, so the
+    /// local file follows the site too: violetscans.org → violetmanga.com left
+    /// every Violet Scans login POSTing to the old host, where the redirect
+    /// turned the POST into a GET and the credentials never arrived.
+    /// </summary>
+    private CoinSiteDefinition? FreshLocal(string provider, (string? Host, IReadOnlyCollection<string> Previous) live)
+    {
+        EnsureLoaded();
+        CoinSiteDefinition? saved;
+        lock (_lock)
+            _local.TryGetValue(provider, out saved);
+        string? liveHost = live.Host;
+        // Only off a host the extension itself has left. A login that followed
+        // the site's own redirect ahead of an extension update is newer than
+        // the extension, and must not be moved back.
+        if (saved == null || string.IsNullOrEmpty(liveHost) || string.IsNullOrEmpty(saved.Domain) ||
+            SourceHostsService.Normalize(saved.Domain) == SourceHostsService.Normalize(liveHost) ||
+            !live.Previous.Contains(SourceHostsService.Normalize(saved.Domain)))
+            return saved;
+        string old = saved.Domain;
+        RebaseTo(saved, liveHost);
+        SaveLocal(saved);
+        _logger.LogInformation("Site login {Provider}: the site moved from {Old} to {New}; its login settings now point there.",
+            provider, old, liveHost);
+        return saved;
+    }
+
+    /// <summary>
+    /// Moves a definition from its domain to <paramref name="newHost"/>: the
+    /// site's own URLs, and its subdomains (api.old → api.new). What was learned
+    /// on the old host is tried first but no longer trusted until it works again,
+    /// so discovery can still find a login that changed shape with the move.
+    /// </summary>
+    public static void RebaseTo(CoinSiteDefinition def, string newHost)
+    {
+        string oldHost = def.Domain;
+        def.LoginUrl = RebaseUrl(def.LoginUrl, oldHost, newHost) ?? "";
+        def.ApiBase = RebaseUrl(def.ApiBase, oldHost, newHost);
+        def.CsrfPageUrl = RebaseUrl(def.CsrfPageUrl, oldHost, newHost);
+        def.Domain = newHost;
+        def.Confirmed = false;
+        // A session cookie's name can be tied to the address: WordPress names it
+        // wordpress_logged_in_ + md5(site URL), so Violet Scans' became a
+        // different cookie on violetmanga.com, and logins that worked were
+        // rejected for "not setting" the old one. Learn it again.
+        def.SessionCookieName = "";
+    }
+
+    private static string? RebaseUrl(string? url, string oldHost, string newHost)
+    {
+        if (string.IsNullOrEmpty(url) || !Uri.TryCreate(url, UriKind.Absolute, out Uri? u))
+            return url;
+        string host = u.Host.ToLowerInvariant();
+        string o = SourceHostsService.Normalize(oldHost);
+        string target;
+        if (SourceHostsService.Normalize(host) == o)
+            target = newHost;
+        else if (host.EndsWith("." + o, StringComparison.Ordinal))
+            target = host[..^o.Length] + SourceHostsService.Normalize(newHost);
+        else
+            return url;
+        return new UriBuilder(u) { Host = target }.Uri.AbsoluteUri;
     }
 
     /// <summary>Login/candidate URLs to try, in order, for a discovered site.</summary>
@@ -423,18 +549,29 @@ public class CoinSiteRegistry
     /// </summary>
     private (string? web, string? api) ExtractHosts(string extDir)
     {
+        // Keyed by the APK and its timestamp, not the folder: an update replaces
+        // the APK in place, and the folder key kept the old version's hosts.
+        string? apk = null;
+        string key = extDir;
+        try
+        {
+            apk = Directory.Exists(extDir)
+                ? Directory.EnumerateFiles(extDir, "*.apk", SearchOption.AllDirectories)
+                    .OrderByDescending(f => File.GetLastWriteTimeUtc(f)).FirstOrDefault()
+                : null;
+            if (apk != null)
+                key = apk + "|" + File.GetLastWriteTimeUtc(apk).Ticks;
+        }
+        catch { /* fall back to the folder key */ }
         lock (_lock)
         {
-            if (_extractCache.TryGetValue(extDir, out var cached))
+            if (_extractCache.TryGetValue(key, out var cached))
                 return cached;
         }
 
         string? web = null, api = null;
         try
         {
-            string? apk = Directory.Exists(extDir)
-                ? Directory.EnumerateFiles(extDir, "*.apk", SearchOption.AllDirectories).FirstOrDefault()
-                : null;
             if (apk != null)
             {
                 var urls = new List<string>();
@@ -472,7 +609,7 @@ public class CoinSiteRegistry
         }
 
         var pair = (web, api);
-        lock (_lock) { _extractCache[extDir] = pair; }
+        lock (_lock) { _extractCache[key] = pair; }
         return pair;
     }
 

@@ -99,26 +99,25 @@ public class SiteSessionRefreshService : BackgroundService
         {
             token.ThrowIfCancellationRequested();
 
-            // Cookie-only credentials have nothing to re-authenticate with; a
-            // re-login attempt would just overwrite a working manual cookie with
-            // a "needs_login" status.
-            if (string.IsNullOrEmpty(cred.EncryptedPassword))
-                continue;
-
+            // Cookie-only credentials (a pasted session, the only way into a
+            // captcha-gated login) have nothing to re-authenticate with, so
+            // LoginAsync checks the saved session instead: re-injected while it
+            // still is one, marked for a fresh sign-in once the site says it has
+            // ended. It never replaces a working cookie with "needs_login".
             if (_backoff.TryGetValue(cred.Id, out var state) && now < state.nextAttempt)
                 continue;
 
-            // Anything not currently OK is due immediately — that's a session we
-            // already know isn't working.
+            // Anything not currently working is due immediately — that's a
+            // session we already know isn't working.
             bool stale = cred.LastLoginAt == null || now - cred.LastLoginAt.Value >= RefreshAfter;
-            bool broken = !string.Equals(cred.Status, "ok", StringComparison.OrdinalIgnoreCase);
-            if (!stale && !broken)
+            bool healthy = cred.Status is "ok" or "manual_cookie";
+            if (!stale && healthy)
                 continue;
 
             SiteLoginResult result;
             try
             {
-                result = await auth.LoginAsync(cred, token).ConfigureAwait(false);
+                result = await auth.LoginAsync(cred, token, interactive: false).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {

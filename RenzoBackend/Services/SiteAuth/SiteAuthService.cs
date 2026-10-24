@@ -1,6 +1,7 @@
 using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
+using RenzoBackend.Services.Providers;
 using RenzoBackend.Services.Settings;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
@@ -79,7 +80,10 @@ public class SiteAuthService
         return (cred, result);
     }
 
-    /// <summary>Stores a manually-pasted session cookie header and injects it.</summary>
+    /// <summary>
+    /// Stores a pasted session cookie header and injects it — the route for a
+    /// login only a person can complete (a captcha, a social sign-in).
+    /// </summary>
     public async Task<(SiteCredentialEntity entity, SiteLoginResult result)> SaveCookieAsync(
         Guid userId, string provider, string username, string cookieHeader, CancellationToken token = default)
     {
@@ -87,7 +91,11 @@ public class SiteAuthService
         if (domain == null)
             return (new SiteCredentialEntity(), new SiteLoginResult(false, "failed", "Couldn't determine this site's domain.", 0));
 
-        List<HarvestedCookie> cookies = ParseCookieHeader(cookieHeader, domain);
+        // Never Cloudflare's own cookies: they are bound to the browser that
+        // earned them, and would displace the server's clearance for this site.
+        List<HarvestedCookie> cookies = ParseCookieHeader(cookieHeader, domain)
+            .Where(c => !IsCloudflareCookie(c.Name))
+            .ToList();
         if (cookies.Count == 0)
             return (new SiteCredentialEntity(), new SiteLoginResult(false, "failed", "No cookies found in that value.", 0));
 
@@ -108,7 +116,7 @@ public class SiteAuthService
         // (Unknown) is trusted, since a manual paste is deliberate.
         CoinSiteDefinition? cdef = await _registry.GetDefinitionAsync(provider, token).ConfigureAwait(false);
         bool unauth = cdef != null &&
-            await VerifySessionAsync(cdef, cookies, token).ConfigureAwait(false) == SessionVerdict.Unauthenticated;
+            (await VerifySessionAsync(cdef, cookies, token).ConfigureAwait(false)).Verdict == SessionVerdict.Unauthenticated;
         if (unauth)
         {
             // Don't touch the live jar or the stored snapshot — leave whatever
@@ -146,9 +154,15 @@ public class SiteAuthService
     /// <summary>
     /// Performs a form/JSON login for a credential, harvests cookies into the
     /// jar, and records status. Falls back to the cached cookie snapshot when
-    /// the site has no automatable login.
+    /// the site has no automatable login, and keeps a browser sign-in going for
+    /// a site whose login wants a captcha.
     /// </summary>
-    public async Task<SiteLoginResult> LoginAsync(SiteCredentialEntity cred, CancellationToken token = default)
+    /// <param name="interactive">
+    /// False for background callers (the session refresh, a locked page). They
+    /// never send the password to a login known to want a captcha: it can only
+    /// fail there, and repeating it can get the account rate-limited.
+    /// </param>
+    public async Task<SiteLoginResult> LoginAsync(SiteCredentialEntity cred, CancellationToken token = default, bool interactive = true)
     {
         CoinSiteDefinition? def = await _registry.GetDefinitionAsync(cred.Provider, token).ConfigureAwait(false);
         string? password = _protector.TryDecrypt(cred.EncryptedPassword);
@@ -156,7 +170,13 @@ public class SiteAuthService
         if (def == null || string.IsNullOrEmpty(def.Domain) || string.IsNullOrEmpty(password))
         {
             // Cookie-only credential (no password), or we couldn't discover the
-            // site: re-inject the last known cookies so access survives a restart.
+            // site: keep the saved session going while it still is one.
+            if (def != null && !string.IsNullOrEmpty(def.Domain))
+            {
+                SiteLoginResult? kept = await CheckSessionAsync(cred, def, token).ConfigureAwait(false);
+                if (kept != null)
+                    return kept;
+            }
             int reinjected = ReinjectCached(cred);
             cred.Status = reinjected > 0 ? "manual_cookie" : "needs_login";
             cred.StatusDetail = reinjected > 0
@@ -171,7 +191,18 @@ public class SiteAuthService
         List<string> userFields = new() { def.UsernameField };
         userFields.AddRange(CoinSiteRegistry.UsernameFieldGuesses.Where(f => !userFields.Contains(f)));
 
+        // The most telling failure so far: a later guess's 404 must not replace
+        // what the real login endpoint said.
         string lastDetail = "No login endpoint responded.";
+        int lastWeight = 0;
+        void Note(string detail, Outcome kind)
+        {
+            if (Weight(kind) >= lastWeight)
+            {
+                lastDetail = detail;
+                lastWeight = Weight(kind);
+            }
+        }
         SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
         bool flareSolverrReady = settings.FlareSolverrEnabled && !string.IsNullOrWhiteSpace(settings.FlareSolverrUrl);
 
@@ -207,7 +238,7 @@ public class SiteAuthService
             string sig = Signature(h);
             if (verifyCache.TryGetValue(sig, out SessionVerdict cached))
                 return cached;
-            SessionVerdict v = await VerifySessionAsync(def, h, token).ConfigureAwait(false);
+            SessionVerdict v = (await VerifySessionAsync(def, h, token).ConfigureAwait(false)).Verdict;
             verifyCache[sig] = v;
             return v;
         }
@@ -224,10 +255,40 @@ public class SiteAuthService
             def.LoginUrl = url;
             def.UsernameField = field;
             def.Confirmed = true;
+            def.CaptchaRequired = false;
             _registry.SaveLocal(def);
             _logger.LogInformation("Site login {Provider}: ok via {Url} ({Field})", cred.Provider, url, field);
             return new SiteLoginResult(inj > 0, cred.Status, cred.StatusDetail, inj);
         }
+
+        // A login that wants a captcha: the session a person signed in to is
+        // what counts, so keep that going. The password gets a single try, in
+        // case the site has dropped its captcha since.
+        if (def.CaptchaRequired)
+        {
+            SiteLoginResult? kept = await CheckSessionAsync(cred, def, token).ConfigureAwait(false);
+            if (kept is { Success: true })
+                return kept;
+            if (!interactive)
+                return kept ?? NeedsPerson(cred, ended: false);
+            if (!string.IsNullOrEmpty(def.LoginUrl))
+            {
+                loginAttempts++;
+                (bool ok, List<HarvestedCookie> harvested, string detail, bool exists, Outcome kind) =
+                    await TryLoginAsync(def, def.LoginUrl, def.UsernameField, cred.Username, password, token).ConfigureAwait(false);
+                if (ok && await VerifyCachedAsync(harvested) != SessionVerdict.Unauthenticated)
+                    return await AcceptAsync(def.LoginUrl, def.UsernameField, harvested).ConfigureAwait(false);
+                if (kind == Outcome.Captcha || !exists)
+                    return NeedsPerson(cred, ended: kept != null);
+                // The login changed shape: search again below.
+                Note(detail, kind);
+            }
+            def.CaptchaRequired = false;
+        }
+
+        // Follow a site that moved ahead of its extension: a login POST doesn't
+        // survive the redirect (it arrives as a GET, without the credentials).
+        await FollowSiteMoveAsync(cred.Provider, def, token).ConfigureAwait(false);
 
         foreach (string loginUrl in _registry.CandidateLoginUrls(def))
         {
@@ -244,13 +305,26 @@ public class SiteAuthService
                 // reach at all (its request.post doesn't reliably surface
                 // Set-Cookie even when the site sets one).
                 loginAttempts++;
-                (bool ok, List<HarvestedCookie> harvested, string detail, bool endpointExists) =
+                (bool ok, List<HarvestedCookie> harvested, string detail, bool endpointExists, Outcome kind) =
                     await TryLoginAsync(def, loginUrl, userField, cred.Username, password, token).ConfigureAwait(false);
+                if (kind == Outcome.Captcha)
+                {
+                    // The right endpoint, and only a person can get past it.
+                    def.LoginUrl = loginUrl;
+                    def.UsernameField = userField;
+                    def.CaptchaRequired = true;
+                    def.Confirmed = false;
+                    _registry.SaveLocal(def);
+                    _logger.LogInformation("Site login {Provider}: {Url} asks for a captcha, so a person has to sign in.",
+                        cred.Provider, loginUrl);
+                    SiteLoginResult? kept = await CheckSessionAsync(cred, def, token).ConfigureAwait(false);
+                    return kept is { Success: true } ? kept : NeedsPerson(cred, ended: kept != null);
+                }
                 if (!ok && flareSolverrReady)
                 {
                     var fsResult = await TryLoginViaFlareSolverrAsync(def, loginUrl, userField, cred.Username, password, settings, token).ConfigureAwait(false);
                     if (fsResult.ok)
-                        (ok, harvested, detail, endpointExists) = fsResult;
+                        (ok, harvested, detail, endpointExists, kind) = fsResult;
                 }
                 if (ok)
                 {
@@ -273,19 +347,19 @@ public class SiteAuthService
                     {
                         bool primaryJson = !string.IsNullOrEmpty(def.ApiBase);
                         loginAttempts++;
-                        (bool ok2, List<HarvestedCookie> harvested2, _, _) =
+                        (bool ok2, List<HarvestedCookie> harvested2, _, _, _) =
                             await TryLoginAsync(def, loginUrl, userField, cred.Username, password, token, forceJson: !primaryJson).ConfigureAwait(false);
                         if (ok2 && await VerifyCachedAsync(harvested2) != SessionVerdict.Unauthenticated)
                             return await AcceptAsync(loginUrl, userField, harvested2).ConfigureAwait(false);
                     }
 
-                    lastDetail = "Signed in, but the session came back unauthenticated — check the username/password.";
+                    Note("Signed in, but the session came back unauthenticated — check the username/password.", Outcome.Unverified);
                     if (isConfirmedUrl) confirmedUrlUnverified = true;
                     // Every username field on a catch-all path yields the same
                     // visitor session, so don't try the rest — move to the next URL.
                     break;
                 }
-                lastDetail = detail;
+                Note(detail, kind);
                 // A wrong endpoint (404) is worth abandoning this URL; a rejected
                 // credential means the endpoint is right but the field/creds are off.
                 if (!endpointExists)
@@ -313,7 +387,143 @@ public class SiteAuthService
         return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
     }
 
-    private async Task<(bool ok, List<HarvestedCookie> cookies, string detail, bool endpointExists)> TryLoginAsync(
+    private const string SignInAdvice =
+        "Sign in on the site in your browser, then paste its session cookie here (Method: Paste session cookie).";
+
+    /// <summary>A login only a person can complete: say so, and what to do instead.</summary>
+    private static SiteLoginResult NeedsPerson(SiteCredentialEntity cred, bool ended)
+    {
+        cred.Status = "captcha";
+        cred.StatusDetail = (ended ? $"Your {cred.Provider} session has ended. The site" : cred.Provider) +
+            " asks for a captcha when you sign in, so Renzo Shiori can't sign in for you. " + SignInAdvice;
+        return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
+    }
+
+    /// <summary>
+    /// A site that answers its old address with a redirect to a new one has
+    /// moved, whether or not its extension has caught up yet. Sign in there:
+    /// the redirect would turn the login POST into a GET and drop the
+    /// credentials (Violet Scans, 2026-09-28 onwards).
+    /// </summary>
+    private async Task FollowSiteMoveAsync(string provider, CoinSiteDefinition def, CancellationToken token)
+    {
+        try
+        {
+            using var handler = new HttpClientHandler { AllowAutoRedirect = true, AutomaticDecompression = DecompressionMethods.All };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            using HttpResponseMessage resp = await http.GetAsync("https://" + def.Domain.TrimStart('.') + "/",
+                HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            string? landed = resp.RequestMessage?.RequestUri?.Host;
+            // A redirect to an error page is not a move.
+            if (!resp.IsSuccessStatusCode || string.IsNullOrEmpty(landed) ||
+                SourceHostsService.Normalize(landed) == SourceHostsService.Normalize(def.Domain))
+                return;
+            string old = def.Domain;
+            CoinSiteRegistry.RebaseTo(def, landed.ToLowerInvariant());
+            _registry.SaveLocal(def);
+            _logger.LogInformation("Site login {Provider}: {Old} now redirects to {New}; signing in there.", provider, old, def.Domain);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { /* unreachable root: sign in where we were going to */ }
+    }
+
+    /// <summary>
+    /// Checks a stored cookie session (a browser sign-in or a pasted cookie)
+    /// and keeps it current: re-injected while it is still a session, refreshed
+    /// when the site rolls its cookies on use, reported once it has ended.
+    /// Rolling sessions (better-auth's included) are extended by exactly this
+    /// kind of use, so a regular check is also what keeps one alive. Returns
+    /// null when nothing is stored to check.
+    /// </summary>
+    public async Task<SiteLoginResult?> CheckSessionAsync(SiteCredentialEntity cred, CoinSiteDefinition def, CancellationToken token = default)
+    {
+        List<HarvestedCookie> stored = StoredCookies(cred);
+        if (stored.Count == 0)
+            return null;
+        (SessionVerdict verdict, List<HarvestedCookie>? renewed) = await VerifySessionAsync(def, stored, token).ConfigureAwait(false);
+        if (verdict == SessionVerdict.Unauthenticated)
+        {
+            if (def.CaptchaRequired)
+                return NeedsPerson(cred, ended: true);
+            cred.Status = string.IsNullOrEmpty(cred.EncryptedPassword) ? "needs_login" : "failed";
+            cred.StatusDetail = $"Your {cred.Provider} session has ended. " + SignInAdvice;
+            return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
+        }
+        List<HarvestedCookie> live = renewed ?? stored;
+        if (renewed != null)
+            cred.EncryptedCookies = _protector.Encrypt(SerializeCookies(renewed));
+        int injected = _jar.Inject(live);
+        if (injected == 0)
+        {
+            cred.Status = "failed";
+            cred.StatusDetail = "Could not reach the cookie jar.";
+            return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
+        }
+        bool wasBroken = cred.Status is not ("ok" or "manual_cookie");
+        cred.Status = "manual_cookie";
+        cred.LastLoginAt = DateTime.UtcNow;
+        if (wasBroken || string.IsNullOrEmpty(cred.StatusDetail))
+            cred.StatusDetail = verdict == SessionVerdict.Authenticated
+                ? $"Signed in, {injected} cookies active."
+                : "Using saved cookies (paste a fresh cookie if chapters stop loading).";
+        return new SiteLoginResult(true, cred.Status, cred.StatusDetail, injected);
+    }
+
+    private List<HarvestedCookie> StoredCookies(SiteCredentialEntity cred)
+    {
+        string? json = _protector.TryDecrypt(cred.EncryptedCookies);
+        if (json == null)
+            return new List<HarvestedCookie>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<HarvestedCookie>>(json) ?? new List<HarvestedCookie>();
+        }
+        catch
+        {
+            return new List<HarvestedCookie>();
+        }
+    }
+
+    /// <summary>
+    /// After a source moved domain (see SourceMoveService): its logins were made
+    /// on the old host. A saved password signs in again on the new one; a cookie
+    /// session can't move with it, so it is marked for a fresh sign-in.
+    /// </summary>
+    public async Task OnSourceMovedAsync(string provider, string newHost, CancellationToken token = default)
+    {
+        List<SiteCredentialEntity> creds = await _db.SiteCredentials
+            .Where(c => c.Provider == provider).ToListAsync(token).ConfigureAwait(false);
+        foreach (SiteCredentialEntity cred in creds)
+        {
+            if (!string.IsNullOrEmpty(cred.EncryptedPassword))
+            {
+                SiteLoginResult r = await LoginAsync(cred, token, interactive: false).ConfigureAwait(false);
+                _logger.LogInformation("Site login {Provider} after its move to {Host}: {Detail}", provider, newHost, r.Detail);
+            }
+            else
+            {
+                // A session already made on the new host (signed in again since
+                // the move) is checked, not thrown away.
+                string target = SourceHostsService.Normalize(newHost);
+                bool onNewHost = StoredCookies(cred).Any(c =>
+                {
+                    string d = SourceHostsService.Normalize(c.Domain.TrimStart('.'));
+                    return d == target || target.EndsWith("." + d, StringComparison.Ordinal);
+                });
+                CoinSiteDefinition? def = onNewHost
+                    ? await _registry.GetDefinitionAsync(provider, token).ConfigureAwait(false) : null;
+                if (def != null && await CheckSessionAsync(cred, def, token).ConfigureAwait(false) is { Success: true })
+                    continue;
+                cred.Status = "needs_login";
+                cred.StatusDetail = $"{provider} moved to {newHost}. " + SignInAdvice;
+            }
+        }
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+    }
+
+    private async Task<(bool ok, List<HarvestedCookie> cookies, string detail, bool endpointExists, Outcome kind)> TryLoginAsync(
         CoinSiteDefinition def, string loginUrl, string userField, string username, string password, CancellationToken token,
         bool? forceJson = null)
     {
@@ -385,7 +595,7 @@ public class SiteAuthService
             List<HarvestedCookie> harvested = FromContainer(jar, def.Domain);
             bool gotSession = harvested.Count > 0 && resp.IsSuccessStatusCode &&
                 (string.IsNullOrEmpty(def.SessionCookieName) ||
-                 harvested.Any(c => c.Name.Equals(def.SessionCookieName, StringComparison.OrdinalIgnoreCase)));
+                 harvested.Any(c => IsSessionCookie(def, c.Name)));
 
             // Echo the API's own error text. A bare status code hides the actual
             // reason — better-auth answers 403 with EMAIL_NOT_VERIFIED, "account
@@ -394,16 +604,32 @@ public class SiteAuthService
             string? apiError = await ReadApiErrorAsync(resp, token).ConfigureAwait(false);
             string With(string s) => apiError == null ? s : $"{s} — {apiError}";
 
-            string detail = resp.StatusCode switch
+            // "Complete the captcha" means this IS the login, and only a person
+            // can get past it. It used to read as one more failed guess, so the
+            // search carried on and reported whatever the last candidate said
+            // (Vortex Scans: "Please complete captcha" became "HTTP 405").
+            string body = await ReadBodyAsync(resp, token).ConfigureAwait(false);
+            if (AsksForCaptcha(resp, body, gotSession))
             {
-                HttpStatusCode.NotFound => $"{Host(loginUrl)} has no login there.",
-                HttpStatusCode.Unauthorized or HttpStatusCode.UnprocessableEntity => With("Login rejected — check the username/password."),
-                _ when !resp.IsSuccessStatusCode => With($"Login endpoint returned HTTP {(int)resp.StatusCode}."),
-                _ when !gotSession => "Login didn't set a session cookie.",
-                _ => "ok",
+                resp.Dispose();
+                return (false, harvested, "captcha", true, Outcome.Captcha);
+            }
+
+            (string detail, Outcome kind) = resp.StatusCode switch
+            {
+                HttpStatusCode.NotFound => ($"{Host(loginUrl)} has no login there.", Outcome.NotThere),
+                HttpStatusCode.MethodNotAllowed => (With($"Login endpoint returned HTTP {(int)resp.StatusCode}."), Outcome.NotThere),
+                HttpStatusCode.Unauthorized or HttpStatusCode.UnprocessableEntity => (With("Login rejected — check the username/password."), Outcome.Rejected),
+                // A JSON API that explains a refusal (wrong password, unverified
+                // email, banned) is the real login talking.
+                _ when !resp.IsSuccessStatusCode && apiError != null && (int)resp.StatusCode is >= 400 and < 500 =>
+                    (With($"Login endpoint returned HTTP {(int)resp.StatusCode}."), Outcome.Rejected),
+                _ when !resp.IsSuccessStatusCode => (With($"Login endpoint returned HTTP {(int)resp.StatusCode}."), Outcome.Http),
+                _ when !gotSession => ("Login didn't set a session cookie.", Outcome.NoSession),
+                _ => ("ok", Outcome.Ok),
             };
             resp.Dispose();
-            return (gotSession, harvested, detail, endpointExists);
+            return (gotSession, harvested, detail, endpointExists, kind);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -411,8 +637,82 @@ public class SiteAuthService
         }
         catch (Exception ex)
         {
-            return (false, new List<HarvestedCookie>(), "Couldn't reach " + Host(loginUrl) + ": " + ex.Message, false);
+            return (false, new List<HarvestedCookie>(), "Couldn't reach " + Host(loginUrl) + ": " + ex.Message, false, Outcome.Unreachable);
         }
+    }
+
+    /// <summary>
+    /// Whether a cookie is this site's session cookie. WordPress suffixes its
+    /// logged-in cookie with md5(site URL), so any wordpress_logged_in_* counts:
+    /// the suffix changes whenever the site's address does.
+    /// </summary>
+    private static bool IsSessionCookie(CoinSiteDefinition def, string name)
+    {
+        const string WordPress = "wordpress_logged_in_";
+        if (name.Equals(def.SessionCookieName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        return def.SessionCookieName.StartsWith(WordPress, StringComparison.OrdinalIgnoreCase) &&
+               name.StartsWith(WordPress, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>What a failed attempt says about the login, strongest first in <see cref="Weight"/>.</summary>
+    private enum Outcome { Ok, Captcha, Rejected, Unverified, NoSession, Http, Unreachable, NotThere }
+
+    /// <summary>
+    /// How much a failure tells the user. The search tries many guessed URLs;
+    /// a later guess's 404 or 405 must never replace what the real login said.
+    /// </summary>
+    private static int Weight(Outcome o) => o switch
+    {
+        Outcome.Captcha => 7,
+        Outcome.Rejected => 6,
+        Outcome.Unverified => 5,
+        Outcome.NoSession => 4,
+        Outcome.Http => 3,
+        Outcome.Unreachable => 2,
+        _ => 1,
+    };
+
+    private static readonly Regex CaptchaWords = new(
+        @"\b(captcha|recaptcha|hcaptcha|turnstile|humanity)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex CaptchaWidget = new(
+        // The widget containers only: a site can load a captcha script on every
+        // page for its comment box, and that alone doesn't gate the login.
+        @"class=[""'][^""']*\b(cf-turnstile|g-recaptcha|h-captcha)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// True when the login wants a captcha: an API that refuses with a captcha
+    /// message, or a form page that came back with a captcha widget and no
+    /// session. A Cloudflare challenge page also talks about Turnstile, but that
+    /// guards the whole site, not the login, and has its own route (the solver),
+    /// so it is not counted.
+    /// </summary>
+    private static bool AsksForCaptcha(HttpResponseMessage resp, string body, bool gotSession)
+    {
+        if (gotSession || body.Length == 0)
+            return false;
+        bool siteChallenge = resp.Headers.Contains("cf-mitigated") ||
+            body.Contains("Just a moment", StringComparison.OrdinalIgnoreCase) ||
+            body.Contains("cf_chl_opt", StringComparison.Ordinal);
+        if (siteChallenge)
+            return false;
+        if (!resp.IsSuccessStatusCode && body.Length <= 4096 && CaptchaWords.IsMatch(body))
+            return true;
+        return CaptchaWidget.IsMatch(body);
+    }
+
+    /// <summary>The response body, bounded; empty when it can't be read.</summary>
+    private static async Task<string> ReadBodyAsync(HttpResponseMessage resp, CancellationToken token)
+    {
+        try
+        {
+            string body = await resp.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+            return body.Length > 512_000 ? body[..512_000] : body;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { return ""; }
     }
 
     /// <summary>
@@ -423,7 +723,7 @@ public class SiteAuthService
     /// the actual auth cookie (e.g. WordPress's wordpress_logged_in_*) never gets
     /// set even though login "looked" successful.
     /// </summary>
-    private async Task<(bool ok, List<HarvestedCookie> cookies, string detail, bool endpointExists)> TryLoginViaFlareSolverrAsync(
+    private async Task<(bool ok, List<HarvestedCookie> cookies, string detail, bool endpointExists, Outcome kind)> TryLoginViaFlareSolverrAsync(
         CoinSiteDefinition def, string loginUrl, string userField, string username, string password, SettingsDto settings, CancellationToken token)
     {
         string endpoint = settings.FlareSolverrUrl.TrimEnd('/') + "/v1";
@@ -448,7 +748,7 @@ public class SiteAuthService
             JsonElement? sol = await FlareSolverrCallAsync(http, endpoint,
                 new { cmd = "request.post", url = loginUrl, postData, maxTimeout = ms }, token).ConfigureAwait(false);
             if (sol == null)
-                return (false, new List<HarvestedCookie>(), "FlareSolverr couldn't reach the login endpoint.", true);
+                return (false, new List<HarvestedCookie>(), "FlareSolverr couldn't reach the login endpoint.", true, Outcome.Unreachable);
 
             var harvested = new List<HarvestedCookie>();
             if (sol.Value.TryGetProperty("cookies", out JsonElement cookiesEl) && cookiesEl.ValueKind == JsonValueKind.Array)
@@ -469,16 +769,17 @@ public class SiteAuthService
             bool endpointExists = statusCode != 404 && statusCode != 405;
             bool gotSession = harvested.Count > 0 &&
                 (string.IsNullOrEmpty(def.SessionCookieName) ||
-                 harvested.Any(c => c.Name.Equals(def.SessionCookieName, StringComparison.OrdinalIgnoreCase)));
+                 harvested.Any(c => IsSessionCookie(def, c.Name)));
 
             string detail = !endpointExists ? $"{Host(loginUrl)} has no login there."
                 : !gotSession ? "Login didn't set a session cookie (via FlareSolverr)."
                 : "ok";
-            return (gotSession, harvested, detail, endpointExists);
+            Outcome kind = !endpointExists ? Outcome.NotThere : !gotSession ? Outcome.NoSession : Outcome.Ok;
+            return (gotSession, harvested, detail, endpointExists, kind);
         }
         catch (Exception ex)
         {
-            return (false, new List<HarvestedCookie>(), "FlareSolverr login failed: " + ex.Message, false);
+            return (false, new List<HarvestedCookie>(), "FlareSolverr login failed: " + ex.Message, false, Outcome.Unreachable);
         }
     }
 
@@ -522,7 +823,7 @@ public class SiteAuthService
                 .FirstOrDefaultAsync(c => c.UserId == userId && c.Provider == provider, token).ConfigureAwait(false);
             if (cred == null)
                 return false;
-            SiteLoginResult r = await LoginAsync(cred, token).ConfigureAwait(false);
+            SiteLoginResult r = await LoginAsync(cred, token, interactive: false).ConfigureAwait(false);
             await _db.SaveChangesAsync(token).ConfigureAwait(false);
             return r.Success;
         }
@@ -625,8 +926,61 @@ public class SiteAuthService
     /// — callers treat Unknown as "accept", so a site this can't read is never
     /// worse off than before verification existed.
     /// </summary>
-    private async Task<SessionVerdict> VerifySessionAsync(
+    private async Task<(SessionVerdict Verdict, List<HarvestedCookie>? Renewed)> VerifySessionAsync(
         CoinSiteDefinition def, List<HarvestedCookie> cookies, CancellationToken token)
+    {
+        var jar = new CookieContainer();
+        SessionVerdict verdict = await VerifyWithJarAsync(def, cookies, jar, token).ConfigureAwait(false);
+        return (verdict, verdict == SessionVerdict.Authenticated ? Renewed(cookies, jar) : null);
+    }
+
+    /// <summary>
+    /// The stored cookies with whatever the site replaced while being checked
+    /// (a rolling session re-issues its cookie on use), or null when nothing
+    /// changed. Never drops a stored cookie, and never takes Cloudflare's own:
+    /// those belong to the solver's browser, not to the login.
+    /// </summary>
+    private static List<HarvestedCookie>? Renewed(List<HarvestedCookie> stored, CookieContainer jar)
+    {
+        var result = stored.ToList();
+        bool changed = false;
+        foreach (Cookie c in jar.GetAllCookies())
+        {
+            if (string.IsNullOrEmpty(c.Value) || c.Expired || IsCloudflareCookie(c.Name))
+                continue;
+            string d = c.Domain.TrimStart('.');
+            int i = result.FindIndex(x => x.Name == c.Name &&
+                string.Equals(x.Domain.TrimStart('.'), d, StringComparison.OrdinalIgnoreCase));
+            if (i >= 0)
+            {
+                if (result[i].Value != c.Value)
+                {
+                    result[i] = result[i] with { Value = c.Value };
+                    changed = true;
+                }
+            }
+            else if (!result.Any(x => x.Name == c.Name))
+            {
+                result.Add(new HarvestedCookie(c.Name, c.Value, c.Domain, string.IsNullOrEmpty(c.Path) ? "/" : c.Path, c.Secure));
+                changed = true;
+            }
+        }
+        return changed ? result : null;
+    }
+
+    /// <summary>
+    /// Cloudflare's bot-management cookies (cf_clearance, __cf_bm, _cfuvid, …).
+    /// They are bound to the browser and network that earned them, so one taken
+    /// from a phone or a desktop browser would replace the server's own and get
+    /// the server challenged on that site.
+    /// </summary>
+    private static bool IsCloudflareCookie(string name) =>
+        name.StartsWith("cf_", StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith("__cf", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("_cfuvid", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<SessionVerdict> VerifyWithJarAsync(
+        CoinSiteDefinition def, List<HarvestedCookie> cookies, CookieContainer jar, CancellationToken token)
     {
         try
         {
@@ -638,7 +992,6 @@ public class SiteAuthService
             if (string.IsNullOrEmpty(domain))
                 return SessionVerdict.Unknown;
 
-            var jar = new CookieContainer();
             foreach (HarvestedCookie c in cookies)
             {
                 string host = string.IsNullOrEmpty(c.Domain) ? domain : c.Domain.TrimStart('.');
