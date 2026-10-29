@@ -8,7 +8,7 @@ namespace RenzoBackend.Controllers;
 
 /// <summary>
 /// Controller that exposes the MCP (Model Context Protocol) server at
-/// <c>GET /{opdsPath}/mcp/sse</c> and <c>POST /{opdsPath}/mcp/message</c>.
+/// <c>POST /{opdsPath}/mcp</c> (JSON-RPC over HTTP).
 ///
 /// Uses the same OPDS path-based user resolution pattern as <see cref="OpdsController"/>.
 /// The resolved user's <see cref="UserEntity.Level"/> is used to enforce
@@ -62,63 +62,4 @@ public class McpController : ControllerBase
             ContentType = "application/json"
         };
     }
-
-    /// <summary>
-    /// GET /{opdsPath}/mcp/sse — SSE transport endpoint.
-    /// Client opens a long-lived SSE connection here. The server sends an
-    /// "endpoint" event with the absolute URL for the message endpoint.
-    /// Tool discovery is done via <c>tools/list</c> JSON-RPC, not SSE events.
-    /// </summary>
-    /*
-    [HttpGet("/{opdsPath}/mcp/sse")]
-    public async Task GetSseStream(string opdsPath, CancellationToken token)
-    {
-        UserEntity? user = await _userQuery.GetByOpdsPathAsync(opdsPath, token);
-        if (user == null || !user.IsActive)
-        {
-            HttpContext.Response.StatusCode = 404;
-            return;
-        }
-
-        // Set user in HttpContext so downstream middlewares/checks can access it
-        HttpContext.Items["User"] = user;
-
-        _logger.LogInformation("MCP SSE connection opened for user '{Username}' (opdsPath: {OpdsPath})",
-            user.Username, opdsPath);
-
-        await _mcpToolService.HandleSseTransportAsync(HttpContext, user, token);
-    }
-    */
-    /// <summary>
-    /// POST /{opdsPath}/mcp/message — JSON-RPC 2.0 message endpoint.
-    /// Client sends tool call requests here.
-    ///
-    /// Returns 200 with JSON body for requests (methods with "id" field).
-    /// Returns 204 No Content for notifications (methods without "id" field),
-    /// such as <c>notifications/initialized</c> and <c>notifications/cancelled</c>.
-    /// </summary>
-    /*
-    [HttpPost("/{opdsPath}/mcp/message")]
-    public async Task<ActionResult> PostMessage(
-        string opdsPath,
-        [FromBody] JsonElement body,
-        CancellationToken token)
-    {
-        UserEntity? user = await _userQuery.GetByOpdsPathAsync(opdsPath, token);
-        if (user == null || !user.IsActive)
-            return NotFound(new { error = "User not found or inactive" });
-
-        // Set user in HttpContext
-        HttpContext.Items["User"] = user;
-
-        JsonElement? result = await _mcpToolService.HandleJsonRpcAsync(body, user, token);
-
-        // Null response means this was a JSON-RPC notification (no "id" field).
-        // Per spec, notifications expect 204 No Content.
-        if (result == null)
-            return NoContent();
-
-        return Ok(result.Value);
-    }
-    */
 }

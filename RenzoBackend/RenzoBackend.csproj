@@ -21,6 +21,10 @@
 		<RestoreSources>$(RestoreSources);$(MSBuildThisFileDirectory)../packages;https://api.nuget.org/v3/index.json</RestoreSources>
    </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="RenzoBackend.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Remove="Migration\NewFolder\**" />
     <Compile Remove="scripts\**" />
     <Compile Remove="Services\Suwayomi\**" />

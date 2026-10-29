@@ -867,8 +867,19 @@ public class McpToolService
 
     private async Task<object> UpdateSettingsAsync(UserEntity user, JsonElement args, CancellationToken token)
     {
-        var settingsJson = args.GetRawText();
-        var editable = JsonSerializer.Deserialize<EditableSettingsDto>(settingsJson, _jsonOptions);
+        // Merge onto the current settings. Deserializing args alone replaced EVERY
+        // setting, so {"theme":…} also reset the rest, sign-in included, to defaults.
+        if (args.ValueKind != JsonValueKind.Object)
+            return new { success = false, error = "Invalid settings data" };
+        EditableSettingsDto current = await _settings.GetSettingsAsync(token);
+        var merged = JsonSerializer.SerializeToNode(current, _jsonOptions)!.AsObject();
+        foreach (var prop in args.EnumerateObject())
+        {
+            string key = merged.Select(kv => kv.Key)
+                .FirstOrDefault(k => k.Equals(prop.Name, StringComparison.OrdinalIgnoreCase)) ?? prop.Name;
+            merged[key] = System.Text.Json.Nodes.JsonNode.Parse(prop.Value.GetRawText());
+        }
+        var editable = merged.Deserialize<EditableSettingsDto>(_jsonOptions);
         if (editable == null)
             return new { success = false, error = "Invalid settings data" };
 

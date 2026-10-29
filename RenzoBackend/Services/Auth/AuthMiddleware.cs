@@ -45,7 +45,21 @@ public class AuthMiddleware
         var settings = scope.ServiceProvider.GetRequiredService<Services.Settings.SettingsService>();
         var jwtService = scope.ServiceProvider.GetRequiredService<JwtTokenService>();
 
-        bool authEnabled = await IsAuthenticationEnabled(settings);
+        // Fail CLOSED: if the settings can't be read (a busy database at startup),
+        // treating sign-in as off would let an X-Renzo-User header pick any user.
+        bool authEnabled;
+        try
+        {
+            authEnabled = (await settings.GetSettingsAsync()).AuthenticationEnabled;
+        }
+        catch (Exception ex)
+        {
+            scope.ServiceProvider.GetRequiredService<ILogger<AuthMiddleware>>()
+                .LogWarning(ex, "Settings unreadable; answering 503 rather than skipping sign-in");
+            context.Response.StatusCode = 503;
+            context.Response.Headers.RetryAfter = "5";
+            return;
+        }
 
         // SignalR hub connections (WebSocket upgrades) can't carry the
         // X-Renzo-User header the no-auth mode otherwise relies on — browsers
@@ -195,29 +209,23 @@ public class AuthMiddleware
     private static bool IsHubRoute(PathString path) =>
         path.StartsWithSegments("/progress");
 
-    private static bool IsBypassRoute(PathString path)
+    internal static bool IsBypassRoute(PathString path)
     {
-        // Routes that use path-based user resolution (OPDS, MCP) bypass JWT auth.
-        // The user is resolved from the {opdsPath} segment by the controller itself.
-        // We can't easily distinguish OPDS routes by prefix, but MCP routes have a
-        // recognizable /mcp/ segment.
-        var pathStr = path.Value?.Trim('/') ?? "";
-        var segments = pathStr.Split('/');
-        // MCP: /{opdsPath}/mcp/sse or /{opdsPath}/mcp/message
-        if (segments.Length >= 2 && segments[1].Equals("mcp", StringComparison.OrdinalIgnoreCase))
+        // OPDS and MCP (/{opdsPath}/…) resolve the user from the path itself:
+        // reader apps and AI tools can't send a JWT. Only an unguessable path
+        // skips sign-in. Any "x/mcp" used to, and a two-word path was guessable.
+        var first = (path.Value?.TrimStart('/') ?? "").Split('/')[0];
+        if (OpdsPathGenerator.IsStrong(first))
             return true;
         // Container-hosted OAuth: the provider redirects the user's browser to
         // /oauth/{provider}/callback with no Renzo JWT — it must be reachable
         // unauthenticated. The forwarder + bundled proxy validate state/instance-key.
         if (path.StartsWithSegments("/oauth"))
             return true;
-        // OPDS: anything that doesn't start with /api/ is treated as OPDS
-        // Since we can't distinguish easily, we handle OPDS routes in the middleware below
-        // by allowing all routes through if auth is disabled or if the route doesn't start with /api/
         return false;
     }
 
-    private static bool IsPublicRoute(PathString path, string method)
+    internal static bool IsPublicRoute(PathString path, string method)
     {
         // EXACT match (after trimming a trailing slash), not prefix match: a loose
         // StartsWith let a crafted path like "/api/auth/statusX" or
@@ -266,19 +274,6 @@ public class AuthMiddleware
         }
 
         return false;
-    }
-
-    private static async Task<bool> IsAuthenticationEnabled(Services.Settings.SettingsService settings)
-    {
-        try
-        {
-            var editableSettings = await settings.GetSettingsAsync();
-            return editableSettings.AuthenticationEnabled;
-        }
-        catch
-        {
-            return false;
-        }
     }
 }
 

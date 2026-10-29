@@ -148,6 +148,10 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: Test backend
+        # Which routes skip sign-in, and the 18+ tag list matching the web copy.
+        run: dotnet test RenzoBackend.Tests/RenzoBackend.Tests.csproj -c Release
+
       - name: Publish backend (linux-x64)
         # --self-contained false on purpose: the image installs
         # aspnetcore-runtime-8.0, so bundling a second runtime only inflates
