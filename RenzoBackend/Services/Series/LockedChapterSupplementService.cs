@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -10,8 +11,11 @@ namespace RenzoBackend.Services.Series;
 
 /// <summary>
 /// Supplements a provider's chapter list with the paid/coin-gated chapters that
-/// the source's own Mihon extension doesn't parse. Two platforms are recognised,
-/// each detected by its own markup — never by a hardcoded host list:
+/// the source's own Mihon extension doesn't parse. Three platforms are
+/// recognised, each detected by its own markup — never by a hardcoded host list.
+/// It runs for EVERY source, login or not (Sana Scans showed none of its paid
+/// chapters because the check used to need a saved site login). Each host's
+/// platform is remembered, so a site with none of them costs one probe a day:
 ///
 ///  1. The WordPress "lock chapters" plugin (mangareader-style theme): every
 ///     chapter is a &lt;li data-num="N"&gt;, but a locked one uses a purchase-modal
@@ -19,13 +23,20 @@ namespace RenzoBackend.Services.Series;
 ///     NO href, so the extension — which only follows real chapter links —
 ///     silently drops them. e.g. Violet Scans.
 ///
-///  2. The "vcomics" Astro platform (e.g. Magus Manga): the page is a static
+///  2. The "vcomics" Astro platform (Magus Manga, Vortex, Sana Scans): the page is a static
 ///     shell whose chapter list is hydrated client-side from a separate JSON API
 ///     (PUBLIC_API_URL -> /api/chapters?postId=N). Locked chapters carry
 ///     isLocked/price/isAccessible there. The extension only sees the server-
 ///     rendered free chapters, so the coin-gated ones never appear at all — and
 ///     none of the WordPress markers exist on these sites, so strategy 1 finds
 ///     nothing.
+///
+///  3. The "vapi" platform (EZmanga): see FetchChapterStatesAsync.
+///
+/// vcomics and vapi report lock state as data, so <see cref="FetchChapterStatesAsync"/>
+/// re-reads it on every scan (these sites publish a chapter paid and free it
+/// later). The WordPress plugin only marks what is locked right now, so it is
+/// discovery-only, via <see cref="FetchLockedChaptersAsync"/>.
 ///
 /// Either way the gated chapters are returned as <see cref="Chapter"/> rows
 /// flagged <see cref="Chapter.IsLocked"/>. They then show as "locked" in the UI;
@@ -50,6 +61,29 @@ public class LockedChapterSupplementService
         _logger = logger;
     }
 
+    private enum Platform { None, Vapi, VComics, WordPressLock }
+
+    // Per host, for the process lifetime. A platform found stays found (it is a
+    // site-wide build, not per series) until its fingerprint stops matching; "none"
+    // is re-checked daily, or on every scan for a source the owner has a login for.
+    private static readonly ConcurrentDictionary<string, (Platform P, DateTime At)> Platforms =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan NoneRecheck = TimeSpan.FromHours(24);
+
+    private static Platform? Known(string host, bool recheckNone)
+    {
+        if (!Platforms.TryGetValue(host, out var v))
+            return null;
+        if (v.P == Platform.None && (recheckNone || DateTime.UtcNow - v.At > NoneRecheck))
+            return null;
+        return v.P;
+    }
+
+    private static void Remember(string host, Platform p) => Platforms[host] = (p, DateTime.UtcNow);
+
+    private static string HostOf(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out Uri? u) ? u.Host : "";
+
     // <li data-num="104"> ... </li>  — one per chapter (free or locked).
     private static readonly Regex LiRegex = new(
         @"<li[^>]*\bdata-num=""(?<num>[0-9]+(?:\.[0-9]+)?)""[^>]*>(?<body>.*?)</li>",
@@ -60,13 +94,15 @@ public class LockedChapterSupplementService
     private static readonly Regex DateRegex = new(@"class=""chapterdate""[^>]*>\s*(?<d>[^<]+)<", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
-    /// Returns the coin-gated chapters found on the series page that aren't in
-    /// <paramref name="existingNumbers"/>. Never throws — returns an empty list on
-    /// any failure (missing FlareSolverr, non-lock-plugin site, parse miss, …).
+    /// WordPress lock plugin: the coin-gated chapters on the series page that
+    /// aren't in <paramref name="existingNumbers"/>. Call it only when
+    /// <see cref="FetchChapterStatesAsync"/> found nothing. Never throws — returns
+    /// an empty list on any failure (missing FlareSolverr, other platform, parse miss, …).
     /// </summary>
     public async Task<List<Chapter>> FetchLockedChaptersAsync(
         string sampleChapterUrl,
         IReadOnlyCollection<decimal> existingNumbers,
+        bool recheck,
         CancellationToken token = default)
     {
         var result = new List<Chapter>();
@@ -75,29 +111,37 @@ public class LockedChapterSupplementService
             if (string.IsNullOrWhiteSpace(sampleChapterUrl))
                 return result;
 
-            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-
-            // vcomics/Astro sites serve plain (usually un-challenged) HTML + a JSON
-            // API, so this path works even with FlareSolverr switched off — try it
-            // first and only fall through when the site isn't that platform.
-            List<Chapter> viaApi = await TryVComicsAsync(sampleChapterUrl, existingNumbers, settings, token).ConfigureAwait(false);
-            if (viaApi.Count > 0)
-                return viaApi;
-
-            // WordPress path. Fetched plain-first with a FlareSolverr fallback
-            // (rather than requiring FlareSolverr up front) so a gated chapter is
-            // always at least ATTEMPTED — the old hard gate meant that with
-            // FlareSolverr off the paid chapters were silently dropped instead.
-            if (sampleChapterUrl.IndexOf("-chapter-", StringComparison.OrdinalIgnoreCase) < 0)
+            string host = HostOf(sampleChapterUrl);
+            Platform? known = Known(host, recheck);
+            if (known is not (null or Platform.WordPressLock))
                 return result;
 
-            string? seriesUrl = DeriveSeriesUrl(sampleChapterUrl);
+            // Fetched plain-first with a FlareSolverr fallback (rather than
+            // requiring FlareSolverr up front) so a gated chapter is always at
+            // least ATTEMPTED — the old hard gate meant that with FlareSolverr
+            // off the paid chapters were silently dropped instead.
+            string? seriesUrl = sampleChapterUrl.IndexOf("-chapter-", StringComparison.OrdinalIgnoreCase) < 0
+                ? null
+                : DeriveSeriesUrl(sampleChapterUrl);
             if (seriesUrl == null)
+            {
+                Remember(host, Platform.None); // the source's URL shape isn't this plugin's
                 return result;
+            }
 
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
             string? html = await FetchHtmlAsync(settings, seriesUrl, token).ConfigureAwait(false);
-            if (string.IsNullOrEmpty(html) || html.IndexOf("lockedChapterModal", StringComparison.OrdinalIgnoreCase) < 0)
-                return result; // not a lock-chapters site, or nothing gated
+            if (string.IsNullOrEmpty(html))
+                return result; // couldn't fetch: decide nothing
+            if (html.IndexOf("lockedChapterModal", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                // Nothing gated on THIS series. The plugin only shows on a series
+                // with a locked chapter, so a known lock site stays known.
+                if (known == null)
+                    Remember(host, Platform.None);
+                return result;
+            }
+            Remember(host, Platform.WordPressLock);
 
             string chapterBase = sampleChapterUrl.Substring(0, sampleChapterUrl.LastIndexOf("-chapter-", StringComparison.OrdinalIgnoreCase));
             var seen = new HashSet<decimal>(existingNumbers);
@@ -163,37 +207,42 @@ public class LockedChapterSupplementService
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
-    /// Locked chapters on a vcomics/Astro site. The chapter list isn't in the HTML
-    /// at all — the shell hydrates it from {api}/api/chapters?postId=N, which
-    /// reports isLocked/price/isAccessible per chapter. Returns empty (never
-    /// throws) when the site isn't this platform.
+    /// Every chapter of a vcomics/Astro series with its lock state. The chapter
+    /// list isn't in the HTML at all — the shell hydrates it from
+    /// {api}/api/chapters?postId=N, which reports isLocked/price/isAccessible per
+    /// chapter, all in one response. IsPlatform is false (never throws) when the
+    /// site isn't this platform.
     /// </summary>
-    private async Task<List<Chapter>> TryVComicsAsync(
+    private async Task<(bool IsPlatform, List<ChapterState> States)> TryVComicsAsync(
         string sampleChapterUrl,
-        IReadOnlyCollection<decimal> existingNumbers,
-        SettingsDto settings,
         CancellationToken token)
     {
-        var result = new List<Chapter>();
+        var result = new List<ChapterState>();
+        bool isPlatform = false;
         try
         {
             string? seriesUrl = DeriveVComicsSeriesUrl(sampleChapterUrl);
             if (seriesUrl == null)
-                return result;
+                return (false, result);
 
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
             string? html = await FetchHtmlAsync(settings, seriesUrl, token).ConfigureAwait(false);
             if (string.IsNullOrEmpty(html))
-                return result;
+                return (false, result);
 
             // Platform fingerprint: the Astro build emits /_vcomics/ assets and
             // inlines the API host. Both absent -> not this platform.
             Match api = ApiUrlRegex.Match(html);
             if (!api.Success || html.IndexOf("/_vcomics/", StringComparison.OrdinalIgnoreCase) < 0)
-                return result;
+                return (false, result);
+            isPlatform = true;
 
             string? postId = FindPostId(html, seriesUrl);
             if (postId == null)
-                return result;
+            {
+                _logger.LogWarning("vcomics: no series id found on {Series}; its paid chapters can't be listed", seriesUrl);
+                return (true, result);
+            }
 
             string apiBase = api.Groups["u"].Value.TrimEnd('/');
 
@@ -208,7 +257,7 @@ public class LockedChapterSupplementService
 
             using HttpResponseMessage resp = await http.GetAsync(endpoint, token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
-                return result;
+                return (true, result);
 
             await using Stream stream = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
             using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: token).ConfigureAwait(false);
@@ -216,20 +265,14 @@ public class LockedChapterSupplementService
             if (!doc.RootElement.TryGetProperty("post", out JsonElement postEl) ||
                 !postEl.TryGetProperty("chapters", out JsonElement chapters) ||
                 chapters.ValueKind != JsonValueKind.Array)
-                return result;
+                return (true, result);
 
-            var seen = new HashSet<decimal>(existingNumbers);
             foreach (JsonElement c in chapters.EnumerateArray())
             {
-                // Only supplement what the extension can't see: gated chapters.
-                if (!(c.TryGetProperty("isLocked", out JsonElement locked) &&
-                      locked.ValueKind == JsonValueKind.True))
-                    continue;
-
+                bool isLocked = c.TryGetProperty("isLocked", out JsonElement locked) &&
+                                locked.ValueKind == JsonValueKind.True;
                 if (!TryGetDecimal(c, "number", out decimal num))
                     continue;
-                if (!seen.Add(num))
-                    continue; // extension already listed it
 
                 string? slug = c.TryGetProperty("slug", out JsonElement s) ? s.GetString() : null;
                 if (string.IsNullOrWhiteSpace(slug))
@@ -247,23 +290,13 @@ public class LockedChapterSupplementService
                         out DateTime dt))
                     uploaded = dt;
 
-                result.Add(new Chapter
-                {
-                    Number = num,
-                    Name = title,
-                    Url = $"{seriesUrl.TrimEnd('/')}/{slug.Trim('/')}",
-                    ProviderUploadDate = uploaded,
-                    DateFetched = DateTime.UtcNow,
-                    IsLocked = true,
-                    ShouldDownload = false, // don't auto-queue a coin-gated chapter
-                    IsDeleted = false,
-                });
+                result.Add(new ChapterState(num, title, $"{seriesUrl.TrimEnd('/')}/{slug.Trim('/')}", uploaded, isLocked));
             }
 
             if (result.Count > 0)
                 _logger.LogInformation(
-                    "Locked-chapter supplement (vcomics): found {Count} coin-gated chapter(s) at {Series}",
-                    result.Count, seriesUrl);
+                    "Locked-chapter supplement (vcomics): {Total} chapter(s) at {Series}, {Locked} still paid.",
+                    result.Count, seriesUrl, result.Count(c => c.IsLocked));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -272,8 +305,9 @@ public class LockedChapterSupplementService
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "vcomics locked-chapter supplement failed for {Url}", sampleChapterUrl);
+            return (isPlatform, []);
         }
-        return result;
+        return (isPlatform, result);
     }
 
     /// <summary>
@@ -366,21 +400,58 @@ public class LockedChapterSupplementService
     /// <summary>
     /// Every chapter the source reports for this series, with its CURRENT lock
     /// state — including ones already known, so a caller can unlock what has since
-    /// become free. Empty when the site isn't on this platform.
+    /// become free. Covers the platforms that report lock state as data (vapi,
+    /// vcomics). Empty when the site is on neither. <paramref name="recheck"/>
+    /// ignores a remembered "none" (the owner has a login for this source).
     /// </summary>
-    public async Task<List<ChapterState>> FetchChapterStatesAsync(string sampleChapterUrl, CancellationToken token = default)
+    public async Task<List<ChapterState>> FetchChapterStatesAsync(string sampleChapterUrl, bool recheck, CancellationToken token = default)
+    {
+        string host = HostOf(sampleChapterUrl);
+        if (host.Length == 0)
+            return [];
+        Platform? known = Known(host, recheck);
+        if (known is Platform.None or Platform.WordPressLock)
+            return [];
+
+        if (known is null or Platform.Vapi)
+        {
+            var (isVapi, states) = await TryVapiAsync(sampleChapterUrl, token).ConfigureAwait(false);
+            if (isVapi)
+            {
+                Remember(host, Platform.Vapi);
+                return states;
+            }
+        }
+        if (known is null or Platform.VComics)
+        {
+            var (isVComics, states) = await TryVComicsAsync(sampleChapterUrl, token).ConfigureAwait(false);
+            if (isVComics)
+            {
+                Remember(host, Platform.VComics);
+                return states;
+            }
+        }
+        // A remembered platform that no longer matches: the site changed. Probe
+        // afresh next time; FetchLockedChaptersAsync decides on WordPress/none.
+        if (known != null)
+            Platforms.TryRemove(host, out _);
+        return [];
+    }
+
+    private async Task<(bool IsPlatform, List<ChapterState> States)> TryVapiAsync(string sampleChapterUrl, CancellationToken token)
     {
         var result = new List<ChapterState>();
+        bool isPlatform = false;
         try
         {
             if (!Uri.TryCreate(sampleChapterUrl, UriKind.Absolute, out Uri? uri))
-                return result;
+                return (false, result);
 
             // /series/{slug}/chapter-N  ->  slug
             string[] parts = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
             int si = Array.FindIndex(parts, p => p.Equals("series", StringComparison.OrdinalIgnoreCase));
             if (si < 0 || si + 1 >= parts.Length)
-                return result;
+                return (false, result);
             string slug = parts[si + 1];
 
             string apiBase = $"{uri.Scheme}://vapi.{uri.Host}/api/v1";
@@ -407,7 +478,8 @@ public class LockedChapterSupplementService
                     // the API from any other /chapters endpoint that might answer.
                     if (!row.TryGetProperty("requiresPurchase", out JsonElement rp) ||
                         !row.TryGetProperty("isFree", out JsonElement free))
-                        return result;
+                        return (false, []);
+                    isPlatform = true;
                     if (!TryGetDecimal(row, "number", out decimal num))
                         continue;
 
@@ -447,9 +519,9 @@ public class LockedChapterSupplementService
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "vapi chapter-state supplement failed for {Url}", sampleChapterUrl);
-            return [];
+            return (isPlatform, []);
         }
-        return result;
+        return (isPlatform, result);
     }
 
     private static bool TryGetDecimal(JsonElement obj, string name, out decimal value)

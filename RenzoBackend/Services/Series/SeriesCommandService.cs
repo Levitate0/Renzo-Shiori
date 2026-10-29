@@ -810,10 +810,14 @@ namespace RenzoBackend.Services.Series
                         chaptersChanged = true;
                     }
                 }
-                // Supplement with coin-gated chapters the extension can't see, but
-                // only when the owner has a login for this source (a paid site) —
-                // no point hitting FlareSolverr for a source with no paywall/login.
-                if (await OwnerHasSiteLoginAsync(series.OwnerId, serie.Provider, token).ConfigureAwait(false))
+                // Supplement with coin-gated chapters the extension can't see, for
+                // EVERY source: it used to need a saved site login, so a paid site
+                // the owner hadn't signed in to (Sana Scans) never showed its paid
+                // chapters at all. The service remembers each host's platform, so a
+                // site without one costs a probe a day. Without a login a paid
+                // chapter only shows as locked: allowLocked below still keeps it
+                // out of the queue. With a login, "none" is re-checked every scan.
+                bool hasSiteLogin = await OwnerHasSiteLoginAsync(series.OwnerId, serie.Provider, token).ConfigureAwait(false);
                 {
                     // Any chapter-looking URL will do — the supplement service
                     // fingerprints the platform itself and safely returns nothing
@@ -834,7 +838,7 @@ namespace RenzoBackend.Services.Series
                         // isn't enough, its state has to be refreshed or it stays
                         // "locked" forever and is never downloaded.
                         List<LockedChapterSupplementService.ChapterState> states = await _lockedSupplement
-                            .FetchChapterStatesAsync(sampleUrl, token).ConfigureAwait(false);
+                            .FetchChapterStatesAsync(sampleUrl, hasSiteLogin, token).ConfigureAwait(false);
                         if (states.Count > 0)
                         {
                             foreach (LockedChapterSupplementService.ChapterState st in states)
@@ -851,8 +855,9 @@ namespace RenzoBackend.Services.Series
                                         DateFetched = DateTime.UtcNow,
                                         IsLocked = st.IsLocked,
                                         // A chapter that is already free is a normal new
-                                        // chapter and should download like any other.
-                                        ShouldDownload = !st.IsLocked,
+                                        // chapter and should download like any other,
+                                        // within the series' download cutoff.
+                                        ShouldDownload = !st.IsLocked && AfterCutoff(serie, st.Number),
                                         IsDeleted = false,
                                     });
                                     chaptersChanged = true;
@@ -885,7 +890,8 @@ namespace RenzoBackend.Services.Series
                                         existing.Name = st.Name;
                                         changed = true;
                                     }
-                                    if (!st.IsLocked && string.IsNullOrEmpty(existing.Filename) && !existing.ShouldDownload)
+                                    if (!st.IsLocked && string.IsNullOrEmpty(existing.Filename) && !existing.ShouldDownload
+                                        && AfterCutoff(serie, st.Number))
                                     {
                                         existing.ShouldDownload = true;
                                         changed = true;
@@ -899,7 +905,7 @@ namespace RenzoBackend.Services.Series
                         {
                             var existingNums = serie.Chapters.Where(c => c.Number != null).Select(c => c.Number!.Value).ToList();
                             List<Models.Chapter> locked = await _lockedSupplement
-                                .FetchLockedChaptersAsync(sampleUrl, existingNums, token).ConfigureAwait(false);
+                                .FetchLockedChaptersAsync(sampleUrl, existingNums, hasSiteLogin, token).ConfigureAwait(false);
                             foreach (Models.Chapter lc in locked)
                             {
                                 serie.Chapters.Add(lc);
@@ -1392,6 +1398,10 @@ namespace RenzoBackend.Services.Series
         /// owner (or any user for legacy unowned series). "ok" = auto-login worked,
         /// "manual_cookie" = a pasted session cookie is in the jar.
         /// </summary>
+        /// <summary>Past the series' "continue after chapter" cutoff, the same rule new chapters get.</summary>
+        private static bool AfterCutoff(SeriesProviderEntity p, decimal number) =>
+            p.ContinueAfterChapter == null || p.ContinueAfterChapter < number;
+
         private async Task<bool> OwnerHasSiteLoginAsync(Guid ownerId, string provider, CancellationToken token)
         {
             if (string.IsNullOrEmpty(provider))
