@@ -1139,6 +1139,11 @@
 .ch-cell span {
   opacity: 0.5;
 }
+.ch-cell .ch-max {
+  font-size: 10px;
+  color: hsl(var(--as-fg-dim));
+  white-space: nowrap;
+}
 
 /* Mobile source card (singular) — hidden on desktop, shown ≤640px */
 .src-card {

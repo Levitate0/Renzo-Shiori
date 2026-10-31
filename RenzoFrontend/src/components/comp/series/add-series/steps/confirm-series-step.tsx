@@ -16,6 +16,16 @@ import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
 import { ChevronDown } from "lucide-react";
 
 // ─── DynamicTags — kept as a named export for external consumers ─────────────
+/** Highest chapter number a source lists; the count alone hides gaps and late starts. */
+function highestChapter(series: FullSeries): number | null {
+  let max: number | null = null;
+  for (const c of series.chapters ?? []) {
+    const n = c.number ?? c.chapterNumber;
+    if (typeof n === "number" && Number.isFinite(n) && n >= 0 && (max === null || n > max)) max = n;
+  }
+  return max;
+}
+
 export function DynamicTags({ genres }: { genres: string[] }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = React.useState<number>(6);
@@ -467,6 +477,7 @@ export function ConfirmSeriesStep({
             {validFullSeries.map((series) => {
               const seriesKey = `${getSeriesId(series)}-${series.provider}-${series.lang}-${series.scanlator}`;
               const chCount = series.chapterCount;
+              const maxCh = highestChapter(series);
               const thumbUrl = series.thumbnailUrl ? formatThumbnailUrl(series.thumbnailUrl) : null;
               return (
                 <React.Fragment key={seriesKey}>
@@ -516,6 +527,7 @@ export function ConfirmSeriesStep({
                     <div className="ch-cell">
                       <span className="num">{chCount}</span>
                       <span className="lab"> ch</span>
+                      {maxCh !== null && <div className="ch-max">up to {maxCh}</div>}
                     </div>
                   </div>
 
@@ -594,6 +606,7 @@ export function ConfirmSeriesStep({
             {validFullSeries.map((series) => {
               const seriesKey = `${getSeriesId(series)}-${series.provider}-${series.lang}-${series.scanlator}`;
               const chCount = series.chapterCount;
+              const maxCh = highestChapter(series);
               const thumbUrl = series.thumbnailUrl ? formatThumbnailUrl(series.thumbnailUrl) : null;
               return (
                 <React.Fragment key={seriesKey}>
@@ -645,6 +658,14 @@ export function ConfirmSeriesStep({
                         <span>
                           <span className="num">{chCount}</span> chapters
                         </span>
+                        {maxCh !== null && (
+                          <>
+                            <span className="sep">·</span>
+                            <span>
+                              up to ch <span className="num">{maxCh}</span>
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                     {series.isUnselectable && (
