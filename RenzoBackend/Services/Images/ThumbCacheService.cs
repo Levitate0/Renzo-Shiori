@@ -228,7 +228,12 @@ namespace RenzoBackend.Services.Images
                     Key = key,
                     Url = url,
                     MihonProviderId = mihonProviderId,
-                    NextUpdateUTC = DateTime.UtcNow.Add(GetCacheDuration())
+                    // Due now: the image is fetched on first view. A future time
+                    // here reads as "a recent fetch failed" to the cooldown in
+                    // UrlImageProvider.ObtainStreamAsync, which then skipped every
+                    // new cover for AgeInDays; long enough for a signed,
+                    // expiring cover link (Philia) to die before its first fetch.
+                    NextUpdateUTC = DateTime.UtcNow
                 };
                 await _db.ETagCache.AddAsync(newCacheEntry, token).ConfigureAwait(false);
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
@@ -270,6 +275,13 @@ namespace RenzoBackend.Services.Images
             }
         }
        
+        /// <summary>True when this url's image is already in the file cache.</summary>
+        public async Task<bool> IsCachedAsync(string url, CancellationToken token = default)
+        {
+            EtagCacheEntity? e = await _db.ETagCache.AsNoTracking().FirstOrDefaultAsync(c => c.Url == url, token).ConfigureAwait(false);
+            return e != null && !string.IsNullOrEmpty(e.Extension);
+        }
+
         public TimeSpan GetCacheDuration()
         {
             return TimeSpan.FromDays(_options.AgeInDays > 0 ? _options.AgeInDays : 1);

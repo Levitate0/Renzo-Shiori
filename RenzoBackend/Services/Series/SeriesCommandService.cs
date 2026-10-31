@@ -718,6 +718,22 @@ namespace RenzoBackend.Services.Series
                     if (isStatusAuthority)
                         series.Status = newStatus;
 
+                    // Some sources sign their cover links with an expiry (Philia).
+                    // A link stored at add time that never got its image cached is
+                    // dead weight; take the source's current one. A cached cover is
+                    // left alone, so its key (and every client's cache) holds.
+                    string? newThumb = extensionManga.ThumbnailUrl;
+                    if (!string.IsNullOrWhiteSpace(newThumb) && newThumb != serie.ThumbnailUrl
+                        && (string.IsNullOrEmpty(serie.ThumbnailUrl) || !await _cache.IsCachedAsync(serie.ThumbnailUrl, token).ConfigureAwait(false)))
+                    {
+                        string? old = serie.ThumbnailUrl;
+                        await _cache.AddUrlAsync(newThumb, serie.MihonProviderId, token).ConfigureAwait(false);
+                        serie.ThumbnailUrl = newThumb;
+                        _db.Touch(serie, a => a.ThumbnailUrl);
+                        if (string.IsNullOrEmpty(series.ThumbnailUrl) || series.ThumbnailUrl == old)
+                            series.ThumbnailUrl = newThumb;
+                    }
+
                     // Update provider-level metadata
                     serie.Status = newStatus;
                     serie.LastKnownStatus = newStatus;
