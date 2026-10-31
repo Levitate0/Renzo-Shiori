@@ -3,6 +3,7 @@ using RenzoBackend.Extensions;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Services.Bridge;
+using RenzoBackend.Services.Downloads;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Mihon.ExtensionsBridge.Models;
@@ -27,6 +28,7 @@ public class ReaderPreviewService
     private readonly IMemoryCache _cache;
     private readonly SiteAuth.SiteAuthService _siteAuth;
     private readonly Series.VComicsContentService _vcomics;
+    private readonly Downloads.DownloadCommandService _downloads;
     private readonly ILogger _logger;
 
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
@@ -76,8 +78,10 @@ public class ReaderPreviewService
 
     public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache,
         SiteAuth.SiteAuthService siteAuth, StreamImageCache imageCache,
-        Series.VComicsContentService vcomics, ILogger<ReaderPreviewService> logger)
+        Series.VComicsContentService vcomics, Downloads.DownloadCommandService downloads,
+        ILogger<ReaderPreviewService> logger)
     {
+        _downloads = downloads;
         _db = db;
         _mihon = mihon;
         _cache = cache;
@@ -737,6 +741,21 @@ public class ReaderPreviewService
 
             _db.Touch(provider!, p => p.Chapters);
             await _db.SaveChangesAsync(token).ConfigureAwait(false);
+
+            // Queue it NOW. Marking it wanted only took effect at the series' next
+            // scan, up to a couple of hours after the user had just bought it.
+            if (cha.ShouldDownload && string.IsNullOrEmpty(cha.Filename))
+            {
+                Models.Database.SeriesEntity? series = await _db.Series.Include(s => s.Sources)
+                    .FirstOrDefaultAsync(s => s.Id == provider!.SeriesId, token).ConfigureAwait(false);
+                if (series is { PauseDownloads: false })
+                {
+                    var chaps = series.GenerateDownloadsFromChapterData(provider!,
+                        [Series.SeriesCommandService.ChapterToParsedChapter(cha, provider!)], allowLocked: true);
+                    if (chaps.Count > 0)
+                        await _downloads.QueueChapterDownloadsAsync(provider!, chaps, token).ConfigureAwait(false);
+                }
+            }
         }
         catch (Exception ex)
         {

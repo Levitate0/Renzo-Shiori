@@ -312,6 +312,32 @@ namespace RenzoBackend.Controllers
         }
 
         /// <summary>
+        /// Starts checking every still-locked chapter of a series against the owner's
+        /// site logins (for chapters bought in bulk on the site). Runs in the
+        /// background; poll GET check-purchases for the result.
+        /// </summary>
+        [HttpPost("check-purchases")]
+        [RequireUserLevel(UserLevel.Manager)]
+        public async Task<ActionResult> CheckPurchasesAsync([FromQuery] Guid seriesId, CancellationToken token = default)
+        {
+            if (seriesId == Guid.Empty)
+                return BadRequest("No series id provided");
+            if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
+            var purchases = HttpContext.RequestServices.GetRequiredService<PurchaseCheckService>();
+            PurchaseCheckService.Progress p = await purchases.StartAsync(seriesId, token).ConfigureAwait(false);
+            return p.Error != null && !p.Running && p.Total == 0 ? BadRequest(new { error = p.Error }) : Ok(p);
+        }
+
+        /// <summary>Progress of the latest purchase check for a series (404 when none ran).</summary>
+        [HttpGet("check-purchases")]
+        public async Task<ActionResult> CheckPurchasesStatusAsync([FromQuery] Guid seriesId, CancellationToken token = default)
+        {
+            if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
+            PurchaseCheckService.Progress? p = HttpContext.RequestServices.GetRequiredService<PurchaseCheckService>().Status(seriesId);
+            return p == null ? NotFound() : Ok(p);
+        }
+
+        /// <summary>
         /// Deletes downloaded chapter files for a series. With no body (or an empty
         /// chapter list) every downloaded chapter is removed; otherwise only the
         /// listed chapter numbers. Metadata stays so chapters can be re-downloaded.

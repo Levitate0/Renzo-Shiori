@@ -279,6 +279,24 @@ export const seriesService = {
   },
 
   /**
+   * Check every still-locked chapter of a series against the owner's site
+   * logins (after buying chapters in bulk on the site). Starts a background
+   * check; poll purchaseCheckStatus for the result.
+   */
+  async checkPurchases(seriesId: string): Promise<PurchaseCheck> {
+    return apiClient.post<PurchaseCheck>(
+      `/api/serie/check-purchases?seriesId=${encodeURIComponent(seriesId)}`,
+      {}
+    );
+  },
+
+  async purchaseCheckStatus(seriesId: string): Promise<PurchaseCheck> {
+    return apiClient.get<PurchaseCheck>(
+      `/api/serie/check-purchases?seriesId=${encodeURIComponent(seriesId)}`
+    );
+  },
+
+  /**
    * Delete downloaded chapter files for a series. Pass chapter numbers to delete
    * only those; omit (or pass an empty array) to delete every downloaded chapter.
    * Metadata is kept so chapters can be re-downloaded later.
@@ -290,3 +308,15 @@ export const seriesService = {
     );
   },
 };
+
+/** Progress of a series' purchase check (POST/GET /api/serie/check-purchases). */
+export interface PurchaseCheck {
+  running: boolean;
+  total: number;
+  checked: number;
+  owned: number;
+  stillLocked: number;
+  /** Couldn't tell: the source timed out or errored. */
+  failed: number;
+  error?: string | null;
+}

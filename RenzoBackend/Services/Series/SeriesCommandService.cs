@@ -865,15 +865,20 @@ namespace RenzoBackend.Services.Series
                                 else
                                 {
                                     bool changed = false;
-                                    if (existing.IsLocked != st.IsLocked)
+                                    // Only ever UNLOCK here. These APIs are read without
+                                    // the owner's session, so a chapter they bought still
+                                    // reads "paid", and copying that back re-locked every
+                                    // purchase the reader had just unlocked (Vortex ch 48,
+                                    // EZmanga). Sites don't re-lock a chapter, so an
+                                    // unlocked one stays unlocked.
+                                    if (existing.IsLocked && !st.IsLocked)
                                     {
-                                        existing.IsLocked = st.IsLocked;
+                                        existing.IsLocked = false;
                                         // Going free ends the paywall backoff: the
                                         // chapter should queue on this scan, not wait
                                         // out the remainder of an interval that exists
                                         // only to pace retries against a paywall.
-                                        if (!st.IsLocked)
-                                            existing.LockedCheckedAt = null;
+                                        existing.LockedCheckedAt = null;
                                         changed = true;
                                     }
                                     // The title captured at discovery keeps whatever lock
@@ -1413,7 +1418,7 @@ namespace RenzoBackend.Services.Series
                 token).ConfigureAwait(false);
         }
 
-        private static ParsedChapter ChapterToParsedChapter(Models.Chapter c, SeriesProviderEntity p)
+        internal static ParsedChapter ChapterToParsedChapter(Models.Chapter c, SeriesProviderEntity p)
         {
             decimal num = c.Number ?? 0m;
             return new ParsedChapter

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, CheckCheck, Circle, CloudDownload, Download, ListChecks, Loader2, Search, Trash2, X } from "lucide-react";
+import { ArrowLeftRight, CheckCheck, Circle, CloudDownload, Download, KeyRound, ListChecks, Loader2, Search, Trash2, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -279,6 +279,43 @@ export function ChaptersSection({
   const total = chapters?.length ?? 0;
   const downloadedCount = chapters?.filter((c) => c.downloaded).length ?? 0;
   const missingCount = total - downloadedCount;
+  const lockedCount = chapters?.filter((c) => c.locked && !c.downloaded).length ?? 0;
+
+  // "Check purchases": the server asks the source, with the owner's site login,
+  // about every locked chapter (after buying several at once on the site). It
+  // runs in the background, so poll until it finishes.
+  const [purchaseCheck, setPurchaseCheck] = useState<{ checked: number; total: number } | null>(null);
+  const handleCheckPurchases = async () => {
+    try {
+      let p = await seriesService.checkPurchases(seriesId);
+      setPurchaseCheck({ checked: p.checked, total: p.total });
+      while (p.running) {
+        await new Promise((r) => setTimeout(r, 2000));
+        p = await seriesService.purchaseCheckStatus(seriesId);
+        setPurchaseCheck({ checked: p.checked, total: p.total });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["series", "chapters", seriesId] });
+      void queryClient.invalidateQueries({ queryKey: ["series", "detail", seriesId] });
+      const parts = [
+        p.owned > 0 ? `${p.owned} unlocked and downloading` : "None of them are owned yet",
+        p.stillLocked > 0 ? `${p.stillLocked} still paid` : "",
+        p.failed > 0 ? `${p.failed} couldn't be checked (the site didn't answer) — try again later` : "",
+      ].filter(Boolean);
+      toast({
+        variant: p.error ? "destructive" : "success",
+        title: p.total === 0 ? "No locked chapters to check" : "Purchase check finished",
+        description: p.error ?? (p.total === 0 ? undefined : parts.join(" · ")),
+      });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Couldn't check purchases",
+        description: err instanceof Error ? err.message : "Please try again.",
+      });
+    } finally {
+      setPurchaseCheck(null);
+    }
+  };
 
   const filtered = useMemo(() => {
     let list = chapters ?? [];
@@ -597,6 +634,19 @@ export function ChaptersSection({
                       )}
                       Download all
                       <span className="tabular-nums opacity-80">({missingCount})</span>
+                    </button>
+                  )}
+                  {canManage && lockedCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void handleCheckPurchases()}
+                      disabled={purchaseCheck !== null}
+                      title="Check every locked chapter against your site login (after buying chapters on the site)"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-[11px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {purchaseCheck ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
+                      {purchaseCheck ? `Checking ${purchaseCheck.checked}/${purchaseCheck.total}` : "Check purchases"}
+                      {!purchaseCheck && <span className="tabular-nums opacity-80">({lockedCount})</span>}
                     </button>
                   )}
                   {canManage && downloadedCount > 0 && (
