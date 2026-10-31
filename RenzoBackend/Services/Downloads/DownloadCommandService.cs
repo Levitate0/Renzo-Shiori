@@ -398,6 +398,7 @@ namespace RenzoBackend.Services.Downloads
             float step = 100 / (float)(ch.PageCount);
             float acum = 0;
             int pagesWritten = 0;
+            int imagePages = 0;
             string tempZipPath = Path.Combine(_tempFolder, zipFile);
             bool breaked = false;
 
@@ -520,6 +521,8 @@ namespace RenzoBackend.Services.Downloads
                                         _logger.LogWarning("Page {Page} of chapter {ChapterNumber} of series {SeriesTitle} is not a valid image", pageIndex + 1, ch.Chapter.ParsedNumber, ch.Title);
                                         ext = ".unk";
                                     }
+                                    else
+                                        imagePages++;
                                     string fileName = ArchiveHelperService.MakeFileNameSafe(ch.ProviderName, ch.Scanlator, ch.SeriesTitle, ch.Language,
                                                 ch.Chapter.ParsedNumber, ch.ChapterName, maxChap, pageIndex + 1, ch.PageCount) + ext;
                                     await zipWriter.WriteAsync(fileName, image).ConfigureAwait(false);
@@ -563,6 +566,16 @@ namespace RenzoBackend.Services.Downloads
 
                         if (pagesWritten == 0)
                         {
+                            breaked = true;
+                        }
+                        // Every page came back as something other than an image
+                        // (Philia once served its pages still encrypted). Saved, that
+                        // archive counts as downloaded and can never be read, so the
+                        // chapter only ever streams. Retry it instead.
+                        else if (!breaked && imagePages == 0)
+                        {
+                            _logger.LogWarning("None of the {Pages} pages of chapter {ChapterNumber} of series {SeriesTitle} is an image; not saving it",
+                                pagesWritten, ch.Chapter.ParsedNumber, ch.Title);
                             breaked = true;
                         }
 
