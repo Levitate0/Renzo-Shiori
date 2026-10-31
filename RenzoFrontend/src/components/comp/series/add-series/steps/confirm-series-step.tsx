@@ -16,14 +16,21 @@ import { formatThumbnailUrl } from "@/lib/utils/thumbnail";
 import { ChevronDown } from "lucide-react";
 
 // ─── DynamicTags — kept as a named export for external consumers ─────────────
-/** Highest chapter number a source lists; the count alone hides gaps and late starts. */
-function highestChapter(series: FullSeries): number | null {
+/**
+ * Highest chapter number a source lists, and how many of its chapters are
+ * decimals. Snipers pad a source with decimal chapters (57.1 after 57), so the
+ * count alone overstates how far it goes.
+ */
+function chapterSpread(series: FullSeries): { max: number | null; decimals: number } {
   let max: number | null = null;
+  let decimals = 0;
   for (const c of series.chapters ?? []) {
     const n = c.number ?? c.chapterNumber;
-    if (typeof n === "number" && Number.isFinite(n) && n >= 0 && (max === null || n > max)) max = n;
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0) continue;
+    if (max === null || n > max) max = n;
+    if (!Number.isInteger(n)) decimals++;
   }
-  return max;
+  return { max, decimals };
 }
 
 export function DynamicTags({ genres }: { genres: string[] }) {
@@ -477,7 +484,7 @@ export function ConfirmSeriesStep({
             {validFullSeries.map((series) => {
               const seriesKey = `${getSeriesId(series)}-${series.provider}-${series.lang}-${series.scanlator}`;
               const chCount = series.chapterCount;
-              const maxCh = highestChapter(series);
+              const { max: maxCh, decimals } = chapterSpread(series);
               const thumbUrl = series.thumbnailUrl ? formatThumbnailUrl(series.thumbnailUrl) : null;
               return (
                 <React.Fragment key={seriesKey}>
@@ -528,6 +535,7 @@ export function ConfirmSeriesStep({
                       <span className="num">{chCount}</span>
                       <span className="lab"> ch</span>
                       {maxCh !== null && <div className="ch-max">up to {maxCh}</div>}
+                      {decimals > 0 && <div className="ch-max">{decimals} decimal</div>}
                     </div>
                   </div>
 
@@ -606,7 +614,7 @@ export function ConfirmSeriesStep({
             {validFullSeries.map((series) => {
               const seriesKey = `${getSeriesId(series)}-${series.provider}-${series.lang}-${series.scanlator}`;
               const chCount = series.chapterCount;
-              const maxCh = highestChapter(series);
+              const { max: maxCh, decimals } = chapterSpread(series);
               const thumbUrl = series.thumbnailUrl ? formatThumbnailUrl(series.thumbnailUrl) : null;
               return (
                 <React.Fragment key={seriesKey}>
@@ -663,6 +671,14 @@ export function ConfirmSeriesStep({
                             <span className="sep">·</span>
                             <span>
                               up to ch <span className="num">{maxCh}</span>
+                            </span>
+                          </>
+                        )}
+                        {decimals > 0 && (
+                          <>
+                            <span className="sep">·</span>
+                            <span>
+                              <span className="num">{decimals}</span> decimal
                             </span>
                           </>
                         )}
