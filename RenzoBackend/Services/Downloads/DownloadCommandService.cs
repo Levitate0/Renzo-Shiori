@@ -622,6 +622,11 @@ namespace RenzoBackend.Services.Downloads
                 using (var n = await _lock.LockAsync(ch.SeriesId.ToString(), token).ConfigureAwait(false))
                 {
                     SeriesProviderEntity? providerr = await _db.SeriesProviders.FirstOrDefaultAsync(a => a.Id == ch.SeriesProviderId, token).ConfigureAwait(false);
+                    // The chapter list is one JSON column, written whole. A copy this
+                    // context tracked before the lock would overwrite whatever another
+                    // job saved meanwhile (Philia lost its "locked" flags that way).
+                    if (providerr != null)
+                        await _db.Entry(providerr).ReloadAsync(token).ConfigureAwait(false);
                     if (providerr == null)
                     {
                         _logger.LogWarning("Series Provider {ProviderName} no longer exists.", ch.ProviderName);
@@ -662,7 +667,7 @@ namespace RenzoBackend.Services.Downloads
                     // LockedChapterSupplementService) and nothing ever cleared it, so
                     // purchased/downloaded chapters stayed "Locked" forever.
                     cha.IsLocked = false;
-                    providerr.ContinueAfterChapter = providerr.Chapters.MaxNull(c => c.Number);
+                    providerr.ContinueAfterChapter = AdvanceCutoff(providerr);
                     providerr.ChapterCount = providerr.Chapters.Count;
                     _db.Touch(providerr, a => a.Chapters);
                     await _db.SaveChangesAsync(token).ConfigureAwait(false);
@@ -879,6 +884,31 @@ namespace RenzoBackend.Services.Downloads
         /// <param name="token">Cancellation token</param>
         /// <returns>Job result</returns>
         /// <summary>
+        /// The provider's "continue after" point once a chapter has downloaded.
+        ///
+        /// It used to jump to the highest chapter the provider KNOWS. Chapters
+        /// now enter the list at scan time, paid ones included, so one download
+        /// put the point past every chapter still waiting (Philia: chapter 13
+        /// downloads, the point lands on 31). A chapter unlocked or bought later
+        /// then sat below it and was never queued. It now stops below the lowest
+        /// chapter above the old point that is still not downloaded.
+        /// </summary>
+        internal static decimal? AdvanceCutoff(SeriesProviderEntity p)
+        {
+            decimal? old = p.ContinueAfterChapter;
+            List<Models.Chapter> live = p.Chapters.Where(c => c.Number != null && !c.IsDeleted).ToList();
+            decimal? lowestPending = live
+                .Where(c => string.IsNullOrEmpty(c.Filename) && (old == null || c.Number > old))
+                .Min(c => c.Number);
+            decimal? reached = live
+                .Where(c => !string.IsNullOrEmpty(c.Filename) && (lowestPending == null || c.Number < lowestPending))
+                .MaxNull(c => c.Number);
+            if (reached == null)
+                return old;
+            return old == null || reached > old ? reached : old;
+        }
+
+        /// <summary>
         /// Flags a chapter as paid/locked and drops its download. Called when the
         /// source says the chapter must be purchased — a permanent condition, so
         /// the job completes rather than retrying until the retry budget runs out.
@@ -894,9 +924,14 @@ namespace RenzoBackend.Services.Downloads
                 // set on the matching chapter of every provider row for this series
                 // — the paywall belongs to the source, not to one queue entry.
                 decimal number = download.Chapter.ParsedNumber;
+                // Same series lock and fresh read as the completion path: both
+                // write the whole chapter-list column.
+                using var held = await _lock.LockAsync(download.SeriesId.ToString(), token).ConfigureAwait(false);
                 List<SeriesProviderEntity> providers = await _db.SeriesProviders
                     .Where(p => p.SeriesId == download.SeriesId)
                     .ToListAsync(token).ConfigureAwait(false);
+                foreach (SeriesProviderEntity fresh in providers)
+                    await _db.Entry(fresh).ReloadAsync(token).ConfigureAwait(false);
                 bool changed = false;
                 foreach (SeriesProviderEntity provRow in providers)
                 {
