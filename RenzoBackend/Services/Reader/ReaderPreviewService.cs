@@ -706,8 +706,25 @@ public class ReaderPreviewService
         {
             SeriesProviderEntity? provider = await _db.SeriesProviders.FirstOrDefaultAsync(p => p.Id == providerId, token).ConfigureAwait(false);
             Models.Chapter? cha = provider?.Chapters.FirstOrDefault(c => c.Number == chapterNumber);
-            if (cha == null || !cha.IsLocked)
+            if (cha == null)
                 return;
+
+            // Owned here means owned: the series' other sources stop calling it
+            // paid too. Checked even when this source was already unlocked, so
+            // chapters unlocked before this rule existed get fixed on their next read.
+            List<SeriesProviderEntity> siblings = await _db.SeriesProviders
+                .Where(p => p.SeriesId == provider!.SeriesId && p.Id != providerId)
+                .ToListAsync(token).ConfigureAwait(false);
+            List<SeriesProviderEntity> siblingsUnlocked = Downloads.DownloadCommandService.UnlockOnOtherSources(siblings, providerId, chapterNumber);
+            foreach (SeriesProviderEntity s in siblingsUnlocked)
+                _db.Touch(s, p => p.Chapters);
+
+            if (!cha.IsLocked)
+            {
+                if (siblingsUnlocked.Count > 0)
+                    await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                return;
+            }
             cha.IsLocked = false;
             // The reader just proved this chapter is readable, so the paywall
             // backoff no longer applies — it should queue on the next scan

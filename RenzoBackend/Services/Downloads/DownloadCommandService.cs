@@ -673,6 +673,13 @@ namespace RenzoBackend.Services.Downloads
                     await _db.SaveChangesAsync(token).ConfigureAwait(false);
 
                     Models.Database.SeriesEntity s = await _db.Series.Include(a => a.Sources).Where(a => a.Id == providerr.SeriesId).FirstAsync(token);
+                    List<SeriesProviderEntity> unlocked = UnlockOnOtherSources(s.Sources, providerr.Id, ch.Chapter.ParsedNumber);
+                    if (unlocked.Count > 0)
+                    {
+                        foreach (SeriesProviderEntity u in unlocked)
+                            _db.Touch(u, a => a.Chapters);
+                        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                    }
                     if (providerr.IsStorage)
                     {
                         List<Models.Chapter> chapters = s.Sources.Where(a => !a.IsDisabled && !a.IsUninstalled && !a.IsStorage)
@@ -906,6 +913,30 @@ namespace RenzoBackend.Services.Downloads
             if (reached == null)
                 return old;
             return old == null || reached > old ? reached : old;
+        }
+
+        /// <summary>
+        /// A chapter just proved owned on one source: clear the paid flag on the
+        /// same chapter of the series' other sources too, or it still showed as
+        /// paid there after "Check purchases". Only the flag and its backoff;
+        /// ShouldDownload is left alone, the owning source fetches it. Returns
+        /// the rows it changed.
+        /// </summary>
+        internal static List<SeriesProviderEntity> UnlockOnOtherSources(IEnumerable<SeriesProviderEntity> sources, Guid ownerProviderId, decimal number)
+        {
+            List<SeriesProviderEntity> changed = [];
+            foreach (SeriesProviderEntity p in sources.Where(p => p.Id != ownerProviderId))
+            {
+                bool any = false;
+                foreach (Models.Chapter c in p.Chapters.Where(c => c.Number == number && c.IsLocked))
+                {
+                    c.IsLocked = false;
+                    c.LockedCheckedAt = null;
+                    any = true;
+                }
+                if (any) changed.Add(p);
+            }
+            return changed;
         }
 
         /// <summary>
