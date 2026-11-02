@@ -25,7 +25,10 @@ function chapterSpread(series: FullSeries): { max: number | null; decimals: numb
   let max: number | null = null;
   let decimals = 0;
   for (const c of series.chapters ?? []) {
-    const n = c.number ?? c.chapterNumber;
+    // The server writes these keys PascalCase (Startup sets no naming policy),
+    // so the camelCase type fields are absent at runtime.
+    const raw = c as unknown as Record<string, unknown>;
+    const n = raw.Number ?? raw.ChapterNumber ?? c.number ?? c.chapterNumber;
     if (typeof n !== "number" || !Number.isFinite(n) || n < 0) continue;
     if (max === null || n > max) max = n;
     if (!Number.isInteger(n)) decimals++;
