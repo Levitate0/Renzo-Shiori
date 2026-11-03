@@ -1190,8 +1190,9 @@
 /* Card bottom row: language code + chapter count */
 .sub-row {
   display: flex;
+  flex-wrap: wrap; /* "· up to ch N · M decimal" moves down a line on a phone instead of running off */
   align-items: center;
-  gap: 6px;
+  gap: 2px 6px;
   font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
   font-size: 11px;
   color: hsl(var(--as-fg-muted));
