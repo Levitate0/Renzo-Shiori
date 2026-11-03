@@ -607,6 +607,13 @@ namespace RenzoBackend.Services.Downloads
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
                 }
 
+                // The job carries the folder from when it was queued. A series moved
+                // since (the startup relocation) would get this chapter in its old,
+                // abandoned folder while the DB points at the new one, so ask now.
+                string? currentPath = await _db.Series.AsNoTracking().Where(s => s.Id == ch.SeriesId)
+                    .Select(s => s.StoragePath).FirstOrDefaultAsync(token).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(currentPath))
+                    ch.StoragePath = currentPath;
                 string dirPath = Path.Combine(appSettings.StorageFolder, ch.StoragePath);
                 if (!Directory.Exists(dirPath))
                     Directory.CreateDirectory(dirPath);
