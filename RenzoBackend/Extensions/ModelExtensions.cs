@@ -410,6 +410,18 @@ namespace RenzoBackend.Extensions
         public static bool IsLockedChapterName(string? name) =>
             !string.IsNullOrEmpty(name) && ChapterLockMarker.IsMatch(name!);
 
+        // Only the symbols a source adds to a title; words like "Coin" may be the
+        // real title and are left alone.
+        private static readonly Regex ChapterLockSymbol = new(@"\s*(🔒|🔐|🪙|\[locked\])\s*", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// The title without the source's lock symbol, for a chapter just proven
+        /// owned. Philia keeps "🔒" on a bought chapter's title, and the badge reads
+        /// the title as well as IsLocked, so the chapter kept showing as paid.
+        /// </summary>
+        public static string? StripLockSymbol(string? name) =>
+            string.IsNullOrEmpty(name) ? name : ChapterLockSymbol.Replace(name, " ").Trim();
+
         // A paid chapter only reveals itself when the pages are asked for — the
         // chapter API has no lock field, so the source throws instead ("Chapter
         // requires purchase (0 pages)…", "Log in via Webview and purchased this

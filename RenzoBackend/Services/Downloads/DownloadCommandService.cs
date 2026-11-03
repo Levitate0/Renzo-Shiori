@@ -100,7 +100,11 @@ namespace RenzoBackend.Services.Downloads
             string? m = e?.Message;
             return m != null
                 && (m.Contains("Refresh Chapter List", StringComparison.OrdinalIgnoreCase)
-                    || m.Contains("Cannot invoke \"Object.getClass()\"", StringComparison.Ordinal));
+                    || m.Contains("Cannot invoke \"Object.getClass()\"", StringComparison.Ordinal)
+                    // Philia answers a chapter rebuilt from the database (no
+                    // extension memo) with 404, while the same chapter taken
+                    // from its live listing reads fine (2026-11-02).
+                    || m.Contains("/source/pages failed: HTTP error 404", StringComparison.Ordinal));
         }
 
         /// <summary>Fresh chapter listings per source entry, so a backlog of stale jobs costs one listing, not one each.</summary>
@@ -645,7 +649,8 @@ namespace RenzoBackend.Services.Downloads
 
                     cha.PageCount = pagesWritten;
                     cha.IsDeleted = false;
-                    cha.Name = ch.Chapter.Name;
+                    // Downloaded = owned: drop the source's lock symbol from the title.
+                    cha.Name = ModelExtensions.StripLockSymbol(ch.Chapter.Name);
                     cha.Number = ch.Chapter.ParsedNumber;
                     cha.DownloadDate = DateTime.UtcNow;
                     cha.ProviderUploadDate = ch.ComicUploadDateUTC;
@@ -918,7 +923,7 @@ namespace RenzoBackend.Services.Downloads
         /// <summary>
         /// A chapter just proved owned on one source: clear the paid flag on the
         /// same chapter of the series' other sources too, or it still showed as
-        /// paid there after "Check purchases". Only the flag and its backoff;
+        /// paid there after "Check purchases". Only the flag, its backoff and the title's lock symbol;
         /// ShouldDownload is left alone, the owning source fetches it. Returns
         /// the rows it changed.
         /// </summary>
@@ -928,10 +933,12 @@ namespace RenzoBackend.Services.Downloads
             foreach (SeriesProviderEntity p in sources.Where(p => p.Id != ownerProviderId))
             {
                 bool any = false;
-                foreach (Models.Chapter c in p.Chapters.Where(c => c.Number == number && c.IsLocked))
+                foreach (Models.Chapter c in p.Chapters.Where(c => c.Number == number
+                             && (c.IsLocked || c.Name != ModelExtensions.StripLockSymbol(c.Name))))
                 {
                     c.IsLocked = false;
                     c.LockedCheckedAt = null;
+                    c.Name = ModelExtensions.StripLockSymbol(c.Name);
                     any = true;
                 }
                 if (any) changed.Add(p);

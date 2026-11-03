@@ -41,4 +41,23 @@ public class UnlockOnOtherSourcesTests
         var other = Provider((5, false));
         Assert.Empty(DownloadCommandService.UnlockOnOtherSources([owner, other], owner.Id, 5));
     }
+
+    [Theory]
+    [InlineData("🔒 Chapter 3", "Chapter 3")]
+    [InlineData("Chapter 6.1 🔐", "Chapter 6.1")]
+    [InlineData("[Locked] Chapter 9", "Chapter 9")]
+    [InlineData("Ch. 87 - Coin of Wishes (1)", "Ch. 87 - Coin of Wishes (1)")]
+    public void Strips_only_the_lock_symbol_from_a_title(string name, string expected) =>
+        Assert.Equal(expected, RenzoBackend.Extensions.ModelExtensions.StripLockSymbol(name));
+
+    [Fact]
+    public void A_sibling_with_only_a_lock_symbol_in_its_title_is_cleaned()
+    {
+        // Philia: IsLocked already clear, "🔒" still in the title, badge still "paid".
+        var owner = Provider((3, false));
+        var other = Provider((3, false));
+        other.Chapters[0].Name = "🔒 Chapter 3";
+        Assert.Equal([other], DownloadCommandService.UnlockOnOtherSources([owner, other], owner.Id, 3));
+        Assert.Equal("Chapter 3", other.Chapters[0].Name);
+    }
 }

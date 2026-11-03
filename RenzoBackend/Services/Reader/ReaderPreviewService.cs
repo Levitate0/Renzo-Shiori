@@ -719,9 +719,16 @@ public class ReaderPreviewService
             foreach (SeriesProviderEntity s in siblingsUnlocked)
                 _db.Touch(s, p => p.Chapters);
 
+            // Readable = owned: the source's lock symbol in the title would keep
+            // the badge on "paid" with IsLocked already clear.
+            bool renamed = cha.Name != ModelExtensions.StripLockSymbol(cha.Name);
+            cha.Name = ModelExtensions.StripLockSymbol(cha.Name);
+            if (renamed)
+                _db.Touch(provider!, p => p.Chapters);
+
             if (!cha.IsLocked)
             {
-                if (siblingsUnlocked.Count > 0)
+                if (siblingsUnlocked.Count > 0 || renamed)
                     await _db.SaveChangesAsync(token).ConfigureAwait(false);
                 return;
             }
