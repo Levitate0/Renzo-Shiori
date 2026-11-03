@@ -402,6 +402,7 @@ public static class SeriesExtensions
             Nsfw = series.Nsfw,
             HideDecimalChapters = series.HideDecimalChapters,
             PrioritizeFreeChapters = series.PrioritizeFreeChapters,
+            AutoBuyPaidChapters = series.AutoBuyPaidChapters,
             IsNsfw = series.Nsfw
                      || AdultContentClassifier.IsAdult(series.Genre)
                      || (series.Sources?.Any(s => AdultContentClassifier.IsAdult(s.Genre)) ?? false)

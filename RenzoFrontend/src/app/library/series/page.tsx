@@ -3,6 +3,7 @@
 import { useSearchParams, useRouter } from "next/navigation";
 import { useState, useEffect, useMemo, useRef, Suspense } from "react";
 import { useSeriesById, useDeleteSeries, useUpdateSeries, useVerifyIntegrity, useCleanupSeries, useRefreshSeries, useScanSeries } from "@/lib/api/hooks/useSeries";
+import { parseAutoBuyPref } from "@/lib/utils/autobuy-prefs";
 import { useAuth } from "@/contexts/auth-context";
 import { parsePriorityPrefs } from "@/lib/utils/priority-prefs";
 import { useToast } from "@/hooks/use-toast";
@@ -960,6 +961,18 @@ function SeriesPageContent() {
       pausedDownloads, undefined, undefined, !(series?.prioritizeFreeChapters ?? false));
   };
 
+  // Auto-buy override for this series (null = follow the account setting).
+  // Its own endpoint, not the series save, so it can't be reset by one.
+  const handleSetAutoBuy = async (value: boolean | null) => {
+    if (!seriesId) return;
+    try {
+      await seriesService.setAutoBuy(seriesId, value);
+      await refetch();
+    } catch {
+      toast({ variant: "destructive", title: "Couldn't change auto-buy for this series" });
+    }
+  };
+
   // Move the series into a different category folder (physical relocation).
   const handleSetCategory = async (category: string | null) => {
     if (!seriesId) return;
@@ -1396,6 +1409,9 @@ function SeriesPageContent() {
         hideDecimalChapters={series.hideDecimalChapters ?? false}
         prioritizeFreeChapters={series.prioritizeFreeChapters ?? false}
         onPrioritizeFreeToggle={handlePrioritizeFreeToggle}
+        autoBuyPaidChapters={series.autoBuyPaidChapters ?? null}
+        autoBuyAccountDefault={parseAutoBuyPref(user?.preferences)}
+        onSetAutoBuy={(v) => void handleSetAutoBuy(v)}
         onToggleHideDecimal={handleHideDecimalToggle}
       />
 

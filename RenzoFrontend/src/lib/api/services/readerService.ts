@@ -62,6 +62,18 @@ export const readerService = {
       + `${refresh ? "&refresh=true" : ""}${refreshChapters ? "&refreshChapters=true" : ""}`);
   },
 
+  // Auto-buy of a paid chapter the reader has reached (on screen, never a
+  // prefetch). Runs on the server in the background: start, then poll.
+  async startAutoBuy(seriesId: string, chapterNumber: number): Promise<AutoBuyResult> {
+    return apiClient.post<AutoBuyResult>(
+      `/api/reader/auto-buy?seriesId=${seriesId}&chapter=${chapterNumber}`, {});
+  },
+
+  async autoBuyStatus(seriesId: string, chapterNumber: number): Promise<AutoBuyResult> {
+    return apiClient.get<AutoBuyResult>(
+      `/api/reader/auto-buy?seriesId=${seriesId}&chapter=${chapterNumber}`);
+  },
+
   streamPageUrl(seriesId: string, chapterNumber: number, page: number): string {
     return formatThumbnailUrl(
       `/api/reader/stream/page?seriesId=${seriesId}&chapter=${chapterNumber}&page=${page}`);
@@ -97,3 +109,15 @@ export const readerService = {
     return apiClient.post<{ success: boolean; cleared: number }>('/api/reader/clear-stream-cache', {});
   },
 };
+
+/** Answer of /api/reader/auto-buy. */
+export interface AutoBuyResult {
+  status: "running" | "bought" | "failed" | "off" | "dry-run";
+  /** On failure: no-login | signed-out | no-coins | no-button | not-confirmed | not-owner | unavailable. */
+  reason?: string | null;
+  /** Why it couldn't buy, for the purchase screen. */
+  message?: string | null;
+  provider?: string | null;
+  price?: number | null;
+  balance?: number | null;
+}

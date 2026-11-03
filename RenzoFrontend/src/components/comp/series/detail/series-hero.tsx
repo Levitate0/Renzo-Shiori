@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pause, Play, CheckCircle2, Check, Trash2, FolderOpen, Copy, RefreshCw, MoreHorizontal, Hash, Search, Unlock } from "lucide-react";
+import { Pause, Play, CheckCircle2, Check, Trash2, FolderOpen, Copy, RefreshCw, MoreHorizontal, Hash, Search, Unlock, Coins } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -155,6 +155,11 @@ export interface SeriesHeroProps {
   hideDecimalChapters?: boolean;
   prioritizeFreeChapters?: boolean;
   onPrioritizeFreeToggle?: () => void;
+  /** Per-series auto-buy override: true/false, or null to follow the account. */
+  autoBuyPaidChapters?: boolean | null;
+  /** The account-wide auto-buy setting a null override follows. */
+  autoBuyAccountDefault?: boolean;
+  onSetAutoBuy?: (value: boolean | null) => void;
   /** Toggle hiding fractional ".5" sub-chapters for this series. */
   onToggleHideDecimal?: () => void;
 }
@@ -182,6 +187,9 @@ export function SeriesHero({
   hideDecimalChapters,
   prioritizeFreeChapters,
   onPrioritizeFreeToggle,
+  autoBuyPaidChapters,
+  autoBuyAccountDefault,
+  onSetAutoBuy,
   onToggleHideDecimal,
 }: SeriesHeroProps) {
   const [expanded, setExpanded] = useState(false);
@@ -432,6 +440,47 @@ export function SeriesHero({
                   </span>
                 </Button>
               )}
+
+              {/* Auto-buy paid chapters when the reader reaches them: follow the
+                  account setting, or override it for this series. */}
+              {canManageDownloads && onSetAutoBuy && (() => {
+                const effective = autoBuyPaidChapters ?? autoBuyAccountDefault ?? false;
+                return (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant={effective ? "default" : "outline"}
+                        aria-label="Auto-buy paid chapters"
+                        title={
+                          effective
+                            ? "Paid chapters are bought automatically on the source when you reach them in the reader."
+                            : "Paid chapters wait for you to buy them on the source."
+                        }
+                        className="px-0 w-9 sm:w-auto sm:px-4"
+                      >
+                        <Coins className={`h-4 w-4 sm:mr-2 ${effective ? "" : "opacity-70"}`} />
+                        <span className="hidden sm:inline">{effective ? "Auto-buy On" : "Auto-buy Off"}</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-64">
+                      <DropdownMenuItem onClick={() => onSetAutoBuy(null)}>
+                        {autoBuyPaidChapters == null && <Check className="mr-2 h-4 w-4" />}
+                        <span className={autoBuyPaidChapters == null ? "" : "ml-6"}>
+                          Use account setting ({autoBuyAccountDefault ? "on" : "off"})
+                        </span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onSetAutoBuy(true)}>
+                        {autoBuyPaidChapters === true && <Check className="mr-2 h-4 w-4" />}
+                        <span className={autoBuyPaidChapters === true ? "" : "ml-6"}>On for this series</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onSetAutoBuy(false)}>
+                        {autoBuyPaidChapters === false && <Check className="mr-2 h-4 w-4" />}
+                        <span className={autoBuyPaidChapters === false ? "" : "ml-6"}>Off for this series</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                );
+              })()}
 
               {/* Secondary/admin actions collapse into one menu so the toolbar
                   stays uncluttered — Verify, Refresh, the 18+ flag, and Delete. */}

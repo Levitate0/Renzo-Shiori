@@ -235,6 +235,31 @@ public class ReaderController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// The reader reached a paid chapter: buy it on the source when auto-buy is on
+    /// for this series or account. Runs in the background ("running"); poll the
+    /// GET for the answer, which says why not when it couldn't, for the manual
+    /// purchase screen. Clients call it only for the chapter actually on screen,
+    /// never a prefetch.
+    /// </summary>
+    [HttpPost("auto-buy")]
+    [ProducesResponseType(typeof(Services.Reader.AutoBuy.AutoBuyResultDto), 200)]
+    public async Task<ActionResult<Services.Reader.AutoBuy.AutoBuyResultDto>> AutoBuyAsync([FromQuery] Guid seriesId, [FromQuery] decimal chapter, [FromQuery] bool dryRun = false, CancellationToken token = default)
+    {
+        if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
+        var runner = HttpContext.RequestServices.GetRequiredService<Services.Reader.AutoBuy.AutoBuyRunner>();
+        return Ok(runner.Start(seriesId, chapter, CurrentUser, dryRun && IsOwnerLevel));
+    }
+
+    [HttpGet("auto-buy")]
+    [ProducesResponseType(typeof(Services.Reader.AutoBuy.AutoBuyResultDto), 200)]
+    public async Task<ActionResult<Services.Reader.AutoBuy.AutoBuyResultDto>> AutoBuyStatusAsync([FromQuery] Guid seriesId, [FromQuery] decimal chapter, CancellationToken token = default)
+    {
+        if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
+        var r = HttpContext.RequestServices.GetRequiredService<Services.Reader.AutoBuy.AutoBuyRunner>().Status(seriesId, chapter);
+        return r == null ? NotFound() : Ok(r);
+    }
+
     [HttpGet("stream/page")]
     public async Task<ActionResult> GetStreamPageAsync([FromQuery] Guid seriesId, [FromQuery] decimal chapter, [FromQuery] int page, CancellationToken token = default)
     {

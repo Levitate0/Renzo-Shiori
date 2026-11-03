@@ -8,6 +8,10 @@ import { CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { useAuth } from "@/contexts/auth-context";
+import { userService } from "@/lib/api/services/userService";
+import { mergeAutoBuyPref, parseAutoBuyPref } from "@/lib/utils/autobuy-prefs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -34,6 +38,22 @@ export function SiteLoginsSection() {
   const [mode, setMode] = useState<"password" | "cookie">("password");
   const [busy, setBusy] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
+
+  // Account-wide auto-buy (a series can override it from its page).
+  const { user, refreshAuth } = useAuth();
+  const autoBuy = parseAutoBuyPref(user?.preferences);
+  const [savingAutoBuy, setSavingAutoBuy] = useState(false);
+  const toggleAutoBuy = async (on: boolean) => {
+    setSavingAutoBuy(true);
+    try {
+      await userService.updateMe({ preferences: mergeAutoBuyPref(user?.preferences, on) });
+      await refreshAuth();
+    } catch {
+      toast.error("Couldn't save the auto-buy setting");
+    } finally {
+      setSavingAutoBuy(false);
+    }
+  };
 
   const refresh = async () => {
     try {
@@ -106,6 +126,25 @@ export function SiteLoginsSection() {
         and re-logs-in automatically when the site&apos;s session expires. For sites that
         can&apos;t be automated (CAPTCHA / Google sign-in), paste a session cookie instead.
       </p>
+
+      {/* Auto-buy, account-wide */}
+      <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="min-w-0">
+          <Label htmlFor="auto-buy-paid" className="text-sm font-medium">Auto-buy paid chapters</Label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            When you open, scroll or step into a paid chapter in the reader, buy it on the source
+            with your coins there. Needs a working login for that site. If it can&apos;t (signed
+            out, not enough coins, no buy button), the purchase screen says why. Each series can
+            override this from its page.
+          </p>
+        </div>
+        <Switch
+          id="auto-buy-paid"
+          checked={autoBuy}
+          disabled={savingAutoBuy || !user}
+          onCheckedChange={(v) => void toggleAutoBuy(v)}
+        />
+      </div>
 
       {/* Existing logins */}
       {loading ? (

@@ -99,6 +99,15 @@ namespace RenzoBackend.Models.Database
         public bool PrioritizeFreeChapters { get; set; }
 
         /// <summary>
+        /// Auto-buy a paid chapter when the owner reaches it in the reader: true or
+        /// false overrides the account setting for this series, null follows it.
+        /// Set through its own endpoint, never the series save, so a client that
+        /// doesn't know the field can't reset it.
+        /// </summary>
+        [JsonPropertyName("autoBuyPaidChapters")]
+        public bool? AutoBuyPaidChapters { get; set; }
+
+        /// <summary>
         /// The raw media-type reported by the external scrobbler this series is
         /// matched to (e.g. MAL <c>media_type</c>: manga / manhwa / manhua / novel,
         /// or Kitsu manga_type). Populated on auto-/confirmed match. This is an

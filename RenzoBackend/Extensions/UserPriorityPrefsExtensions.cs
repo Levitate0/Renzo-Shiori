@@ -48,6 +48,13 @@ public static class UserPriorityPrefsExtensions
         return obj.ToJsonString();
     }
 
+    private const string AutoBuyKey = "autoBuyPaidChapters";
+
+    /// <summary>Account-wide auto-buy of paid chapters reached in the reader
+    /// (a series can override it). Off unless turned on.</summary>
+    public static bool GetAutoBuyPaidChapters(this UserEntity user)
+        => Parse(user.Preferences)?[AutoBuyKey]?.GetValue<bool?>() ?? false;
+
     private static JsonNode? Parse(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))

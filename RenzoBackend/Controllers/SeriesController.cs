@@ -328,6 +328,25 @@ namespace RenzoBackend.Controllers
             return p.Error != null && !p.Running && p.Total == 0 ? BadRequest(new { error = p.Error }) : Ok(p);
         }
 
+        public sealed class AutoBuySettingRequest
+        {
+            /// <summary>true/false overrides the account setting for this series; null follows it.</summary>
+            [System.Text.Json.Serialization.JsonPropertyName("value")]
+            public bool? Value { get; set; }
+        }
+
+        /// <summary>Sets the series' auto-buy override (null = follow the account setting).</summary>
+        [HttpPost("auto-buy")]
+        [RequireUserLevel(UserLevel.Manager)]
+        public async Task<ActionResult> SetAutoBuyAsync([FromQuery] Guid seriesId, [FromBody] AutoBuySettingRequest request, CancellationToken token = default)
+        {
+            if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
+            var db = HttpContext.RequestServices.GetRequiredService<AppDbContext>();
+            int n = await db.Series.Where(s => s.Id == seriesId)
+                .ExecuteUpdateAsync(u => u.SetProperty(s => s.AutoBuyPaidChapters, request.Value), token).ConfigureAwait(false);
+            return n == 0 ? NotFound() : Ok(new { autoBuyPaidChapters = request.Value });
+        }
+
         /// <summary>Progress of the latest purchase check for a series (404 when none ran).</summary>
         [HttpGet("check-purchases")]
         public async Task<ActionResult> CheckPurchasesStatusAsync([FromQuery] Guid seriesId, CancellationToken token = default)

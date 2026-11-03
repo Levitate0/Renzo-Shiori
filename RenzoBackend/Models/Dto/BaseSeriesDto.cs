@@ -80,6 +80,10 @@ public class BaseSeriesDto : IThumb
     [JsonPropertyName("prioritizeFreeChapters")]
     public bool PrioritizeFreeChapters { get; set; }
 
+    /// <summary>Per-series auto-buy override (null = follow the account setting). Read-only here; see SeriesEntity.</summary>
+    [JsonPropertyName("autoBuyPaidChapters")]
+    public bool? AutoBuyPaidChapters { get; set; }
+
     /// <summary>
     /// Computed 18+ detection: manual override OR adult rating tags on the
     /// series or on ANY of its sources (aggregated server-side; per-source

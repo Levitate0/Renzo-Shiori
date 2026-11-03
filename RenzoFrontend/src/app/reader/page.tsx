@@ -34,7 +34,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { readerService } from "@/lib/api/services/readerService";
+import { readerService, type AutoBuyResult } from "@/lib/api/services/readerService";
 import { seriesService } from "@/lib/api/services/seriesService";
 import { type ReaderChapters, type ReaderChapter, type ReaderChapterInfo, type ReaderPageDims, type PreviewChapter } from "@/lib/api/types";
 
@@ -790,6 +790,62 @@ function ReaderInner() {
       manualUnlockCheckRef.current = null;
     };
   }, [isPreview, seriesId, chapterNumber, chapter?.locked, streamLocked]);
+
+  // Auto-buy: a paid chapter that is ON SCREEN (opened, scrolled or stepped
+  // into — never a prefetch) is bought on the source when auto-buy is on for
+  // the series or the account. The server decides whether it is on and, when
+  // it can't buy, says which requirement failed; that shows on the purchase
+  // screen. Bought → the same reload a manual unlock gets.
+  const [autoBuy, setAutoBuy] = useState<{ key: string; state: "buying" | "failed"; message?: string } | null>(null);
+  const showingLockedNow = !!chapter?.locked || streamLocked;
+  useEffect(() => {
+    if (isPreview || !seriesId || chapterNumber == null || !showingLockedNow) return;
+    const key = `${seriesId}:${chapterNumber}`;
+    let cancelled = false;
+    let timer: number | undefined;
+    const finish = (r: AutoBuyResult) => {
+      if (cancelled) return;
+      if (r.status === "bought") {
+        setAutoBuy(null);
+        setLoading(true);
+        setStreamLocked(false);
+        setChapters((prev) => prev && {
+          ...prev,
+          chapters: prev.chapters.map((c) => c.number === chapterNumber ? { ...c, locked: false } : c),
+        });
+        setReloadNonce((n) => n + 1);
+      } else if (r.status === "failed") {
+        setAutoBuy({ key, state: "failed", message: r.message ?? undefined });
+      } else {
+        setAutoBuy(null);
+      }
+    };
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const r = await readerService.autoBuyStatus(seriesId, chapterNumber);
+        if (r.status === "running") { timer = window.setTimeout(() => void poll(), 2500); return; }
+        finish(r);
+      } catch {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 5000);
+      }
+    };
+    void (async () => {
+      try {
+        const r = await readerService.startAutoBuy(seriesId, chapterNumber);
+        if (cancelled) return;
+        if (r.status === "running") {
+          setAutoBuy({ key, state: "buying" });
+          timer = window.setTimeout(() => void poll(), 2500);
+        } else finish(r);
+      } catch { /* an older server: the manual screen stands */ }
+    })();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+      setAutoBuy(null);
+    };
+  }, [isPreview, seriesId, chapterNumber, showingLockedNow]);
 
   // ── Mode resolution ───────────────────────────────────────────────────
   const resolvedMode: Exclude<ReaderMode, "auto"> = useMemo(() => {
@@ -1950,6 +2006,8 @@ function ReaderInner() {
           hasPrev={hasChapter(-1)}
           hasNext={hasChapter(1)}
           checking={unlockChecking}
+          autoBuying={autoBuy?.state === "buying"}
+          autoBuyError={autoBuy?.state === "failed" ? autoBuy.message ?? "Auto-buy couldn't buy this chapter." : null}
           onCheckNow={() => manualUnlockCheckRef.current?.()}
           onPrev={() => goToChapter(-1)}
           onNext={() => goToChapter(1)}
@@ -2687,13 +2745,17 @@ function ChapterTransition({
  * means unlocking never requires exiting and re-entering.
  */
 function LockedChapterScreen({
-  chapterLabel, url, hasPrev, hasNext, checking, onCheckNow, onPrev, onNext, onExit,
+  chapterLabel, url, hasPrev, hasNext, checking, autoBuying, autoBuyError, onCheckNow, onPrev, onNext, onExit,
 }: {
   chapterLabel: string;
   url: string | null;
   hasPrev: boolean;
   hasNext: boolean;
   checking: boolean;
+  /** Auto-buy is buying this chapter on the source right now. */
+  autoBuying: boolean;
+  /** Why auto-buy couldn't buy it (which requirement failed), or null. */
+  autoBuyError: string | null;
   onCheckNow: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -2710,6 +2772,18 @@ function LockedChapterScreen({
           tab — it checks automatically and opens the chapter once it&apos;s unlocked.
         </p>
       </div>
+      {autoBuying && (
+        <div className="inline-flex items-center gap-2 rounded-lg border border-violet-400/30 bg-violet-500/10 px-4 py-2.5 text-sm text-violet-100">
+          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-200/30 border-t-violet-100" />
+          Auto-buy is buying this chapter on the source…
+        </div>
+      )}
+      {autoBuyError && (
+        <div className="max-w-sm rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-left text-sm text-amber-100">
+          <div className="font-medium">Auto-buy couldn&apos;t buy this chapter</div>
+          <div className="mt-1 text-amber-100/80">{autoBuyError}</div>
+        </div>
+      )}
       {url ? (
         <a
           href={url}

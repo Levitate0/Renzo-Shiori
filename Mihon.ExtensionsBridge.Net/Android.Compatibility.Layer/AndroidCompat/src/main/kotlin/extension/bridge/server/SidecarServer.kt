@@ -119,6 +119,8 @@ object SidecarServer {
         server.createContext("/source/preferences") { ex -> guarded(ex) { preferences(readObj(ex)) } }
         server.createContext("/source/preference") { ex -> guarded(ex) { setPreference(readObj(ex)) } }
         server.createContext("/source/unload") { ex -> guarded(ex) { unload(readObj(ex)) } }
+        // Runs script steps on a page in a WebView (auto-buy of paid chapters).
+        server.createContext("/webview/script") { ex -> guarded(ex) { SidecarPageScript.run(readObj(ex)) } }
         // Diagnostics (127.0.0.1 only, like everything here): what each source
         // needs from the network layer, and what a WebView actually ends up on.
         server.createContext("/debug/probe") { ex -> guarded(ex) { SidecarProbe.probe(sources.values.toList(), readObj(ex)) } }

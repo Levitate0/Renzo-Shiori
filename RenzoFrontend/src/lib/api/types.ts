@@ -544,6 +544,8 @@ export interface BaseSeriesInfo {
   /** Hide fractional ".5"-style sub-chapters (dupe/promo pages) from list + downloads. */
   hideDecimalChapters?: boolean;
   prioritizeFreeChapters?: boolean;
+  /** Auto-buy paid chapters for this series: true/false overrides the account setting, null follows it. */
+  autoBuyPaidChapters?: boolean | null;
   category?: string;
 }
 

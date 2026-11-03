@@ -56,6 +56,8 @@ namespace RenzoBackend.Services
             services.TryAddScoped<SeriesRelocationService>();
             services.TryAddScoped<LockedChapterSupplementService>();
             services.TryAddSingleton<PurchaseCheckService>();
+            services.TryAddScoped<Reader.AutoBuy.ChapterAutoBuyService>();
+            services.TryAddSingleton<Reader.AutoBuy.AutoBuyRunner>();
             services.TryAddScoped<VComicsContentService>();
             services.TryAddScoped<SeriesCategoryResolver>();
             services.TryAddScoped<CategoryMaintenanceService>();

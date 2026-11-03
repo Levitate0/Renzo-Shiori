@@ -94,6 +94,32 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             return list;
         }
 
+        /// <summary>One step of <see cref="RunPageScriptAsync"/>: re-evaluated every
+        /// <paramref name="PollMs"/> until it returns a truthy value or <paramref name="TimeoutMs"/>
+        /// passes. An empty script is a plain pause.</summary>
+        public sealed record PageScriptStep(string Js, int TimeoutMs, int PollMs = 1000);
+
+        /// <summary>
+        /// Opens <paramref name="url"/> in the engine's WebView (its cookie store, so a
+        /// site login is there) and runs the steps in order on the same page. Returns
+        /// each step's last result as raw evaluateJavascript output (JSON text, or null).
+        /// </summary>
+        public async Task<List<string?>> RunPageScriptAsync(string url, string? userAgent, IEnumerable<PageScriptStep> steps, CancellationToken token = default)
+        {
+            var body = new
+            {
+                url,
+                userAgent,
+                steps = steps.Select(s => new { js = s.Js, timeoutMs = s.TimeoutMs.ToString(), pollMs = s.PollMs.ToString() }).ToList(),
+            };
+            using var doc = await PostJsonAsync("/webview/script", body, token).ConfigureAwait(false);
+            var list = new List<string?>();
+            if (doc.RootElement.TryGetProperty("results", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                foreach (var r in arr.EnumerateArray())
+                    list.Add(r.ValueKind == JsonValueKind.String ? r.GetString() : null);
+            return list;
+        }
+
         /// <summary>Remove every cookie for a host from the engine's jar (log out / delete).</summary>
         public Task ClearCookiesAsync(string host, CancellationToken token = default) =>
             PostAsync("/cookies/clear", new { host }, token);

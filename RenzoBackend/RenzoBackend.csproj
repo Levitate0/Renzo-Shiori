@@ -66,6 +66,7 @@
     <EmbeddedResource Include="Resources\na.jpg" />
     <EmbeddedResource Include="wwwroot.sha256" />
     <EmbeddedResource Include="wwwroot.zip" />
+    <EmbeddedResource Include="Services\Reader\AutoBuy\autobuy.js" LogicalName="autobuy.js" />
   </ItemGroup>
 
 

@@ -290,6 +290,14 @@ export const seriesService = {
     );
   },
 
+  /** Per-series auto-buy of paid chapters: true/false overrides the account setting, null follows it. */
+  async setAutoBuy(seriesId: string, value: boolean | null): Promise<{ autoBuyPaidChapters: boolean | null }> {
+    return apiClient.post<{ autoBuyPaidChapters: boolean | null }>(
+      `/api/serie/auto-buy?seriesId=${encodeURIComponent(seriesId)}`,
+      { value }
+    );
+  },
+
   async purchaseCheckStatus(seriesId: string): Promise<PurchaseCheck> {
     return apiClient.get<PurchaseCheck>(
       `/api/serie/check-purchases?seriesId=${encodeURIComponent(seriesId)}`
