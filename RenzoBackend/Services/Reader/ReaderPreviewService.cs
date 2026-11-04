@@ -505,7 +505,12 @@ public class ReaderPreviewService
         // whatever can actually serve the chapter.
         bool Capable(SeriesProviderEntity p) =>
             !p.IsUnknown && !p.IsLocal && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId);
-        bool HasChapter(SeriesProviderEntity p) => p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber);
+        // A row flagged deleted counts too, last: it is a copy that was cleaned up
+        // (a duplicate download, a bad archive), and the source still has the
+        // chapter. The chapter list keeps such numbers (ListedChapterGroups), so the
+        // reader must be able to open them.
+        bool HasChapter(SeriesProviderEntity p) => p.Chapters.Any(c => c.Number == chapterNumber);
+        bool HasLiveRow(SeriesProviderEntity p) => p.Chapters.Any(c => !c.IsDeleted && c.Number == chapterNumber);
 
         // ENABLED first, then the user's per-series Priority (0 = highest), then storage.
         //
@@ -523,6 +528,7 @@ public class ReaderPreviewService
         return series.Sources
             .Where(p => Capable(p) && HasChapter(p))
             .OrderByDescending(p => !p.IsDisabled)
+            .ThenByDescending(HasLiveRow)
             .ThenBy(p => p.Priority)
             .ThenByDescending(p => p.IsStorage)
             .ToList();
@@ -592,23 +598,28 @@ public class ReaderPreviewService
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Stream: source {Provider} failed/timed out fetching chapter list", target.Provider);
+                _logger.LogWarning(ex, "Stream: source {Provider} failed/timed out fetching chapter list; trying its saved chapter link", target.Provider);
                 // Only a captcha is held against the source here. The listing is
                 // shared by every chapter, so each retry of one read would count
                 // as new evidence, and a 20 s limit says little about the 120 s a
                 // download allows its listing.
                 if (SourceHealthService.Classify(ex) == SourceFailureKind.Captcha)
                     _health.ReportFailure(target, target.Title, SourceFailureKind.Captcha);
-                return null;
+                chapters = null;
             }
-            if (chapters == null)
-                return null;
-            chapters.ForEach(a => { if (string.IsNullOrEmpty(a.Scanlator)) a.Scanlator = target.Provider; });
-            _cache.Set(cacheKey, chapters, CacheTtl);
+            // No listing (the site's chapter page is down, slow or behind a
+            // challenge): fall through to the chapter's saved link below rather
+            // than giving up. The listing only maps a number to its link, which
+            // the database already has; the page fetch itself may still work.
+            if (chapters != null)
+            {
+                chapters.ForEach(a => { if (string.IsNullOrEmpty(a.Scanlator)) a.Scanlator = target.Provider; });
+                _cache.Set(cacheKey, chapters, CacheTtl);
+            }
         }
 
         // Apply the same scanlator scoping the download path uses.
-        IEnumerable<ParsedChapter> pool = chapters;
+        IEnumerable<ParsedChapter> pool = chapters ?? [];
         if (target.Scanlator == target.Provider || string.IsNullOrEmpty(target.Scanlator))
             pool = pool.Where(a => string.IsNullOrEmpty(a.Scanlator) || a.Scanlator == target.Provider);
         else

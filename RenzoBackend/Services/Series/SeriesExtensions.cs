@@ -605,7 +605,14 @@ public static class SeriesExtensions
         return continueAfterChapter;
     }
 
-    public static void AssignArchives(this SeriesProviderEntity provider, List<ProviderArchiveSnapshot>? archives)
+    /// <param name="completeListing">
+    /// The archives are everything in the provider's folder, so a chapter missing
+    /// from them really lost its file. False when the caller passes only leftover
+    /// files (the import's assign-to-an-existing-series step drops every archive a
+    /// row already points at): then nothing missing from the list is touched, and
+    /// a file for a chapter already downloaded is a second copy, left alone.
+    /// </param>
+    public static void AssignArchives(this SeriesProviderEntity provider, List<ProviderArchiveSnapshot>? archives, bool completeListing = true)
     {
         if (provider.Chapters.Count > 0 && archives != null)
         {
@@ -641,6 +648,11 @@ public static class SeriesExtensions
             foreach (ProviderArchiveSnapshot a in archives)
             {
                 Chapter? pc = provider.Chapters.FirstOrDefault(c => c.Number == a.ChapterNumber);
+                if (!completeListing && pc != null && !string.IsNullOrEmpty(pc.Filename))
+                {
+                    toBeDeletedChapters.Remove(pc);
+                    continue;
+                }
 
                 if (pc != null)
                 {
@@ -666,7 +678,25 @@ public static class SeriesExtensions
                 }
             }
 
-            toBeDeletedChapters.ForEach(c => c.IsDeleted = true);
+            // Chapters the scan found no archive for. Their DOWNLOAD is gone, not
+            // the chapter: on a source that lists chapters the row stays (it used
+            // to be flagged deleted, which hid every listed-but-not-downloaded
+            // chapter of the source whenever orphan files were adopted into it).
+            // A local or Unknown row was only ever its file, so it goes.
+            foreach (Chapter c in completeListing ? toBeDeletedChapters : [])
+            {
+                if (provider.IsLocal || provider.IsUnknown)
+                {
+                    if (!string.IsNullOrEmpty(c.Filename))
+                        provider.Chapters.Remove(c);
+                    continue;
+                }
+                if (!string.IsNullOrEmpty(c.Filename))
+                {
+                    c.Filename = null;
+                    c.DownloadDate = null;
+                }
+            }
         }
     }
 

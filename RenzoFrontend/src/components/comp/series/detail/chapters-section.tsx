@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, CheckCheck, Circle, CloudDownload, Download, KeyRound, ListChecks, Loader2, Search, Trash2, X } from "lucide-react";
@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 import { useIsNative } from "@/lib/native/hooks";
 import { useOfflineDownload, chapterKeyFor } from "@/lib/native/use-download";
 import { listOffline } from "@/lib/native/offline";
-import { ChapterRow } from "./chapter-row";
+import { ChapterGapRow, ChapterRow } from "./chapter-row";
 
 export interface ChaptersSectionProps {
   seriesId: string;
@@ -280,6 +280,11 @@ export function ChaptersSection({
   const downloadedCount = chapters?.filter((c) => c.downloaded).length ?? 0;
   const missingCount = total - downloadedCount;
   const lockedCount = chapters?.filter((c) => c.locked && !c.downloaded).length ?? 0;
+  // Numbering gaps (chapter numbers no source lists), summed over every row
+  // regardless of filters. Gaps are never chapters, so they stay out of every
+  // count above. Hub twin: SeriesChaptersSection.kt / SeriesDetailViewModel.kt.
+  const gapCount =
+    chapters?.reduce((sum, c) => sum + (c.missingAfter ?? []).reduce((a, g) => a + g.count, 0), 0) ?? 0;
 
   // "Check purchases": the server asks the source, with the owner's site login,
   // about every locked chapter (after buying several at once on the site). It
@@ -330,6 +335,9 @@ export function ChaptersSection({
     }
     return list;
   }, [chapters, missingOnly, query]);
+  // Gap rows only make sense on the full list (filters break adjacency).
+  // Hub twin: SeriesDetailUiState.showGaps in SeriesDetailViewModel.kt.
+  const showGaps = !missingOnly && query.trim() === "";
 
   // ── Multi-select ──────────────────────────────────────────────────────
   // Selection operates over the chapters currently visible (after filter), so
@@ -554,8 +562,8 @@ export function ChaptersSection({
           title: "Downloading all chapters",
           description:
             res.queued > 0
-              ? `Queued ${res.queued} missing chapter${res.queued === 1 ? "" : "s"}; also checking sources for any newer ones.`
-              : "No missing chapters to queue — checking sources for anything new.",
+              ? `Queued ${res.queued} not-downloaded chapter${res.queued === 1 ? "" : "s"}; also checking sources for any newer ones.`
+              : "Nothing left to download — checking sources for anything new.",
         });
       },
       onError: (err) => {
@@ -584,7 +592,14 @@ export function ChaptersSection({
             {missingCount > 0 && (
               <>
                 {" · "}
-                <span className="font-medium text-amber-500">{missingCount} missing</span>
+                <span className="font-medium text-amber-500">{missingCount} not downloaded</span>
+              </>
+            )}
+            {/* Gap total ("missing" = not on any source). Hub twin: SeriesChaptersSection.kt header. */}
+            {gapCount > 0 && (
+              <>
+                {" · "}
+                <span className="font-medium">{gapCount} missing</span>
               </>
             )}
           </span>
@@ -624,7 +639,7 @@ export function ChaptersSection({
                       type="button"
                       onClick={handleDownloadAll}
                       disabled={downloadAll.isPending}
-                      title="Download every missing chapter"
+                      title="Download every chapter that isn't downloaded yet"
                       className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {downloadAll.isPending ? (
@@ -723,7 +738,7 @@ export function ChaptersSection({
                         : "border-border/40 bg-foreground/[0.04] text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
                     )}
                   >
-                    Missing only
+                    Not downloaded
                     {missingCount > 0 && (
                       <span className="tabular-nums opacity-80">({missingCount})</span>
                     )}
@@ -854,33 +869,42 @@ export function ChaptersSection({
                   <div className="space-y-2">
                     {filtered.map((chapter, index) => {
                       const rs = chapter.number != null ? readStateByNumber.get(chapter.number) : undefined;
+                      // Gap rows go just before (= above, the list is newest first) the
+                      // chapter they follow in reading order, highest range first. Only
+                      // on the unfiltered list: a filter breaks adjacency.
+                      // Hub twin: SeriesChaptersSection.kt gap rows.
+                      const gaps = showGaps ? [...(chapter.missingAfter ?? [])].reverse() : [];
                       return (
-                        <ChapterRow
-                          key={chapter.number ?? `idx-${index}`}
-                          chapter={chapter}
-                          paused={paused}
-                          canManage={canManage}
-                          isPending={chapter.number != null && pending.has(chapter.number)}
-                          onRedownload={handleRedownload}
-                          onRead={handleRead}
-                          onToggleRead={handleToggleRead}
-                          readPending={chapter.number != null && readPending.has(chapter.number)}
-                          onToggleBookmark={handleToggleBookmark}
-                          bookmarkPending={chapter.number != null && bookmarkPending.has(chapter.number)}
-                          readProgress={rs?.progress}
-                          readCompleted={rs?.isCompleted}
-                          readBookmarked={rs?.bookmarked}
-                          selecting={selecting}
-                          selected={chapter.number != null && selected.has(chapter.number)}
-                          onSelectToggle={handleSelectToggle}
-                          onSaveOffline={
-                            native && chapter.downloaded && chapter.number != null && filenameByNumber.has(chapter.number)
-                              ? () => void handleSaveOffline(chapter.number!)
-                              : undefined
-                          }
-                          offlineSaving={chapter.number != null && inFlight.has(chapterKeyFor(seriesId, chapter.number))}
-                          offlineSaved={chapter.number != null && offlineSavedSet.has(chapter.number)}
-                        />
+                        <Fragment key={chapter.number ?? `idx-${index}`}>
+                          {gaps.map((g) => (
+                            <ChapterGapRow key={`gap-${g.from}-${g.to}`} gap={g} />
+                          ))}
+                          <ChapterRow
+                            chapter={chapter}
+                            paused={paused}
+                            canManage={canManage}
+                            isPending={chapter.number != null && pending.has(chapter.number)}
+                            onRedownload={handleRedownload}
+                            onRead={handleRead}
+                            onToggleRead={handleToggleRead}
+                            readPending={chapter.number != null && readPending.has(chapter.number)}
+                            onToggleBookmark={handleToggleBookmark}
+                            bookmarkPending={chapter.number != null && bookmarkPending.has(chapter.number)}
+                            readProgress={rs?.progress}
+                            readCompleted={rs?.isCompleted}
+                            readBookmarked={rs?.bookmarked}
+                            selecting={selecting}
+                            selected={chapter.number != null && selected.has(chapter.number)}
+                            onSelectToggle={handleSelectToggle}
+                            onSaveOffline={
+                              native && chapter.downloaded && chapter.number != null && filenameByNumber.has(chapter.number)
+                                ? () => void handleSaveOffline(chapter.number!)
+                                : undefined
+                            }
+                            offlineSaving={chapter.number != null && inFlight.has(chapterKeyFor(seriesId, chapter.number))}
+                            offlineSaved={chapter.number != null && offlineSavedSet.has(chapter.number)}
+                          />
+                        </Fragment>
                       );
                     })}
                   </div>
@@ -890,7 +914,7 @@ export function ChaptersSection({
                   {total === 0
                     ? "No chapters tracked for this series yet."
                     : missingOnly
-                      ? "No missing chapters — everything is downloaded."
+                      ? "Everything is downloaded."
                       : "No chapters match your filter."}
                 </div>
               )}

@@ -10,6 +10,7 @@ import {
   Circle,
   CloudDownload,
   Download,
+  FileQuestionMark,
   Loader2,
   Lock,
   RefreshCw,
@@ -27,7 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { normalizeUtcString } from "@/components/comp/queue/utils";
-import { type ChapterDetail } from "@/lib/api/types";
+import { type ChapterDetail, type ChapterGap } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
 export interface ChapterRowProps {
@@ -222,8 +223,10 @@ export function ChapterRow({
               Locked · purchase on source
             </span>
           ) : (
+            // "Not downloaded", not "Missing": "Missing" now means a numbering gap
+            // (ChapterGapRow below). Hub twin: SeriesChaptersSection.kt chapter row.
             <span className="inline-flex items-center gap-1 font-medium text-amber-500">
-              Missing
+              Not downloaded
             </span>
           )}
           {uploadLabel && (
@@ -407,6 +410,28 @@ export function ChapterRow({
       )}
       </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A numbering gap in the chapter list: chapter numbers no source lists at all,
+ * between two listed chapters (server-computed, ChapterDetail.missingAfter).
+ * Not a chapter — not clickable, not selectable, never counted, no actions.
+ * Slim dashed row so it reads as "absent" and stays distinct from both a real
+ * row and the amber not-downloaded state.
+ * Hub twin: gap row in hub/feature-shiori/.../ui/series/SeriesChaptersSection.kt.
+ */
+export function ChapterGapRow({ gap }: { gap: ChapterGap }) {
+  const range = gap.from === gap.to ? formatChapter(gap.from) : `${formatChapter(gap.from)}–${gap.to}`;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg border border-dashed border-border/60 bg-transparent px-3 py-1.5 text-muted-foreground">
+      <FileQuestionMark className="h-4 w-4 shrink-0 text-muted-foreground/60" aria-hidden="true" />
+      <span className="text-xs font-medium tabular-nums">
+        Missing · {range}
+        {gap.count > 1 && ` · ${gap.count} chapters`}
+      </span>
+      <span className="text-[11px] text-muted-foreground/70">Not on any source</span>
     </div>
   );
 }

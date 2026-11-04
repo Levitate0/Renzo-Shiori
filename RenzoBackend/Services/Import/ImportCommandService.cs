@@ -181,12 +181,25 @@ public class ImportCommandService
                         update = true;
                     }
                 }
-                if (chapters.Count > 0)
+                // A downloaded chapter whose archive the scan did not find. On a
+                // source that lists chapters it keeps its place in the list (the
+                // source still has it): only the download is forgotten. Only a local
+                // or Unknown row, whose file was all there was of it, goes. Nothing
+                // at all when the scan found no archives for the series: that is a
+                // storage hiccup or a moved folder, not every file gone.
+                if (chapters.Count > 0 && archives.Count > 0)
                 {
                     foreach (Chapter c in chapters.Keys)
                     {
-                        chapters[c].Chapters.Remove(c);
-                        _db.Touch(chapters[c],c=>c.Chapters);
+                        SeriesProviderEntity holder = chapters[c];
+                        if (holder.IsLocal || holder.IsUnknown)
+                            holder.Chapters.Remove(c);
+                        else
+                        {
+                            c.Filename = null;
+                            c.DownloadDate = null;
+                        }
+                        _db.Touch(holder, c => c.Chapters);
                     }
                     await _db.SaveChangesAsync(token).ConfigureAwait(false);
                 }
@@ -409,7 +422,7 @@ public class ImportCommandService
                                 SeriesProviderEntity? existing = baseQuery.FirstOrDefault();
                                 if (existing != null)
                                 {
-                                    existing.AssignArchives(left[p]);
+                                    existing.AssignArchives(left[p], completeListing: false);
                                     existing.PopulateChapterPageCounts(seriesBasePath);
                                     _db.Touch(existing, c => c.Chapters);
                                 }
@@ -477,7 +490,7 @@ public class ImportCommandService
                                         {
                                             _logger.LogInformation("User-based provider already exists for provider {Provider} ({Lang}/{Scanlator}). Updating chapters.",
                                                 p.Provider, p.Language, p.Scanlator);
-                                            existingUserProvider.AssignArchives(left[p]);
+                                            existingUserProvider.AssignArchives(left[p], completeListing: false);
                                             existingUserProvider.PopulateChapterPageCounts(seriesBasePath);
                                             _db.Touch(existingUserProvider, c => c.Chapters);
                                             left.Remove(p);

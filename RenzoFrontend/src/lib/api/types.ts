@@ -619,6 +619,20 @@ export interface ChapterDetail {
   /** Paid/locked chapter that must be purchased on the source site. */
   locked?: boolean;
   availableProviders: ChapterSource[];
+  /**
+   * Chapter numbers absent from the list between this chapter and the next higher listed one
+   * (reading order), grouped into runs, ascending. Absent/null when there is no gap.
+   * Hub twin: ChapterDetailDto.missingAfter in hub/feature-shiori/.../data/model/SeriesModels.kt
+   * (Double, never Float).
+   */
+  missingAfter?: ChapterGap[] | null;
+}
+
+/** One run of chapter numbers no source lists (see ChapterDetail.missingAfter). */
+export interface ChapterGap {
+  from: number;
+  to: number;
+  count: number;
 }
 
 export interface DownloadInfoList {

@@ -449,24 +449,39 @@ namespace RenzoBackend.Extensions
         /// </summary>
         public static bool HasRealUploadDate(DateTime? d) => d.HasValue && d.Value.Year > 1971;
 
-        public static List<ChapterDetailDto> ToChapterDetailList(this SeriesEntity s)
+        /// <summary>
+        /// The chapters a series' chapter list shows, each with every source row
+        /// behind its number: the ONE membership rule. The series page
+        /// (<see cref="ToChapterDetailList"/>) and the reader's list
+        /// (ReaderService.GetChaptersAsync) both build from it, so a chapter the
+        /// series page shows can be opened, and next/previous walks the same list.
+        /// They used to differ: the reader dropped disabled sources (110 listed
+        /// chapters, 45 of them downloaded, opened to "Chapter not found") and the
+        /// series page dropped rows flagged deleted.
+        ///
+        /// A number stays listed while ANY source still attached to the series
+        /// lists it, in any state: disabled, uninstalled, or with its row flagged
+        /// deleted (a duplicate copy cleaned up, a bad archive removed). Taking it
+        /// off needs every source that lists it removed from the series. A site
+        /// going down, moving or being switched off does not break the list.
+        ///
+        /// Two filters remain: "hide decimal chapters", and the start of the
+        /// range the user collects (the lowest chapter wanted or downloaded):
+        /// below it only what is downloaded or wanted shows, the back catalogue
+        /// the user opted out of stays hidden.
+        /// </summary>
+        /// <param name="applyHideDecimal">False only for the gap analysis, which has to see hidden parts (see ToChapterDetailList).</param>
+        public static List<IGrouping<decimal, (SeriesProviderEntity Provider, Models.Chapter Chapter)>> ListedChapterGroups(this SeriesEntity s,
+            bool applyHideDecimal = true)
         {
             ArgumentNullException.ThrowIfNull(s);
-            List<SeriesProviderEntity> sources = s.Sources?.ToList() ?? new List<SeriesProviderEntity>();
-
-            // Sources we can actually fetch from — drives the re-download picker.
-            List<SeriesProviderEntity> remoteCapable = sources
-                .Where(p => !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled
-                    && !string.IsNullOrEmpty(p.MihonProviderId))
-                .ToList();
-
-            var result = new List<ChapterDetailDto>();
-            var groups = sources
+            bool hideDecimal = applyHideDecimal && s.HideDecimalChapters;
+            var rows = (s.Sources ?? [])
                 .SelectMany(p => p.Chapters
-                    .Where(c => !c.IsDeleted && c.Number != null
-                        && !(s.HideDecimalChapters && c.Number.Value != decimal.Truncate(c.Number.Value)))
+                    .Where(c => c.Number != null
+                        && !(hideDecimal && c.Number.Value != decimal.Truncate(c.Number.Value)))
                     .Select(c => (Provider: p, Chapter: c)))
-                .GroupBy(t => t.Chapter.Number);
+                .ToList();
 
             // Lowest chapter number the user is actually collecting (wanted or already
             // downloaded on any source) — the effective start of their range. Chapters
@@ -474,39 +489,177 @@ namespace RenzoBackend.Extensions
             // ShouldDownload flag got cleared (e.g. a fetched-but-not-downloaded latest
             // chapter whose download stalled, or a source-side paid gate). Chapters
             // strictly BELOW it are intentionally-excluded back-catalogue and stay hidden.
-            decimal? collectFloor = sources
-                .SelectMany(p => p.Chapters)
-                .Where(c => !c.IsDeleted && c.Number != null
-                    && (c.ShouldDownload || !string.IsNullOrEmpty(c.Filename)))
-                .Select(c => c.Number)
+            //
+            // A deleted flag does not lower anything here (a series whose rows are
+            // all flagged still lists them), and neither does deleting downloads:
+            // a chapter whose download the user deleted stays in the range.
+            decimal? collectFloor = rows
+                .Where(r => r.Chapter.ShouldDownload || !string.IsNullOrEmpty(r.Chapter.Filename) || r.Chapter.DownloadDeleted)
+                .Select(r => r.Chapter.Number)
                 .DefaultIfEmpty(null)
                 .Min();
 
+            return rows
+                .GroupBy(r => r.Chapter.Number!.Value)
+                .Where(g => g.Any(r => !string.IsNullOrEmpty(r.Chapter.Filename))
+                    || g.Any(r => r.Chapter.ShouldDownload)
+                    || (collectFloor != null && g.Key >= collectFloor.Value))
+                .OrderBy(g => g.Key)
+                .ToList();
+        }
+
+        /// <summary>Sources a chapter can be fetched from: the re-download picker, and what "locked" is judged on.</summary>
+        public static bool IsRemoteCapable(this SeriesProviderEntity p) =>
+            !p.IsUnknown && !p.IsLocal && !p.IsDisabled && !p.IsUninstalled && !string.IsNullOrEmpty(p.MihonProviderId);
+
+        /// <summary>The row whose file a downloaded chapter reads from: best (lowest) Priority, then storage.</summary>
+        public static (SeriesProviderEntity Provider, Models.Chapter Chapter) ChapterFileHolder(
+            this IEnumerable<(SeriesProviderEntity Provider, Models.Chapter Chapter)> rows) =>
+            rows.Where(r => !string.IsNullOrEmpty(r.Chapter.Filename) && !r.Chapter.IsDeleted)
+                .OrderBy(r => r.Provider.Priority)
+                .ThenBy(r => r.Provider.IsStorage ? 0 : 1)
+                .FirstOrDefault();
+
+        /// <summary>A chapter's title: the file holder's, else the first a live row gives, else any.</summary>
+        public static string ChapterName(this IEnumerable<(SeriesProviderEntity Provider, Models.Chapter Chapter)> rows,
+            (SeriesProviderEntity Provider, Models.Chapter Chapter) holder)
+        {
+            if (!string.IsNullOrWhiteSpace(holder.Chapter?.Name))
+                return holder.Chapter!.Name!;
+            return rows.OrderBy(r => r.Chapter.IsDeleted)
+                .Select(r => r.Chapter.Name)
+                .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Locked means "no source will give me this", not "some source wants money
+        /// for it". ANY-source was the old test, and it marked a chapter paid
+        /// whenever a single source paywalled it, even with another source offering
+        /// the same chapter free; that is also what "prioritize free chapters"
+        /// exploits. Judged on the live rows of sources that can actually be fetched
+        /// from (a free copy on a disabled source is not reachable), falling back to
+        /// every live row, then every row, so a locked chapter from a now-disabled
+        /// source still reads as locked. The series page and the reader share it:
+        /// the Hub ORs their two answers, so they have to agree.
+        /// </summary>
+        public static bool IsChapterLocked(this IReadOnlyCollection<(SeriesProviderEntity Provider, Models.Chapter Chapter)> rows, bool downloaded)
+        {
+            if (downloaded || rows.Count == 0)
+                return false;
+            static bool LockedOn(Models.Chapter c) => c.IsLocked || IsLockedChapterName(c.Name);
+            var judged = rows.Where(r => !r.Chapter.IsDeleted && r.Provider.IsRemoteCapable()).ToList();
+            if (judged.Count == 0)
+                judged = rows.Where(r => !r.Chapter.IsDeleted).ToList();
+            if (judged.Count == 0)
+                judged = rows.ToList();
+            return judged.All(r => LockedOn(r.Chapter));
+        }
+
+        /// <summary>
+        /// Whole numbers whose parts (N.1, N.2…) two or more different sources list
+        /// while none lists N itself: those sources' own numbering, not a missing N
+        /// (see ChapterGaps).
+        /// </summary>
+        public static HashSet<int> WholesAbsentBySources(
+            this IEnumerable<IGrouping<decimal, (SeriesProviderEntity Provider, Models.Chapter Chapter)>> groups)
+        {
+            var list = groups.ToList();
+            HashSet<decimal> numbers = list.Select(g => g.Key).ToHashSet();
+            return PartsListedBySources(list).Where(n => !numbers.Contains(n)).ToHashSet();
+        }
+
+        /// <summary>
+        /// Whole numbers whose parts (N.1, N.2…) two or more different sources list.
+        /// What none of them lists under N is their numbering, not a missing part.
+        /// </summary>
+        public static HashSet<int> PartsListedBySources(
+            this IEnumerable<IGrouping<decimal, (SeriesProviderEntity Provider, Models.Chapter Chapter)>> groups) =>
+            groups
+                .Where(g => g.Key != decimal.Truncate(g.Key) && g.Key >= 0 && g.Key <= int.MaxValue)
+                .GroupBy(g => (int)decimal.Truncate(g.Key))
+                .Where(byWhole => byWhole.SelectMany(g => g.Select(r => r.Provider.Provider)).Distinct().Count() >= 2)
+                .Select(byWhole => byWhole.Key)
+                .ToHashSet();
+
+        private static readonly System.Text.RegularExpressions.Regex NamedNumber = new(
+            @"(?:^|\b)Ch(?:apter)?\.?\s*(\d+(?:\.\d+)?)", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// The missing-chapter runs for the series page, keyed by the listed number
+        /// each comes after (ChapterGaps). Worked out on everything the sources
+        /// list, hidden decimals included: with "hide decimal chapters" on, a
+        /// chapter numbered only in parts (37.1, 37.2) is hidden, not missing.
+        /// A chapter 0 that is really another listed chapter misnumbered (a row 0
+        /// named "Vol.12 Ch.99" next to 99) is left out, or the whole stretch
+        /// below its twin read as missing. Never fails the list: gap rows are a
+        /// courtesy, the chapters are what matters.
+        /// </summary>
+        private static Dictionary<decimal, List<Services.Series.ChapterGaps.Range>> MissingRuns(SeriesEntity s,
+            List<IGrouping<decimal, (SeriesProviderEntity Provider, Models.Chapter Chapter)>> visible)
+        {
+            try
+            {
+                var all = s.HideDecimalChapters ? s.ListedChapterGroups(applyHideDecimal: false) : visible;
+                HashSet<decimal> keys = all.Select(g => g.Key).ToHashSet();
+                decimal? lowest = all.Count == 0 ? null : all.Min(g => g.Key);
+                bool Misnumbered(IGrouping<decimal, (SeriesProviderEntity Provider, Models.Chapter Chapter)> g) =>
+                    g.Key == lowest && g.All(r =>
+                    {
+                        var m = NamedNumber.Match(r.Chapter.Name ?? string.Empty);
+                        return m.Success && decimal.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Number,
+                                   System.Globalization.CultureInfo.InvariantCulture, out decimal named)
+                               && named != g.Key && keys.Contains(named);
+                    });
+                var input = all.Where(g => !Misnumbered(g)).ToList();
+                var runs = Services.Series.ChapterGaps.Find(input.Select(g => g.Key),
+                    input.WholesAbsentBySources(), input.PartsListedBySources());
+                if (!s.HideDecimalChapters)
+                    return runs;
+
+                // Decimals hidden: keep whole-number runs only, under the visible
+                // chapter just below them.
+                List<decimal> shown = visible.Select(g => g.Key).OrderBy(k => k).ToList();
+                var moved = new Dictionary<decimal, List<Services.Series.ChapterGaps.Range>>();
+                foreach (var (after, list) in runs.OrderBy(kv => kv.Key))
+                {
+                    foreach (var r in list.Where(r => r.From == decimal.Truncate(r.From)))
+                    {
+                        int at = shown.BinarySearch(r.From);
+                        int below = (at >= 0 ? at : ~at) - 1;
+                        if (below < 0)
+                            continue;
+                        if (!moved.TryGetValue(shown[below], out var into))
+                            moved[shown[below]] = into = [];
+                        into.Add(r);
+                    }
+                }
+                return moved;
+            }
+            catch (Exception)
+            {
+                return [];
+            }
+        }
+
+        public static List<ChapterDetailDto> ToChapterDetailList(this SeriesEntity s)
+        {
+            ArgumentNullException.ThrowIfNull(s);
+            List<SeriesProviderEntity> sources = s.Sources?.ToList() ?? new List<SeriesProviderEntity>();
+
+            // Sources we can actually fetch from — drives the re-download picker.
+            List<SeriesProviderEntity> remoteCapable = sources.Where(p => p.IsRemoteCapable()).ToList();
+
+            var groups = s.ListedChapterGroups();
+            Dictionary<decimal, List<Services.Series.ChapterGaps.Range>> gaps = MissingRuns(s, groups);
+
+            var result = new List<ChapterDetailDto>();
             foreach (var g in groups)
             {
                 var rows = g.ToList();
-                var downloadedRows = rows.Where(r => !string.IsNullOrEmpty(r.Chapter.Filename)).ToList();
-                bool downloaded = downloadedRows.Count > 0;
+                var holder = rows.ChapterFileHolder();
+                bool downloaded = holder.Chapter != null;
 
-                // A not-downloaded chapter shows if a source still wants it, OR if it
-                // sits within the collection range (>= collectFloor) — the latter
-                // surfaces chapters like a stalled newest one whose ShouldDownload was
-                // cleared. Rows strictly below the floor (older back-catalogue the user
-                // opted out of) stay hidden.
-                bool wanted = rows.Any(r => r.Chapter.ShouldDownload);
-                bool withinRange = collectFloor != null && g.Key != null && g.Key.Value >= collectFloor.Value;
-                if (!downloaded && !wanted && !withinRange)
-                    continue;
-
-                // Holder of the on-disk file: prefer the highest-priority source (0 = top), then storage.
-                var holder = downloadedRows
-                    .OrderBy(r => r.Provider.Priority)
-                    .ThenBy(r => r.Provider.IsStorage ? 0 : 1)
-                    .FirstOrDefault();
-
-                string name = rows
-                    .Select(r => r.Chapter.Name)
-                    .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? string.Empty;
+                string name = rows.ChapterName(holder);
 
                 // Chapter-list date: the source publish date is preferred (that's
                 // "when it came out"). Prefer the holder's real date, else a real
@@ -524,35 +677,11 @@ namespace RenzoBackend.Extensions
                                      .DefaultIfEmpty(null)
                                      .Min(); // first time it was found on any source
 
-                // Source page URL (to open a purchase/unlock page) and whether this
-                // is a paid/locked chapter that isn't downloaded yet.
+                // Source page URL (to open a purchase/unlock page).
                 string? chapterUrl = rows
+                    .OrderBy(r => r.Chapter.IsDeleted)
                     .Select(r => r.Chapter.Url)
                     .FirstOrDefault(u => !string.IsNullOrEmpty(u));
-                // Locked means "no source will give me this", not "some source
-                // wants money for it". ANY-source was the old test, and it marked a
-                // chapter paid whenever a single source paywalled it — even with
-                // another source offering the very same chapter free. Reported as a
-                // free chapter showing up as paid, and it is also what the
-                // per-series "prioritize free chapters" option exists to exploit:
-                // if a free copy is reachable, this chapter is not locked.
-                static bool LockedOn(Models.Chapter c) =>
-                    c.IsLocked || IsLockedChapterName(c.Name);
-
-                // Judged on the sources that can actually be fetched from: a free
-                // copy on a DISABLED or uninstalled source is not reachable, so it
-                // must not clear the badge either. Falls back to every row when no
-                // usable source carries the chapter, which keeps a locked-only
-                // chapter from a now-disabled source still reading as locked.
-                var lockRows = rows
-                    .Where(r => remoteCapable.Any(p => p.Id == r.Provider.Id))
-                    .ToList();
-                if (lockRows.Count == 0)
-                    lockRows = rows;
-
-                bool locked = !downloaded
-                    && lockRows.Count > 0
-                    && lockRows.All(r => LockedOn(r.Chapter));
 
                 List<ChapterSourceDto> available = remoteCapable
                     .Where(p => p.Chapters.Any(c => !c.IsDeleted && c.Number == g.Key))
@@ -568,8 +697,11 @@ namespace RenzoBackend.Extensions
                     SourceProviderName = holder.Provider?.Provider,
                     UploadDate = uploadDate,
                     Url = chapterUrl,
-                    Locked = locked,
-                    AvailableProviders = available
+                    Locked = rows.IsChapterLocked(downloaded),
+                    AvailableProviders = available,
+                    MissingAfter = gaps.TryGetValue(g.Key, out var runs)
+                        ? runs.Select(r => new MissingChapterRangeDto { From = r.From, To = r.To, Count = r.Count }).ToList()
+                        : null,
                 });
             }
 

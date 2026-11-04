@@ -154,6 +154,7 @@ namespace RenzoBackend.Services.Series
                 Chapter? ch = unknown.Chapters.FirstOrDefault(a => Path.GetFileNameWithoutExtension(a.Filename) == chap.Filename);
                 if (ch == null)
                     continue;
+                bool moved = false;
                 
                 if (isNewProvider)
                 {
@@ -186,8 +187,21 @@ namespace RenzoBackend.Services.Series
                 }
                 else
                 {
-                    // For existing providers, follow the original pattern
+                    // For existing providers, follow the original pattern.
+                    //
+                    // A source that does not list this chapter number gets a row for
+                    // it. It used to get nothing while the Unknown row was removed
+                    // anyway, so the chapter left the list and its file sat on disk
+                    // with nothing pointing at it.
                     Chapter? dst = targetProvider.Chapters.FirstOrDefault(a => a.Number == chap.ChapterNumber);
+                    bool addedDst = false;
+                    if (ch != null && dst == null)
+                    {
+                        dst = new Chapter { Number = chap.ChapterNumber, Name = ch.Name, ProviderUploadDate = ch.ProviderUploadDate, DateFetched = ch.DateFetched };
+                        targetProvider.Chapters.Add(dst);
+                        targetProvider.Chapters = targetProvider.Chapters.OrderBy(a => a.Number).ToList();
+                        addedDst = true;
+                    }
                     if (ch != null && dst != null)
                     {
                         decimal? maxChap = targetProvider.Chapters.Max(c => c.Number);
@@ -208,6 +222,7 @@ namespace RenzoBackend.Services.Series
                                 dst.Filename = newFilename;
                                 dst.DownloadDate = ch.DownloadDate;
                                 dst.ShouldDownload = false;
+                                moved = true;
                             }
                             catch (Exception e)
                             {
@@ -215,8 +230,14 @@ namespace RenzoBackend.Services.Series
                             }
                         }
                     }
+                    if (!moved && addedDst)
+                        targetProvider.Chapters.Remove(dst!);
                 }
-                
+
+                // Only once the file really belongs to the target: a rename that
+                // failed left the chapter on Unknown, not nowhere.
+                if (!isNewProvider && !moved)
+                    continue;
                 unknown.Chapters.Remove(ch);
                 update = true;
             }
@@ -316,7 +337,7 @@ namespace RenzoBackend.Services.Series
             foreach (ProviderExtendedDto p in series.Providers)
             {
                 SeriesProviderEntity toBeDeleted = dbSeries.Sources.First(a => a.Id == p.Id);
-                if (toBeDeleted.IsUnknown && toBeDeleted.Chapters.All(a => a.Filename == null))
+                if (toBeDeleted.IsUnknown && toBeDeleted.Chapters.All(a => string.IsNullOrEmpty(a.Filename)))
                     p.IsDeleted = true;
                 
                 if (p.IsDeleted)
@@ -338,7 +359,11 @@ namespace RenzoBackend.Services.Series
                         }
                         else
                         {
-                            // Convert provider to unknown
+                            // Convert provider to unknown. Only its downloads stay: the
+                            // chapters it merely listed went with the source, as they
+                            // do when the downloads move to an existing Unknown above.
+                            toBeDeleted.Chapters = chapters.OrderBy(a => a.Number).ToList();
+                            _db.Touch(toBeDeleted, a => a.Chapters);
                             toBeDeleted.MihonId = string.Empty;
                             toBeDeleted.MihonProviderId = string.Empty;
                             toBeDeleted.BridgeItemInfo = string.Empty;

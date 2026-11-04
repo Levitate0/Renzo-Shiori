@@ -52,6 +52,11 @@ namespace RenzoBackend.Services.Series
         public async Task<SeriesIntegrityResultDto> VerifyIntegrityAsync(Guid seriesId, bool force = false, CancellationToken token = default)
         {
             SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            // The series lock every writer of the chapter lists takes, held for the
+            // whole check: it reads the rows, looks at the disk, then writes the
+            // rows back whole, and a download finishing in between used to be
+            // saved over (its file then missing from the database).
+            using var held = await Downloads.DownloadCommandService.SeriesLock.LockAsync(seriesId.ToString(), token).ConfigureAwait(false);
             Models.Database.SeriesEntity? series = await _db.Series.Include(a => a.Sources).Where(a => a.Id == seriesId)
                 .FirstOrDefaultAsync(token).ConfigureAwait(false);
             
@@ -98,10 +103,25 @@ namespace RenzoBackend.Services.Series
                 {
                     string archivePath = Path.Combine(basePath, chapter.Filename);
 
-                    // Remove chapter if the archive file does not exist on disk
+                    // The archive is gone. Its download is, not the chapter: on a
+                    // source that lists chapters the row stays and the chapter is
+                    // wanted again (the reader's missing-file heal does the same).
+                    // Removing the row took the chapter off the list whenever no
+                    // other source happened to list it. Only a local or Unknown
+                    // row, which was nothing but its file, goes.
                     if (!File.Exists(archivePath))
                     {
-                        chaptersToRemove.Add(chapter);
+                        if (provider.IsLocal || provider.IsUnknown)
+                            chaptersToRemove.Add(chapter);
+                        else
+                        {
+                            chapter.Filename = null;
+                            chapter.DownloadDate = null;
+                            if (provider.ContinueAfterChapter == null || provider.ContinueAfterChapter < chapter.Number)
+                                chapter.ShouldDownload = true;
+                            _db.Touch(provider, c => c.Chapters);
+                            dbChanged = true;
+                        }
                         continue;
                     }
 
@@ -143,8 +163,10 @@ namespace RenzoBackend.Services.Series
                     _db.Touch(provider, c => c.Chapters);
                 }
 
-                // If provider has no chapters left, mark for removal
-                if (provider.Chapters.Count == 0)
+                // A local or Unknown source with nothing left goes. Any other
+                // source stays however empty it is: a newly added one whose first
+                // listing failed was deleted here before it ever got a chance.
+                if (provider.Chapters.Count == 0 && (provider.IsLocal || provider.IsUnknown))
                 {
                     providersToRemove.Add(provider);
                 }
@@ -158,10 +180,25 @@ namespace RenzoBackend.Services.Series
                 dbChanged = true;
             }
 
+            int adopted = AdoptOrphanArchives(series, basePath);
+            if (adopted > 0)
+                dbChanged = true;
+            if (ClearStaleDeletedFlags(series) > 0)
+                dbChanged = true;
+
             // Persist all DB changes
             if (dbChanged)
             {
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            }
+            // The rows are written: the slow part below (opening every archive)
+            // must not hold up downloads of this series finishing.
+            held.Dispose();
+            if (adopted > 0)
+            {
+                _logger.LogInformation(
+                    "Put {Count} archive(s) of series {Series} back on their chapters: they were in its folder with nothing pointing at them.",
+                    adopted, series.Title);
             }
 
             if (restored > 0)
@@ -187,6 +224,160 @@ namespace RenzoBackend.Services.Series
                 .Where(a => !string.IsNullOrEmpty(a.Filename)).ToList();
 
             return GetIntegrityResult(basePath, validChapters);
+        }
+
+        /// <summary>Our own archive names: "[Provider-Scanlator][lang] Title (chapter title) 012".</summary>
+        private static readonly System.Text.RegularExpressions.Regex OwnArchiveName = new(
+            @"^\[(?<tag>[^\]]+)\](?:\[[^\]]*\])?\s.*\s(?<num>\d+(?:\.\d+)?)$",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>Reads the source tag and chapter number from one of our archive names; false for anything else.</summary>
+        internal static bool TryParseOwnArchiveName(string file, out string tag, out decimal number)
+        {
+            tag = string.Empty;
+            number = 0;
+            var m = OwnArchiveName.Match(Path.GetFileNameWithoutExtension(file));
+            if (!m.Success || !decimal.TryParse(m.Groups["num"].Value, System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture, out number))
+                return false;
+            tag = m.Groups["tag"].Value;
+            return true;
+        }
+
+        /// <summary>The "[...]" tag MakeFileNameSafe gives a source's files.</summary>
+        internal static string FileTag(SeriesProviderEntity p)
+        {
+            string tag = p.Provider.Replace("-", "_");
+            if (!string.IsNullOrEmpty(p.Scanlator) && p.Provider != p.Scanlator)
+                tag += "-" + p.Scanlator;
+            return tag.Replace("[", "(").Replace("]", ")");
+        }
+
+        /// <summary>
+        /// Takes the deleted flag off rows it no longer means anything on. The chapter
+        /// list shows a flagged row's chapter (ModelExtensions.ListedChapterGroups),
+        /// but downloads, "Check purchases" and auto-buy skip flagged rows, so such a
+        /// chapter was listed and could never be fetched (116 of them on 2026-11-04,
+        /// e.g. Mushoku Tensei 110, the Healer's paid 23-58). The flags came from code
+        /// that no longer sets them: archive assignment, the bad-archive cleanup, the
+        /// disabled-source prune.
+        ///
+        /// On sources that list chapters (not local or Unknown): a flagged row with no
+        /// file is unflagged. A row the post-download dedup flagged (file name "") is a
+        /// copy beside the one kept, and stays flagged while some row has the chapter's
+        /// file; with no file left anywhere it is unflagged too, so the chapter can be
+        /// fetched again. A row whose link another row of the same source has with a
+        /// file is a duplicate listing of that chapter and is left alone.
+        /// </summary>
+        private int ClearStaleDeletedFlags(Models.Database.SeriesEntity series)
+        {
+            HashSet<decimal> withFile = series.Sources.SelectMany(p => p.Chapters)
+                .Where(c => c.Number != null && !string.IsNullOrEmpty(c.Filename))
+                .Select(c => c.Number!.Value)
+                .ToHashSet();
+            int cleared = 0;
+            foreach (SeriesProviderEntity p in series.Sources.Where(p => !p.IsLocal && !p.IsUnknown))
+            {
+                HashSet<string> urlsWithFile = p.Chapters
+                    .Where(c => !string.IsNullOrEmpty(c.Filename) && !string.IsNullOrEmpty(c.Url))
+                    .Select(c => c.Url!)
+                    .ToHashSet(StringComparer.Ordinal);
+                bool touched = false;
+                foreach (Chapter c in p.Chapters.Where(c => c.IsDeleted && c.Number != null))
+                {
+                    if (c.Filename == "" && withFile.Contains(c.Number!.Value))
+                        continue; // a dedup copy beside the kept one
+                    if (c.Filename is { Length: > 0 })
+                        continue;
+                    if (!string.IsNullOrEmpty(c.Url) && urlsWithFile.Contains(c.Url))
+                        continue; // a duplicate listing of a chapter the source has a file for
+                    c.IsDeleted = false;
+                    c.Filename = null;
+                    touched = true;
+                    cleared++;
+                }
+                if (touched)
+                    _db.Touch(p, x => x.Chapters);
+            }
+            return cleared;
+        }
+
+        /// <summary>An archive written this recently may be a download being moved into place; it is left alone.</summary>
+        private static readonly TimeSpan AdoptAfter = TimeSpan.FromMinutes(15);
+
+        /// <summary>
+        /// Downloads fill in the chapter list: an archive in the series folder that
+        /// no row points at is put back on the chapter it belongs to, when that is
+        /// clearly one chapter of one attached source that lists it and has no file
+        /// for it. Such files are rows lost to an old overwrite or a dedup whose
+        /// kept copy's row went (12 numbers in 4 series on 2026-11-04 listed only
+        /// as deleted rows while their files sat on disk).
+        ///
+        /// Deliberately not more:
+        /// <list type="bullet">
+        /// <item>Only files with our own naming, and only when exactly one attached
+        /// source's name prefix ("[tag][lang] Title ") matches: two sources can share
+        /// a tag, and attaching a file to the wrong one let the post-download dedup
+        /// delete it.</item>
+        /// <item>Only a chapter that source lists. A file from a source no longer on
+        /// the series (MangaK's 1.1, 1.2, 1.3 beside Philia's 1, 2, 3) is another
+        /// split of chapters already listed: put on the list it would show each
+        /// chapter twice and send Continue back to the start. Those stay with the
+        /// import review, where the owner matches them.</item>
+        /// <item>Never a chapter already downloaded (a second copy), nor a file
+        /// written in the last 15 minutes (a download being moved in).</item>
+        /// </list>
+        /// Returns how many were attached; the caller holds the series lock and saves.
+        /// </summary>
+        internal int AdoptOrphanArchives(Models.Database.SeriesEntity series, string basePath)
+        {
+            if (!Directory.Exists(basePath))
+                return 0;
+            var referenced = new HashSet<string>(
+                series.Sources.SelectMany(p => p.Chapters).Where(c => !string.IsNullOrEmpty(c.Filename)).Select(c => c.Filename!),
+                StringComparer.OrdinalIgnoreCase);
+            HashSet<decimal> downloaded = series.Sources.SelectMany(p => p.Chapters)
+                .Where(c => c.Number != null && !string.IsNullOrEmpty(c.Filename))
+                .Select(c => c.Number!.Value)
+                .ToHashSet();
+            var prefixes = series.Sources
+                .Where(p => !p.IsUnknown && !p.IsLocal)
+                .Select(p => (Source: p, Prefix: ArchiveHelperService.MakeFileNameSafe(p.Provider, p.Scanlator, p.Title, p.Language, null) + " "))
+                .ToList();
+
+            int adopted = 0;
+            List<string> files;
+            try { files = Directory.EnumerateFiles(basePath).Where(ArchiveHelperService.IsArchiveFile).OrderBy(f => f, StringComparer.Ordinal).ToList(); }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "Could not list {Path} for unreferenced archives.", basePath);
+                return 0;
+            }
+            DateTime settled = DateTime.UtcNow - AdoptAfter;
+            foreach (string full in files)
+            {
+                string file = Path.GetFileName(full);
+                if (referenced.Contains(file) || !TryParseOwnArchiveName(file, out _, out decimal number))
+                    continue;
+                if (downloaded.Contains(number) || File.GetLastWriteTimeUtc(full) > settled)
+                    continue;
+                string stem = Path.GetFileNameWithoutExtension(file);
+                var owners = prefixes.Where(x => stem.StartsWith(x.Prefix, StringComparison.Ordinal)).Select(x => x.Source).Distinct().ToList();
+                if (owners.Count != 1)
+                    continue;
+                Chapter? row = owners[0].Chapters.FirstOrDefault(c => c.Number == number && string.IsNullOrEmpty(c.Filename));
+                if (row == null)
+                    continue;
+                row.Filename = file;
+                row.DownloadDate = File.GetLastWriteTimeUtc(full);
+                row.ShouldDownload = false;
+                row.IsDeleted = false;
+                row.DownloadDeleted = false;
+                _db.Touch(owners[0], p => p.Chapters);
+                downloaded.Add(number);
+                adopted++;
+            }
+            return adopted;
         }
 
         /// <summary>
@@ -236,8 +427,12 @@ namespace RenzoBackend.Services.Series
                             _hashCache.DeleteChapterHash(series.StoragePath, ch.Filename);
                         }
 
+                        // The bad file goes and the chapter is wanted again; it
+                        // stays a chapter the source lists (no deleted flag, which
+                        // only ever kept it from being downloaded again).
                         ch.Filename = null;
-                        ch.IsDeleted = true;
+                        ch.DownloadDate = null;
+                        ch.ShouldDownload = true;
                         _db.Touch(s, c => c.Chapters);
                         update = true;
                         if (s.ContinueAfterChapter >= ch.Number)

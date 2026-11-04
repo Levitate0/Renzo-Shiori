@@ -1135,30 +1135,45 @@ namespace RenzoBackend.Services.Series
         /// <returns>Number of chapter entries pruned.</returns>
         public async Task<int> CleanupDisabledSourceChaptersAsync(Guid seriesId, CancellationToken token = default)
         {
+            // Same series lock and fresh read as every other writer of the chapter lists.
+            using var held = await DownloadCommandService.SeriesLock.LockAsync(seriesId.ToString(), token).ConfigureAwait(false);
             Models.Database.SeriesEntity? series = await _db.Series.Include(s => s.Sources)
                 .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
             if (series == null)
                 return 0;
+            foreach (SeriesProviderEntity sp in series.Sources)
+                await _db.Entry(sp).ReloadAsync(token).ConfigureAwait(false);
+
+            // Only what another, active source lists too. A chapter that a disabled
+            // or uninstalled source is the ONLY one to list stays: the chapter list
+            // keeps a number until every source supplying it is removed from the
+            // series (ModelExtensions.ListedChapterGroups), and a site that went
+            // down or moved is exactly what gets switched off. Pruned rows are
+            // removed outright; a deleted flag no longer takes anything off the list.
+            HashSet<decimal> elsewhere = series.Sources
+                .Where(p => !p.IsDisabled && !p.IsUninstalled)
+                .SelectMany(p => p.Chapters)
+                .Where(c => c.Number != null)
+                .Select(c => c.Number!.Value)
+                .ToHashSet();
 
             int pruned = 0;
             foreach (SeriesProviderEntity p in series.Sources.Where(p => p.IsDisabled || p.IsUninstalled))
             {
-                bool touched = false;
-                foreach (Models.Chapter c in p.Chapters.Where(c => !c.IsDeleted && string.IsNullOrEmpty(c.Filename)))
+                int removed = p.Chapters.RemoveAll(c => string.IsNullOrEmpty(c.Filename)
+                    && c.Number != null && elsewhere.Contains(c.Number.Value));
+                if (removed > 0)
                 {
-                    c.IsDeleted = true;
-                    pruned++;
-                    touched = true;
-                }
-                if (touched)
+                    pruned += removed;
                     _db.Touch(p, a => a.Chapters);
+                }
             }
 
             if (pruned > 0)
             {
                 await _db.SaveChangesAsync(token).ConfigureAwait(false);
                 await _stateService.SyncToRenzoJsonAsync(series.Id, token).ConfigureAwait(false);
-                _logger.LogInformation("Pruned {Count} stale chapter entry(ies) from disabled/uninstalled source(s) for series {Series}.",
+                _logger.LogInformation("Pruned {Count} chapter entry(ies) from disabled/uninstalled source(s) of series {Series} that another source lists too.",
                     pruned, series.Title);
             }
             return pruned;
@@ -1601,8 +1616,10 @@ namespace RenzoBackend.Services.Series
                     c.Filename = null;
                     c.DownloadDate = null;
                     // Deleting is a deliberate removal — don't let the next scan immediately
-                    // re-queue it. It stays available to re-download on demand.
+                    // re-queue it. It stays available to re-download on demand, and in
+                    // the chapter list (ModelExtensions.ListedChapterGroups).
                     c.ShouldDownload = false;
+                    c.DownloadDeleted = true;
                     clearedNumbers.Add(c.Number.Value);
                     touched = true;
                 }

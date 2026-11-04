@@ -1,4 +1,5 @@
 using RenzoBackend.Data;
+using RenzoBackend.Extensions;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Models.ReadState;
@@ -71,57 +72,37 @@ public class ReaderService
 
         List<ChapterReadState> states = _readState.GetSeriesReadStates(username, series.StoragePath);
 
-        // One entry per distinct chapter number; prefer the storage source's file.
-        // "Hide decimal chapters" applies here too, not just to the series page and
-        // the download queue: otherwise the .5 chapters a user opted out of still
-        // show up in the reader's chapter sheet, still sit between chapters for
-        // next/previous navigation, and still get rolled into by infinite scroll.
-        var byNumber = series.Sources
-            .Where(p => !p.IsDisabled)
-            .SelectMany(p => p.Chapters, (p, c) => (Provider: p, Chapter: c))
-            .Where(x => x.Chapter.Number != null
-                && !(series.HideDecimalChapters
-                     && x.Chapter.Number!.Value != decimal.Truncate(x.Chapter.Number!.Value)))
-            .GroupBy(x => x.Chapter.Number!.Value)
-            .OrderBy(g => g.Key);
-
+        // One entry per chapter number, from the SAME rows the series page lists
+        // (ModelExtensions.ListedChapterGroups): every number the series page
+        // shows can be opened here, and next/previous walks exactly that list.
+        // "Hide decimal chapters" applies there, so it applies here: the .5
+        // chapters a user opted out of do not sit between chapters for
+        // next/previous or get rolled into by infinite scroll.
+        //
+        // Disabled sources are no longer left out. Doing so made every chapter
+        // only a switched-off source lists, downloaded ones included, open to
+        // "Chapter not found": a site that went down took its chapters with it.
         var chapters = new List<ReaderChapterDto>();
-        foreach (var g in byNumber)
+        foreach (var g in series.ListedChapterGroups())
         {
-            var withFile = g.Where(x => !string.IsNullOrEmpty(x.Chapter.Filename) && !x.Chapter.IsDeleted)
-                .OrderByDescending(x => x.Provider.IsStorage)
-                .FirstOrDefault();
-            var any = withFile.Chapter != null ? withFile : g.First();
+            var rows = g.ToList();
+            var withFile = rows.ChapterFileHolder();
             ChapterReadState? st = states.FirstOrDefault(s => s.ChapterNumber == g.Key);
             bool downloaded = withFile.Chapter != null;
-            // Paid/locked chapter not downloaded yet — the reader shows a purchase
-            // screen instead of trying to stream empty pages.
-            //
-            // ALL, not ANY: the chapter is only unreachable when every source that
-            // carries it paywalls it. Asking ANY marked a free chapter paid the
-            // moment a single source wanted money for it, and the reader then
-            // offered to buy something another source was giving away. Matches
-            // ToChapterDetailList — the two feed the same badge (Hub ORs them
-            // together), so they have to agree or the stricter one wins silently.
-            //
-            // IsLocked is consulted as well as the title: the title marker is how
-            // some sources signal it, the flag is how the rest do, and only looking
-            // at the title missed every source of the second kind.
-            bool locked = !downloaded && g.Any() && g.All(x =>
-                x.Chapter.IsLocked
-                || RenzoBackend.Extensions.ModelExtensions.IsLockedChapterName(x.Chapter.Name));
-            string? url = g.Select(x => x.Chapter.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
+            string? url = rows.OrderBy(x => x.Chapter.IsDeleted).Select(x => x.Chapter.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
             chapters.Add(new ReaderChapterDto
             {
                 Number = g.Key,
-                Name = any.Chapter.Name ?? "",
+                Name = rows.ChapterName(withFile),
                 Filename = withFile.Chapter?.Filename,
                 PageCount = withFile.Chapter?.PageCount,
                 Progress = st?.Progress ?? 0,
                 IsCompleted = st?.IsCompleted ?? false,
                 Bookmarked = st?.Bookmarked ?? false,
                 LastReadAt = st?.LastReadAt,
-                Locked = locked,
+                // Paid/locked and not downloaded: the reader shows a purchase screen
+                // instead of streaming empty pages. Same rule as the series page.
+                Locked = rows.IsChapterLocked(downloaded),
                 Url = url
             });
         }

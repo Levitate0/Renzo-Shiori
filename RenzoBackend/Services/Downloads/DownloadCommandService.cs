@@ -732,6 +732,7 @@ namespace RenzoBackend.Services.Downloads
                     cha.IsLocked = false;
                     cha.GaveUpAt = null;
                     cha.GiveUpCount = 0;
+                    cha.DownloadDeleted = false;
                     providerr.ContinueAfterChapter = AdvanceCutoff(providerr);
                     providerr.ChapterCount = providerr.Chapters.Count;
                     _db.Touch(providerr, a => a.Chapters);

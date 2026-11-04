@@ -125,6 +125,7 @@ namespace RenzoBackend.Data
                 && x.LockedCheckedAt == y.LockedCheckedAt
                 && x.GaveUpAt == y.GaveUpAt
                 && x.GiveUpCount == y.GiveUpCount
+                && x.DownloadDeleted == y.DownloadDeleted
                 && x.PageCount == y.PageCount
                 && x.Filename == y.Filename
                 && (ReferenceEquals(x.Pages, y.Pages) || (x.Pages ?? []).SequenceEqual(y.Pages ?? []));
@@ -146,6 +147,7 @@ namespace RenzoBackend.Data
             LockedCheckedAt = c.LockedCheckedAt,
             GaveUpAt = c.GaveUpAt,
             GiveUpCount = c.GiveUpCount,
+            DownloadDeleted = c.DownloadDeleted,
             PageCount = c.PageCount,
             Filename = c.Filename,
             Pages = c.Pages == null ? [] : [.. c.Pages],

@@ -52,6 +52,13 @@ public class Chapter : ChapterDescriptorBase
     /// </summary>
     public DateTime? GaveUpAt { get; set; }
     public int GiveUpCount { get; set; }
+    /// <summary>
+    /// The user deleted this chapter's download ("Delete downloads"). It stays in
+    /// the collected range: the chapter list keeps showing it as not downloaded
+    /// instead of letting the range's start move past it. Cleared when it is
+    /// downloaded again.
+    /// </summary>
+    public bool DownloadDeleted { get; set; }
     public int? PageCount { get; set; }
     public string? Filename { get; set; }
     public List<string> Pages { get; set; } = [];

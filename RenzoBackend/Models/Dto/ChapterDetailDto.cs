@@ -56,6 +56,28 @@ public class ChapterDetailDto
     /// </summary>
     [JsonPropertyName("availableProviders")]
     public List<ChapterSourceDto> AvailableProviders { get; set; } = [];
+
+    /// <summary>
+    /// Chapter numbers missing from the list between this chapter and the next
+    /// higher one, grouped into runs (Services.Series.ChapterGaps). Null when none.
+    /// The clients show them as "Missing · Ch. 30" rows (web chapters-section.tsx,
+    /// Hub SeriesChaptersSection.kt).
+    /// </summary>
+    [JsonPropertyName("missingAfter")]
+    public List<MissingChapterRangeDto>? MissingAfter { get; set; }
+}
+
+/// <summary>A run of missing chapter numbers: From..To, Count of them.</summary>
+public class MissingChapterRangeDto
+{
+    [JsonPropertyName("from")]
+    public decimal From { get; set; }
+
+    [JsonPropertyName("to")]
+    public decimal To { get; set; }
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
 }
 
 /// <summary>A selectable source for (re-)downloading a chapter.</summary>
