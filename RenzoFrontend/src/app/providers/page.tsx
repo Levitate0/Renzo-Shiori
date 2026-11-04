@@ -7,6 +7,7 @@ import { RibbonSlot } from "@/components/comp/layout/ribbon";
 import { ExtensionVersions } from "@/components/comp/sources/extension-versions";
 import { SourcesList } from "@/components/comp/sources/sources-list";
 import { DefaultPriorityOrderTab } from "@/components/comp/sources/default-priority-order-tab";
+import { MigrateTab } from "@/components/comp/sources/migrate-tab";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSearch } from "@/contexts/search-context";
 
@@ -28,9 +29,11 @@ export default function ProvidersPage() {
       </RibbonSlot>
 
       <Tabs defaultValue="sources">
-        <TabsList>
+        <TabsList className="h-auto flex-wrap">
           <TabsTrigger value="sources">Sources</TabsTrigger>
           <TabsTrigger value="default-priority">Default priority order</TabsTrigger>
+          {/* Hub twin: ui/sources/SourcesScreen.kt "Migrate" tab → MigrateTab.kt */}
+          <TabsTrigger value="migrate">Migrate</TabsTrigger>
         </TabsList>
 
         <TabsContent value="sources" className="space-y-6">
@@ -40,6 +43,10 @@ export default function ProvidersPage() {
 
         <TabsContent value="default-priority">
           <DefaultPriorityOrderTab />
+        </TabsContent>
+
+        <TabsContent value="migrate">
+          <MigrateTab />
         </TabsContent>
       </Tabs>
     </div>

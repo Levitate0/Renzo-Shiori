@@ -183,6 +183,8 @@ namespace RenzoBackend.Services
             // Singleton: which sources just failed is shared by every download
             // job and every reader request (see SourceHealthService).
             services.TryAddSingleton<SourceHealthService>();
+            services.TryAddSingleton<SourceSpeedStats>();
+            services.TryAddSingleton<Series.SourceMigrationService>();
             // Moves chapters out of a source whose queue has stopped moving.
             services.AddHostedService<DownloadRebalanceService>();
             

@@ -149,8 +149,10 @@ namespace RenzoBackend.Services.Search
         /// <param name="threshold">Similarity threshold for linking series</param>
         /// <param name="token">Cancellation token</param>
         /// <returns>List of linked series matching the search criteria</returns>
+        /// <param name="includeAltNames">Also search the other names of exact matches (WithAltNameResultsAsync).</param>
         public async Task<List<LinkedSeriesDto>> SearchSeriesAsync(string keyword, List<string> languages,
-            List<string>? searchSources, double threshold, Guid userId, CancellationToken token = default)
+            List<string>? searchSources, double threshold, Guid userId, CancellationToken token = default,
+            bool includeAltNames = false)
         {
             if (string.IsNullOrWhiteSpace(keyword) || languages == null || languages.Count == 0)
             {
@@ -185,8 +187,167 @@ namespace RenzoBackend.Services.Search
                 }
             }
 
-            return await SearchSeriesAsync(keyword, filteredSources, appSettings, threshold, token).ConfigureAwait(false);
+            List<LinkedSeriesDto> found = await SearchSeriesAsync(keyword, filteredSources, appSettings, threshold, token).ConfigureAwait(false);
+            return includeAltNames
+                ? await WithAltNameResultsAsync(keyword, found, filteredSources, appSettings, threshold, token).ConfigureAwait(false)
+                : found;
         }
+
+        /// <summary>
+        /// The sources this user can search, in their languages (what
+        /// GetAvailableSearchSourcesAsync lists), as entities, with the languages.
+        /// </summary>
+        internal async Task<(List<ProviderStorageEntity> Sources, List<string> Languages)> UserSearchSourcesAsync(Guid userId, CancellationToken token)
+        {
+            var languages = (await _contentPrefs.ForUserAsync(userId, token).ConfigureAwait(false)).PreferredLanguages.ToList();
+            if (languages.Count == 0)
+                languages = ["en"];
+            var enabled = await GetEnabledProviderIdsAsync(userId, token).ConfigureAwait(false);
+            var sources = (await _providerCache.GetSourcesForLanguagesAsync(languages, token).ConfigureAwait(false))
+                .Where(s => enabled.Contains(s.MihonProviderId))
+                .ToList();
+            return (sources, languages);
+        }
+
+        /// <summary>Other names searched per query: each costs a search on every source.</summary>
+        private const int MaxAltNameSearches = 4;
+
+        /// <summary>Bound on fetching a result's details just to read its other names.</summary>
+        private static readonly TimeSpan AltNamesDetailsTimeout = TimeSpan.FromSeconds(20);
+
+        /// <summary>
+        /// Adds what the series is found as under its other names. Many sites list a
+        /// series' alternative names (AltTitles), not all, and each site files it
+        /// under one of them: what "Solo Leveling" finds misses the sources that call
+        /// it "Na Honjaman Level Up". So the results whose title matches the search
+        /// exactly have their other names read, those names are searched on the same
+        /// sources, and results matching one of them exactly join the exact match's
+        /// group, showing the searched name (Title) with the source's own title kept
+        /// in SourceTitle and the name it was found under in FoundAs, until added.
+        ///
+        /// A second request (the client asks with altNames=true once the plain
+        /// results are on screen): the plain search comes back from its 30-second
+        /// cache, so it costs only the extra searches.
+        /// </summary>
+        internal async Task<List<LinkedSeriesDto>> WithAltNameResultsAsync(string keyword, List<LinkedSeriesDto> found,
+            List<ProviderStorageEntity> sources, SettingsDto appSettings, double threshold, CancellationToken token)
+        {
+            string key = AltTitles.Key(keyword);
+            if (key.Length == 0 || sources.Count == 0)
+                return found;
+            // Copies: search results are cached and shared between requests.
+            List<LinkedSeriesDto> results = Copy(found);
+            List<LinkedSeriesDto> exact = results.Where(r => !string.IsNullOrEmpty(r.MihonId) && AltTitles.Key(r.Title) == key).Take(4).ToList();
+            if (exact.Count == 0)
+                return results;
+
+            // Descriptions: the catalogue cache first (one query at a time, it is
+            // this request's database context), then the sites for those it lacks,
+            // all at once (no database).
+            var descriptions = new string?[exact.Count];
+            for (int i = 0; i < exact.Count; i++)
+                descriptions[i] = await CachedDescriptionAsync(exact[i].MihonId, token).ConfigureAwait(false);
+            await Task.WhenAll(Enumerable.Range(0, exact.Count)
+                .Where(i => string.IsNullOrWhiteSpace(descriptions[i]))
+                .Select(async i => descriptions[i] = await LiveDescriptionAsync(exact[i], token).ConfigureAwait(false))).ConfigureAwait(false);
+
+            var names = new List<string>();
+            for (int i = 0; i < exact.Count; i++)
+            {
+                foreach (string n in AltTitles.Parse(descriptions[i], keyword, exact[i].Title))
+                {
+                    // Names these sources can find (Latin letters), and specific
+                    // enough that a title equal to one is this series and not another
+                    // work that happens to share it.
+                    if (AltTitles.Latin(n) && AltTitles.Distinctive(n)
+                        && names.All(x => AltTitles.Key(x) != AltTitles.Key(n)))
+                        names.Add(n);
+                }
+            }
+            names = names.Take(MaxAltNameSearches).ToList();
+            if (names.Count == 0)
+                return results;
+
+            var known = results.Where(r => r.MihonId != null).Select(r => r.MihonId!).ToHashSet();
+            var byId = results.Where(r => r.MihonId != null).GroupBy(r => r.MihonId!).ToDictionary(g => g.Key, g => g.First());
+            var group = exact.SelectMany(e => e.LinkedIds.Append(e.MihonId!)).ToHashSet();
+            string display = exact[0].Title;
+            // The searches share the usual cap between them: every site gets the
+            // same number of calls at once as for one search.
+            SettingsDto shared = System.Text.Json.JsonSerializer.Deserialize<SettingsDto>(System.Text.Json.JsonSerializer.Serialize(appSettings)) ?? appSettings;
+            shared.NumberOfSimultaneousSearches = Math.Max(1, appSettings.NumberOfSimultaneousSearches / names.Count);
+            var more = await Task.WhenAll(names.Select(n => SearchSeriesAsync(n, sources, shared, threshold, token))).ConfigureAwait(false);
+            // Found under another name: new results, and results the plain search
+            // already had under their own title (a site whose search reads other
+            // names too), which leave their old row to join the group.
+            var joined = new List<LinkedSeriesDto>();
+            for (int i = 0; i < names.Count; i++)
+            {
+                string nk = AltTitles.Key(names[i]);
+                foreach (LinkedSeriesDto hit in Copy(more[i]).Where(r => r.MihonId != null && AltTitles.Key(r.Title) == nk && !group.Contains(r.MihonId)))
+                {
+                    LinkedSeriesDto r = byId.TryGetValue(hit.MihonId!, out LinkedSeriesDto? had) ? had : hit;
+                    if (joined.Any(j => j.MihonId == r.MihonId) || (r == hit && !known.Add(hit.MihonId!)))
+                        continue;
+                    r.SourceTitle = r.Title;
+                    r.Title = display;
+                    r.FoundAs = names[i];
+                    joined.Add(r);
+                }
+            }
+            if (joined.Count == 0)
+                return results;
+
+            results.RemoveAll(r => joined.Any(j => ReferenceEquals(j, r)));
+            foreach (LinkedSeriesDto j in joined)
+                group.Add(j.MihonId!);
+            foreach (LinkedSeriesDto r in results.Where(r => r.MihonId != null && !group.Contains(r.MihonId)))
+                r.LinkedIds = r.LinkedIds.Where(id => !group.Contains(id)).ToList();
+            foreach (LinkedSeriesDto r in results.Concat(joined).Where(r => r.MihonId != null && group.Contains(r.MihonId)))
+                r.LinkedIds = group.Where(id => id != r.MihonId).ToList();
+            int at = results.FindLastIndex(r => r.MihonId != null && group.Contains(r.MihonId));
+            results.InsertRange(at + 1, joined);
+            _logger.LogInformation("Search '{Keyword}': {Count} more result(s) under its other names ({Names}).",
+                keyword, joined.Count, string.Join("; ", names));
+            return results;
+        }
+
+        private static List<LinkedSeriesDto> Copy(List<LinkedSeriesDto> list) =>
+            System.Text.Json.JsonSerializer.Deserialize<List<LinkedSeriesDto>>(System.Text.Json.JsonSerializer.Serialize(list)) ?? [];
+
+        /// <summary>A series' description in the catalogue cache, where its other names usually are; null when none.</summary>
+        internal async Task<string?> CachedDescriptionAsync(string? mihonId, CancellationToken token) =>
+            string.IsNullOrEmpty(mihonId) ? null : await _db.LatestSeries.AsNoTracking()
+                .Where(l => l.MihonId == mihonId)
+                .Select(l => l.Description)
+                .FirstOrDefaultAsync(token).ConfigureAwait(false);
+
+        /// <summary>A series' description from the source's details page (bounded); null when it gives none. No database use.</summary>
+        internal async Task<string?> LiveDescriptionAsync(Models.SeriesSummaryBase series, CancellationToken token)
+        {
+            Manga? manga = RenzoBackend.Extensions.ModelExtensions.ToManga(series);
+            if (manga == null || string.IsNullOrEmpty(series.MihonProviderId))
+                return null;
+            try
+            {
+                var src = await _mihon.SourceFromProviderIdAsync(series.MihonProviderId).ConfigureAwait(false);
+                ParsedManga? details = await SourceTimeout.RunAsync(c => src.GetDetailsAsync(manga, c), AltNamesDetailsTimeout, token).ConfigureAwait(false);
+                return string.IsNullOrWhiteSpace(details?.Description) ? null : details!.Description;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not read the details of {Title} on {Provider} for its other names.", series.Title, series.Provider);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// One search at a time writes thumbnails: the alt-name searches run side by
+        /// side on this request's one database context, which allows one operation
+        /// at a time.
+        /// </summary>
+        private readonly SemaphoreSlim _dbGate = new(1, 1);
 
         public async Task<List<LinkedSeriesDto>> SearchSeriesAsync(List<(string keyword, ProviderStorageEntity ps)> sources, SettingsDto? appSettings, double threshold = 0.1f, CancellationToken token = default)
         {
@@ -356,12 +517,20 @@ namespace RenzoBackend.Services.Search
                    
                     allSeries.AddRange(result.Mangas.Select(m => (m, providerId, lang)));
                 }
-                foreach(var n in allSeries)
+                await _dbGate.WaitAsync(token).ConfigureAwait(false);
+                try
                 {
-                    if (!string.IsNullOrEmpty(n.Manga.ThumbnailUrl))
+                    foreach (var n in allSeries)
                     {
-                        await _thumb.AddUrlAsync(n.Manga.ThumbnailUrl, n.ProviderId, token).ConfigureAwait(false);
+                        if (!string.IsNullOrEmpty(n.Manga.ThumbnailUrl))
+                        {
+                            await _thumb.AddUrlAsync(n.Manga.ThumbnailUrl, n.ProviderId, token).ConfigureAwait(false);
+                        }
                     }
+                }
+                finally
+                {
+                    _dbGate.Release();
                 }
                 var linked = allSeries.FindAndLinkSimilarSeries(threshold);
 

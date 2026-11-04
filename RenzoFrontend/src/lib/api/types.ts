@@ -153,6 +153,110 @@ export interface LinkedSeries {
   useCover: boolean;
   isStorage: boolean;
   isLocal: boolean;
+  /**
+   * Found under one of the series' other names (an altNames=true search), not
+   * the name searched: the name it was found under. `title` then shows the
+   * searched name, so it sits with the series it is.
+   * Hub twin: data/model/BrowseModels.kt LinkedSeriesRowDto.foundAs / sourceTitle.
+   */
+  foundAs?: string | null;
+  /** The title the source itself gives, when `title` shows the searched name (see foundAs). */
+  sourceTitle?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Source migration (GET/POST /api/migrate…). Server: RenzoBackend
+// Services/Series/SourceMigrationService.cs DTOs. Hub twin: data/model/SourcesModels.kt.
+// ---------------------------------------------------------------------------
+
+/** A source's recent downloads (SourceSpeedDto). */
+export interface SourceSpeed {
+  attempts: number;
+  downloads: number;
+  /** downloads / attempts, 0..1; null with no attempts. */
+  successRate: number | null;
+  /** Median seconds per completed chapter; null with none completed. */
+  medianSeconds: number | null;
+}
+
+/** A source the user's series use, to migrate away from. */
+export interface MigrationFrom {
+  provider: string;
+  language: string;
+  seriesCount: number;
+  disabledCount: number;
+  speed: SourceSpeed;
+}
+
+/** A source to migrate to: one the user can search. */
+export interface MigrationTarget {
+  /** The source's id (mihonProviderId), what the start request lists. */
+  id: string;
+  provider: string;
+  language: string;
+  speed: SourceSpeed;
+  /** Reliable lately: ticked by default. */
+  suggested: boolean;
+}
+
+export interface MigrationSources {
+  from: MigrationFrom[];
+  targets: MigrationTarget[];
+}
+
+export interface MigrationCandidate {
+  mihonId: string;
+  sourceId: string;
+  provider: string;
+  /** The title the source gives it. */
+  title: string;
+  /** The series' other name it was found under, when not its own title. */
+  foundAs: string | null;
+  chapterCount: number;
+  latest: number | null;
+  /** Share (0..1) of the old source's chapters this one lists. */
+  coverage: number;
+  /** Its newest chapter is far past the series' own: maybe another series of the same name. */
+  suspect: boolean;
+}
+
+export type MigrationItemStatus = 'pending' | 'matched' | 'none' | 'migrated' | 'skipped' | 'failed';
+
+export interface MigrationItem {
+  seriesId: string;
+  title: string;
+  thumbnailUrl: string | null;
+  /** Chapters the old source lists, which a match is measured against. */
+  chapters: number;
+  status: MigrationItemStatus;
+  message: string | null;
+  match: MigrationCandidate | null;
+  alternatives: MigrationCandidate[];
+}
+
+export type MigrationPhase = 'searching' | 'ready' | 'applying' | 'done' | 'failed';
+
+export interface MigrationRun {
+  id: string;
+  from: string;
+  phase: MigrationPhase;
+  done: number;
+  total: number;
+  error: string | null;
+  items: MigrationItem[];
+}
+
+export interface MigrationStartRequest {
+  from: string;
+  language: string;
+  /** Source ids to look on, best first. */
+  targets: string[];
+  seriesIds?: string[];
+}
+
+export interface MigrationApplyRequest {
+  items: { seriesId: string; mihonId: string }[];
+  oldSource: 'disable' | 'keep';
 }
 
 export interface FullSeries {

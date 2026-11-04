@@ -5,6 +5,11 @@ export interface SearchParams {
   keyword: string;
   languages?: string;
   searchSources?: string[];
+  /**
+   * Also search the other names (AltTitles) of exact matches: a second, slower
+   * request sent once the plain results are on screen. Hub twin: BrowseApi.kt searchRaw(altNames).
+   */
+  altNames?: boolean;
 }
 
 export const searchService = {
@@ -25,6 +30,7 @@ export const searchService = {
     const searchParams = new URLSearchParams({
       keyword: params.keyword,
       ...(params.languages && { languages: params.languages }),
+      ...(params.altNames && { altNames: 'true' }),
     });
 
     // Add search sources as multiple query parameters if provided

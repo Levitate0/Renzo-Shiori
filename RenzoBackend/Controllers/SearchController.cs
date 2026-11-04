@@ -106,6 +106,7 @@ namespace RenzoBackend.Controllers
             [FromQuery] string keyword,
             [FromQuery] string? languages = null, 
             [FromQuery] List<string>? searchSources = null, 
+            [FromQuery] bool altNames = false,
             CancellationToken token = default)
         {
             if (string.IsNullOrWhiteSpace(keyword))
@@ -125,7 +126,7 @@ namespace RenzoBackend.Controllers
 
             try
             {
-                var results = await _searchQueryService.SearchSeriesAsync(keyword, languageList, searchSources, 0.1f, CurrentUserId, token).ConfigureAwait(false);
+                var results = await _searchQueryService.SearchSeriesAsync(keyword, languageList, searchSources, 0.1f, CurrentUserId, token, altNames).ConfigureAwait(false);
                 await _thumbs.PopulateThumbsAsync(results, "/api/image/", token).ConfigureAwait(false);
                 return Ok(results);
             }

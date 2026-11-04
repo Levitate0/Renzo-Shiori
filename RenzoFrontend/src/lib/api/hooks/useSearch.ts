@@ -21,12 +21,14 @@ export const useSearchSeries = (
   params: SearchParams,
   options?: {
     enabled?: boolean;
+    retry?: boolean;
   }
 ) => {
   return useQuery({
-    queryKey: ['search', 'series', params.keyword, params.languages, params.searchSources],
+    queryKey: ['search', 'series', params.keyword, params.languages, params.searchSources, params.altNames ?? false],
     queryFn: () => searchService.searchSeries(params),
     enabled: options?.enabled ?? !!params.keyword?.trim(),
+    ...(options?.retry !== undefined && { retry: options.retry }),
   });
 };
 

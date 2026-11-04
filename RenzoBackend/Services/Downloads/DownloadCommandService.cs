@@ -47,6 +47,7 @@ namespace RenzoBackend.Services.Downloads
         private readonly SiteAuth.SiteAuthService _siteAuth;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly SourceHealthService _health;
+        private readonly SourceSpeedStats _speed;
 
         /// <summary>
         /// Below this, a series' typical length is not a usable reference — a
@@ -79,9 +80,11 @@ namespace RenzoBackend.Services.Downloads
             Series.VComicsContentService vcomics,
             SiteAuth.SiteAuthService siteAuth,
             IServiceScopeFactory scopeFactory,
-            SourceHealthService health)
+            SourceHealthService health,
+            SourceSpeedStats speed)
         {
             _health = health;
+            _speed = speed;
             _scopeFactory = scopeFactory;
             _siteAuth = siteAuth;
             _vcomics = vcomics;
@@ -174,9 +177,11 @@ namespace RenzoBackend.Services.Downloads
             Guid? downloadOwnerId = await _db.Series.Where(s => s.Id == ch.SeriesId).Select(s => (Guid?)s.OwnerId).FirstOrDefaultAsync(token).ConfigureAwait(false);
             ProgressReporter reporter = _reportingService.CreateReporter(job, downloadOwnerId);
             JobResult result = JobResult.Failed;
+            var took = System.Diagnostics.Stopwatch.StartNew();
+            var delivered = new Delivered();
             try
             {
-                result = await DownloadChapterCoreAsync(ch, reporter, token).ConfigureAwait(false);
+                result = await DownloadChapterCoreAsync(ch, reporter, token, delivered).ConfigureAwait(false);
                 return result;
             }
             finally
@@ -184,10 +189,20 @@ namespace RenzoBackend.Services.Downloads
                 // Several exits (a step-down to another source, a throw) leave
                 // the run reported as started; close it so live lists drop it.
                 reporter.End(result == JobResult.Success);
+                // For source migration's speed ranking (SourceSpeedStats). Only a
+                // chapter actually saved counts as delivered: a paywalled one also
+                // ends in Success, after a quick refusal.
+                _speed.Record(ch.ProviderName, delivered.Yes ? took.Elapsed : null);
             }
         }
 
-        private async Task<JobResult> DownloadChapterCoreAsync(ChapterDownload ch, ProgressReporter reporter, CancellationToken token)
+        /// <summary>Set when the chapter was really saved (see DownloadChapterAsync).</summary>
+        private sealed class Delivered
+        {
+            public bool Yes;
+        }
+
+        private async Task<JobResult> DownloadChapterCoreAsync(ChapterDownload ch, ProgressReporter reporter, CancellationToken token, Delivered delivered)
         {
             DownloadSummary downloadSummary;
 
@@ -863,6 +878,7 @@ namespace RenzoBackend.Services.Downloads
                 _logger.LogInformation("Download Complete for chapter {ChapterNumber} of series {SeriesTitle} from provider {ProviderName}...", ch.Chapter.ParsedNumber, ch.Title, ch.ProviderName);
                 _health.ReportSuccess(ch.SeriesProviderId, ch.MihonProviderId, ch.ProviderName, ch.Title, downloaded: true);
                 _health.NoteDelivered(ch.ProviderName);
+                delivered.Yes = true;
                 return JobResult.Success;
             }
             catch (Exception e)

@@ -708,7 +708,17 @@ namespace RenzoBackend.Services.Series
                         || (!anyStatusSource && !anyPermanent);
 
                     // Update the series-level metadata
-                    if (!string.IsNullOrEmpty(extensionManga.Title))
+                    // One source names the series, as one sets its status: the title
+                    // source (the best placed when several are marked), else the
+                    // storage source, else the best placed one. Every source's scan
+                    // used to rename it, so the library title drifted to whichever
+                    // source scanned last (63 series on 2026-11-04), and a source
+                    // added by migration under another name renamed the series to it.
+                    SeriesProviderEntity? titleAuthority =
+                        series.Sources.Where(a => a.IsTitle && !a.IsDisabled && !a.IsUninstalled).OrderBy(a => a.Priority).FirstOrDefault()
+                        ?? series.Sources.Where(a => a.IsStorage && !a.IsUninstalled).OrderBy(a => a.Priority).FirstOrDefault()
+                        ?? series.Sources.Where(a => !a.IsDisabled && !a.IsUninstalled).OrderBy(a => a.Priority).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(extensionManga.Title) && (titleAuthority == null || titleAuthority.Id == serie.Id))
                         series.Title = extensionManga.Title;
                     if (!string.IsNullOrEmpty(extensionManga.Artist))
                         series.Artist = extensionManga.Artist;

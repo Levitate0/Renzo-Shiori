@@ -131,24 +131,40 @@ export function SearchSeriesStep({
     { enabled: isSearchReady }
   );
 
+  // The same search again under the series' other names (altNames=true), sent
+  // as soon as the plain results arrive: sites file a series under different
+  // names, so this finds the sources the searched name misses. Its results
+  // replace the plain ones (a superset), keeping the selection; on error the
+  // plain results stay, silently.
+  // Hub twin: hub/feature-shiori/.../ui/browse/AddSeriesSheet.kt (alt-name search).
+  const { data: altResults, isLoading: altLoading } = useSearchSeries(
+    {
+      keyword: debouncedSearchValue,
+      searchSources: searchSourcesParam,
+      altNames: true,
+    },
+    { enabled: isSearchReady && searchResults !== undefined, retry: false }
+  );
+  const shownResults = altResults ?? searchResults;
+
   React.useEffect(() => {
-    if (searchResults) {
+    if (shownResults) {
       setFormState(prev => {
         // Validate existing selections against new search results
-        const newSearchResultIds = searchResults.map(series => series.mihonId ?? series.providerId);
+        const newSearchResultIds = shownResults.map(series => series.mihonId ?? series.providerId);
         const validatedSelections = prev.selectedLinkedSeries.filter(selectedId =>
           newSearchResultIds.includes(selectedId)
         );
 
         return {
           ...prev,
-          allLinkedSeries: searchResults,
+          allLinkedSeries: shownResults,
           searchKeyword: debouncedSearchValue,
           selectedLinkedSeries: validatedSelections,
         };
       });
     }
-  }, [searchResults, debouncedSearchValue, setFormState]);
+  }, [shownResults, debouncedSearchValue, setFormState]);
 
   React.useEffect(() => {
     // Only set loading when we're fetching and don't have any search results yet
@@ -276,7 +292,7 @@ export function SearchSeriesStep({
               Start typing to search…
             </p>
           </div>
-        ) : !hasResults && !isSearching ? (
+        ) : !hasResults && !isSearching && !altLoading ? (
           <div className="res-list">
             <p
               style={{
@@ -327,6 +343,12 @@ export function SearchSeriesStep({
                   {/* Slot 3: body */}
                   <div className="res-body">
                     <div className="res-title">{series.title}</div>
+                    {/* Found under another name (alt-name search). Hub twin: AddSeriesSheet.kt. */}
+                    {series.foundAs && (
+                      <div style={{ color: "hsl(var(--as-fg-muted))", fontSize: 11.5 }}>
+                        Listed as “{series.sourceTitle ?? series.title}” · found as “{series.foundAs}”
+                      </div>
+                    )}
                     <div className="res-meta">
                       <span className="src-badge">
                         {series.provider}
@@ -353,6 +375,19 @@ export function SearchSeriesStep({
                 </div>
               );
             })}
+            {/* Hub twin: AddSeriesSheet.kt "alt-names-pending" row; the empty-state
+                note above waits for it, as there. */}
+            {altLoading && (
+              <p
+                style={{
+                  color: "hsl(var(--as-fg-muted))",
+                  fontSize: 12,
+                  padding: "10px 22px",
+                }}
+              >
+                Also searching other names…
+              </p>
+            )}
           </div>
         )}
     </div>

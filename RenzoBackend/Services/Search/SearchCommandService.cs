@@ -65,6 +65,10 @@ namespace RenzoBackend.Services.Search
             try
             {
                 var appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+                // A result found under another name shows the searched name; the
+                // source knows it by its own title, which is what it is matched on.
+                foreach (LinkedSeriesDto ls in linkedSeries.Where(l => !string.IsNullOrEmpty(l.SourceTitle)))
+                    ls.Title = ls.SourceTitle!;
                 var providerTitles = linkedSeries.Select(a => a.Title).ToList();
 
                 // Get existing series providers to check for continuation logic
