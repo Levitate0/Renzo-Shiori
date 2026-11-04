@@ -46,6 +46,7 @@ namespace RenzoBackend.Services.Downloads
         private readonly Series.VComicsContentService _vcomics;
         private readonly SiteAuth.SiteAuthService _siteAuth;
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly SourceHealthService _health;
 
         /// <summary>
         /// Below this, a series' typical length is not a usable reference — a
@@ -56,6 +57,12 @@ namespace RenzoBackend.Services.Downloads
         /// <summary>Downloaded chapters needed before the median means anything.</summary>
         private const int ShortChapterMinSamples = 3;
         private static readonly KeyedAsyncLock _lock = new KeyedAsyncLock();
+
+        /// <summary>
+        /// The per-series lock every writer of a series' chapter lists takes (one
+        /// JSON column, written whole). Shared with SeriesCommandService's re-download.
+        /// </summary>
+        internal static KeyedAsyncLock SeriesLock => _lock;
 
         public DownloadCommandService(
             MihonBridgeService mihon,
@@ -71,8 +78,10 @@ namespace RenzoBackend.Services.Downloads
             ThumbCacheService thumb,
             Series.VComicsContentService vcomics,
             SiteAuth.SiteAuthService siteAuth,
-            IServiceScopeFactory scopeFactory)
+            IServiceScopeFactory scopeFactory,
+            SourceHealthService health)
         {
+            _health = health;
             _scopeFactory = scopeFactory;
             _siteAuth = siteAuth;
             _vcomics = vcomics;
@@ -191,16 +200,38 @@ namespace RenzoBackend.Services.Downloads
             // down, and with no other source it just kept failing.
             var sourceState = await _db.SeriesProviders.AsNoTracking()
                 .Where(a => a.Id == ch.SeriesProviderId)
-                .Select(a => new { a.IsDisabled, a.IsUninstalled })
+                .Select(a => new { a.IsDisabled, a.IsUninstalled, a.MihonProviderId })
                 .FirstOrDefaultAsync(token).ConfigureAwait(false);
             if (sourceState != null && (sourceState.IsDisabled || sourceState.IsUninstalled))
             {
-                if (await TryStepDownToNextSourceAsync(ch, token).ConfigureAwait(false))
+                if (await TryStepDownToNextSourceAsync(ch, Left.Not, endOfLine: true, token).ConfigureAwait(false) is HandOff.Handed or HandOff.OnDisk)
                     return JobResult.Handled;
                 _logger.LogInformation(
                     "Chapter {Chapter} of '{Title}' was queued on {Provider}, which is now disabled, and no other enabled source has it; dropping it until one does.",
                     ch.Chapter.ParsedNumber, ch.Title, ch.ProviderName);
                 return JobResult.Failed;
+            }
+
+            // The source failed recently (SourceHealthService) and has not been
+            // re-checked yet: hand the chapter on without asking it. Chapters
+            // queued before the failure used to try it one by one, each proving
+            // the same captcha again. With nowhere else to go it is tried anyway.
+            // Not a chapter the user asked for from this very source.
+            DateTime? steppedDownUntil = sourceState == null || ch.ForcedSource ? null
+                : _health.SteppedDownUntil(ch.SeriesProviderId, sourceState.MihonProviderId ?? ch.MihonProviderId);
+            if (steppedDownUntil != null)
+            {
+                switch (await TryStepDownToNextSourceAsync(ch, Left.Not, endOfLine: false, token).ConfigureAwait(false))
+                {
+                    case HandOff.Handed:
+                        return JobResult.Handled;
+                    case HandOff.Upgrade:
+                        // A better copy of a chapter already on disk: it waits here
+                        // for the re-check rather than being dropped (nobody else
+                        // would ever queue it again), at no cost to its retries.
+                        await PersistRescheduleAsync(ch, steppedDownUntil.Value, token).ConfigureAwait(false);
+                        return JobResult.Handled;
+                }
             }
 
             ISourceInterop src;
@@ -245,9 +276,14 @@ namespace RenzoBackend.Services.Downloads
                 // stale reference can never work; fetch the source's current
                 // listing once, take this chapter from it, and try again. The
                 // reschedule below persists the fresh reference either way.
+                // The stale reference could not be refreshed (the chapter is not in
+                // the live listing, as for a coin-gated one): our reference is the
+                // problem, not the source, so it is not held against the source.
+                bool staleUnresolved = false;
                 if (pages == null && IsStaleChapterError(pageFailure))
                 {
                     ParsedChapter? fresh = await RefreshChapterReferenceAsync(src, ch, provider, token).ConfigureAwait(false);
+                    staleUnresolved = fresh == null;
                     if (fresh != null)
                     {
                         _logger.LogInformation("Refreshed the stale chapter reference for chapter {Chapter} of '{Title}' from {Provider}; retrying.",
@@ -301,21 +337,18 @@ namespace RenzoBackend.Services.Downloads
                     }
 
                     if (pages == null && ModelExtensions.IsPurchaseError(pageFailure))
-                        return await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
+                        return await LockedHereAsync(ch, provider, token).ConfigureAwait(false);
                 }
 
-                // The source wants a person to solve a captcha in its WebView
-                // (AllManga, Comix). Retrying cannot help until someone does, so
-                // the chapter goes to the next source now instead of spending
-                // seven attempts here first. With no other source it keeps its
-                // normal retry schedule, so it still arrives once the captcha is
-                // solved.
-                if (pages == null && pageFailure?.Message.Contains("captcha", StringComparison.OrdinalIgnoreCase) == true &&
-                    await TryStepDownToNextSourceAsync(ch, token).ConfigureAwait(false))
-                    return JobResult.Handled;
-
-                if (pages==null)
+                // A captcha (AllManga, Comix), a timeout or a second error in a row
+                // steps the source down (SourceHealthService) and the chapter goes
+                // to the next source now, instead of spending seven attempts here
+                // first. With no other source it keeps its normal retry schedule,
+                // so it still arrives once the source recovers.
+                if (pages == null && staleUnresolved)
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
+                if (pages==null)
+                    return await FailOnSourceAsync(ch, SourceHealthService.Classify(pageFailure), token).ConfigureAwait(false);
                 ch.Pages = pages;
                 if (ch.Pages.Count == 0)
                 {
@@ -323,17 +356,17 @@ namespace RenzoBackend.Services.Downloads
                     // (the source withholds them rather than throwing).
                     if (ModelExtensions.IsLockedChapterName(ch.Chapter?.Name) ||
                         ModelExtensions.IsLockedChapterName(ch.Chapter?.ParsedName))
-                        return await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
+                        return await LockedHereAsync(ch, provider, token).ConfigureAwait(false);
                     _logger.LogError("No pages found from source for provider {provider} when downloading chapter {ParsedNumber} of series {SeriesTitle}",
                         provider, ch.Chapter.ParsedNumber, ch.Title);
-                    return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
+                    return await FailOnSourceAsync(ch, SourceFailureKind.Error, token).ConfigureAwait(false);
                 }
             }
             catch (Exception e)
             {
                 _logger.LogError(e, "Error getting pages from source for provider ID {ProviderId} when downloading chapter {ParsedNumber} of series {SeriesTitle}",
                     ch.MihonProviderId, ch.Chapter.ParsedNumber, ch.Title);
-                return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
+                return await FailOnSourceAsync(ch, SourceHealthService.Classify(e), token).ConfigureAwait(false);
             }
             // A source can list a chapter with a single page — typically the
             // scanlator's own banner — and nothing above notices, because it is
@@ -356,8 +389,15 @@ namespace RenzoBackend.Services.Downloads
                 _logger.LogWarning(
                     "Provider {Provider} listed only {Pages} page(s) for chapter {Chapter} of '{Title}', against a series typical of {Typical} — treating as an incomplete listing and trying the next source.",
                     provider, ch.Pages.Count, ch.Chapter.ParsedNumber, ch.Title, typical);
-                if (await TryStepDownToNextSourceAsync(ch, token).ConfigureAwait(false))
-                    return JobResult.Handled;
+                _health.ReportFailure(ch.SeriesProviderId, ch.MihonProviderId, ch.ProviderName, ch.Title, SourceFailureKind.Error, ch.Chapter.ParsedNumber);
+                switch (await TryStepDownToNextSourceAsync(ch, Left.Spent, endOfLine: true, token).ConfigureAwait(false))
+                {
+                    case HandOff.Handed:
+                        return JobResult.Handled;
+                    case HandOff.OnDisk:
+                        await StampGiveUpAsync(ch, token, onlyThisSource: true).ConfigureAwait(false);
+                        return JobResult.Handled;
+                }
                 // Nowhere else to go: a banner is still better than nothing, and
                 // the chapter stays visibly short rather than silently absent.
                 _logger.LogWarning(
@@ -405,6 +445,8 @@ namespace RenzoBackend.Services.Downloads
             int imagePages = 0;
             string tempZipPath = Path.Combine(_tempFolder, zipFile);
             bool breaked = false;
+            // Why the page that ended the chapter failed, for SourceHealthService.
+            Exception? imageFailure = null;
 
             try
             {
@@ -457,6 +499,9 @@ namespace RenzoBackend.Services.Downloads
                         // fetched one page at a time.
                         async Task<ContentTypeStream?> Fetch(Page target)
                         {
+                            // A page that timed out and then hit a restart on its retry
+                            // failed because of the source: keep the source's failure.
+                            Exception? sourceFailure = null;
                             for (int attempt = 0; ; attempt++)
                             {
                                 Exception? failure = null;
@@ -465,8 +510,14 @@ namespace RenzoBackend.Services.Downloads
                                     e => failure = e,
                                     "Unable to get Page {Page} from Chapter {Chapter}, Series {Title} from {provider}",
                                     target.Index + 1, ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                                if (failure != null && SourceHealthService.Classify(failure) != SourceFailureKind.Transport)
+                                    sourceFailure ??= failure;
                                 if (got != null || attempt >= 2 || token.IsCancellationRequested)
+                                {
+                                    if (got == null)
+                                        imageFailure ??= sourceFailure ?? failure;
                                     return got;
+                                }
                                 bool limited = failure?.Message.Contains("HTTP error 429", StringComparison.Ordinal) == true;
                                 if (limited)
                                     throttle.Limited = true;
@@ -604,7 +655,7 @@ namespace RenzoBackend.Services.Downloads
                         _logger.LogError(e, "Failed to delete temporary zip file {TempZipPath}", tempZipPath);
                     }
                     reporter.Report(ProgressStatus.Failed, (int)acum, message, downloadSummary);
-                    return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
+                    return await FailOnSourceAsync(ch, SourceHealthService.Classify(imageFailure), token).ConfigureAwait(false);
                 }
 
                 // The job carries the folder from when it was queued. A series moved
@@ -679,6 +730,8 @@ namespace RenzoBackend.Services.Downloads
                     // LockedChapterSupplementService) and nothing ever cleared it, so
                     // purchased/downloaded chapters stayed "Locked" forever.
                     cha.IsLocked = false;
+                    cha.GaveUpAt = null;
+                    cha.GiveUpCount = 0;
                     providerr.ContinueAfterChapter = AdvanceCutoff(providerr);
                     providerr.ChapterCount = providerr.Chapters.Count;
                     _db.Touch(providerr, a => a.Chapters);
@@ -686,6 +739,19 @@ namespace RenzoBackend.Services.Downloads
 
                     Models.Database.SeriesEntity s = await _db.Series.Include(a => a.Sources).Where(a => a.Id == providerr.SeriesId).FirstAsync(token);
                     List<SeriesProviderEntity> unlocked = UnlockOnOtherSources(s.Sources, providerr.Id, ch.Chapter.ParsedNumber);
+                    // It downloaded: no source's scan needs to hold it back any more.
+                    foreach (SeriesProviderEntity o in s.Sources.Where(o => o.Id != providerr.Id))
+                    {
+                        bool cleared = false;
+                        foreach (Models.Chapter c in o.Chapters.Where(c => c.Number == ch.Chapter.ParsedNumber && c.GaveUpAt != null))
+                        {
+                            c.GaveUpAt = null;
+                            c.GiveUpCount = 0;
+                            cleared = true;
+                        }
+                        if (cleared && !unlocked.Contains(o))
+                            unlocked.Add(o);
+                    }
                     if (unlocked.Count > 0)
                     {
                         foreach (SeriesProviderEntity u in unlocked)
@@ -794,6 +860,8 @@ namespace RenzoBackend.Services.Downloads
                 message = $"Downloading ({providerName}) {ch.Title} {chapterName} completed.";
                 reporter.Report(ProgressStatus.Completed, 100, message, downloadSummary);
                 _logger.LogInformation("Download Complete for chapter {ChapterNumber} of series {SeriesTitle} from provider {ProviderName}...", ch.Chapter.ParsedNumber, ch.Title, ch.ProviderName);
+                _health.ReportSuccess(ch.SeriesProviderId, ch.MihonProviderId, ch.ProviderName, ch.Title, downloaded: true);
+                _health.NoteDelivered(ch.ProviderName);
                 return JobResult.Success;
             }
             catch (Exception e)
@@ -853,7 +921,9 @@ namespace RenzoBackend.Services.Downloads
         /// <param name="chaps">Chapter downloads to queue</param>
         /// <param name="token">Cancellation token</param>
         /// <returns>Job result</returns>
-        public async Task<JobResult> QueueChapterDownloadsAsync(SeriesProviderEntity serie, List<ChapterDownload> chaps, CancellationToken token = default)
+        /// <param name="replaceWaiting">A user's own re-download: replaces a job waiting under the same key (JobManagementService.EnqueueJobAsync).</param>
+        public async Task<JobResult> QueueChapterDownloadsAsync(SeriesProviderEntity serie, List<ChapterDownload> chaps, CancellationToken token = default,
+            bool replaceWaiting = false)
         {
             string scanlator = string.Empty;
             if (!string.IsNullOrEmpty(serie.Scanlator) && serie.Scanlator != serie.Provider)
@@ -890,7 +960,7 @@ namespace RenzoBackend.Services.Downloads
                     // first wins; the loser's queue attempt is silently skipped.
                     string key = $"{ch.SeriesId}|{ch.Chapter.ParsedNumber.FormatDecimal()}";
                     string groupKey = $"{ch.ProviderName}";
-                    await _jobManagementService.EnqueueJobAsync(JobType.Download, ch, Priority.Normal, key, groupKey, ch.SeriesId.ToString(), "Downloads", token).ConfigureAwait(false);
+                    await _jobManagementService.EnqueueJobAsync(JobType.Download, ch, Priority.Normal, key, groupKey, ch.SeriesId.ToString(), "Downloads", token, replaceWaiting).ConfigureAwait(false);
                 }
             }
             return JobResult.Success;
@@ -1008,10 +1078,112 @@ namespace RenzoBackend.Services.Downloads
             return JobResult.Success;
         }
 
-        private async Task<JobResult> RescheduleDownloadAsync(ChapterDownload download, CancellationToken token = default)
+        /// <summary>
+        /// Marks a chapter that ran out of retries everywhere, on every source's
+        /// row, so no source's scan queues it again until the backoff
+        /// (DownloadsExtensions.GiveUpBackoff) is up. Returns the new count.
+        /// </summary>
+        /// <param name="onlyThisSource">Stamp only the chapter's row on the source it failed on (another source has it on disk).</param>
+        private async Task<int> StampGiveUpAsync(ChapterDownload download, CancellationToken token, bool onlyThisSource = false)
+        {
+            int count = 1;
+            try
+            {
+                decimal number = download.Chapter.ParsedNumber;
+                // Same series lock and fresh read as the completion path.
+                using var held = await _lock.LockAsync(download.SeriesId.ToString(), token).ConfigureAwait(false);
+                List<SeriesProviderEntity> providers = await _db.SeriesProviders
+                    .Where(p => p.SeriesId == download.SeriesId)
+                    .ToListAsync(token).ConfigureAwait(false);
+                foreach (SeriesProviderEntity fresh in providers)
+                    await _db.Entry(fresh).ReloadAsync(token).ConfigureAwait(false);
+                if (onlyThisSource)
+                    providers = providers.Where(p => p.Id == download.SeriesProviderId).ToList();
+                count = providers.SelectMany(p => p.Chapters).Where(c => c.Number == number)
+                    .Select(c => c.GiveUpCount).DefaultIfEmpty(0).Max() + 1;
+                DateTime now = DateTime.UtcNow;
+                foreach (SeriesProviderEntity provRow in providers)
+                {
+                    bool changed = false;
+                    foreach (Models.Chapter c in provRow.Chapters.Where(c => c.Number == number && string.IsNullOrEmpty(c.Filename)))
+                    {
+                        c.GaveUpAt = now;
+                        c.GiveUpCount = count;
+                        changed = true;
+                    }
+                    if (changed)
+                        _db.Entry(provRow).Property(p => p.Chapters).IsModified = true;
+                }
+                await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Could not record that chapter {ChapterNumber} of series {SeriesId} was given up on.",
+                    download.Chapter.ParsedNumber, download.SeriesId);
+            }
+            return count;
+        }
+
+        /// <summary>
+        /// A source call for this chapter failed. Records it (SourceHealthService);
+        /// when that steps the source down, the chapter goes to the next source
+        /// now, otherwise it is retried here on the usual schedule.
+        /// </summary>
+        private async Task<JobResult> FailOnSourceAsync(ChapterDownload ch, SourceFailureKind kind, CancellationToken token)
+        {
+            if (kind == SourceFailureKind.Transport)
+                return await RescheduleDownloadAsync(ch, token, transient: true).ConfigureAwait(false);
+            bool down = _health.ReportFailure(ch.SeriesProviderId, ch.MihonProviderId, ch.ProviderName, ch.Title, kind, ch.Chapter.ParsedNumber);
+            // A chapter the user asked for from this source keeps its retries here.
+            if (down && !ch.ForcedSource
+                && await TryStepDownToNextSourceAsync(ch, Left.Early, endOfLine: false, token).ConfigureAwait(false) == HandOff.Handed)
+                return JobResult.Handled;
+            return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// The source said the chapter must be bought. On a chapter handed here
+        /// from another source, try the next one too: this was only ever a
+        /// fallback, and stopping here left the chapter queued nowhere.
+        /// </summary>
+        private async Task<JobResult> LockedHereAsync(ChapterDownload ch, string provider, CancellationToken token)
+        {
+            JobResult locked = await MarkChapterLockedAsync(ch, provider, token).ConfigureAwait(false);
+            if (ch.HandedOff && !ch.ForcedSource
+                && await TryStepDownToNextSourceAsync(ch, Left.Spent, endOfLine: true, token).ConfigureAwait(false) is HandOff.Handed or HandOff.OnDisk)
+                return JobResult.Handled;
+            return locked;
+        }
+
+        /// <summary>
+        /// Restart-shaped failures retried for free before they start costing
+        /// real retries: about an hour at <see cref="TransientRetryDelay"/>.
+        /// </summary>
+        private const int MaxTransientRetries = 12;
+
+        /// <summary>Short wait for a retry after our own plumbing failed, not the source.</summary>
+        private static readonly TimeSpan TransientRetryDelay = TimeSpan.FromMinutes(5);
+
+        /// <param name="transient">
+        /// The extension runner restarted under the call (SourceFailureKind.Transport).
+        /// That is not the source failing, so it costs no retry: 81 restarts in a
+        /// day each took one from every chapter in flight, and seven of them were
+        /// enough to push a healthy source's chapter onto the next source.
+        /// </param>
+        private async Task<JobResult> RescheduleDownloadAsync(ChapterDownload download, CancellationToken token = default, bool transient = false)
         {
             SettingsDto appSettings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-            download.Retries++;
+            // Past the cap it stays past it: every later one costs a real retry.
+            if (transient && ++download.TransientRetries > MaxTransientRetries)
+            {
+                if (download.TransientRetries == MaxTransientRetries + 1)
+                    _logger.LogWarning(
+                        "Chapter {Chapter} of '{Title}' on {Provider} has failed {Count} times on what looks like an extension-runner restart; counting further ones as real failures.",
+                        download.Chapter.ParsedNumber, download.Title, download.ProviderName, MaxTransientRetries);
+                transient = false;
+            }
+            if (!transient)
+                download.Retries++;
             // Same series+chapter-number key as QueueChapterDownloadsAsync — see there.
             string key = $"{download.SeriesId}|{download.Chapter.ParsedNumber.FormatDecimal()}";
 
@@ -1023,22 +1195,58 @@ namespace RenzoBackend.Services.Downloads
                 // upload) is usually fine on the next one, and the whole point of
                 // downloading from a single chosen source is that the fallback is
                 // a RESPONSE to failure rather than a race everyone runs up front.
-                if (await TryStepDownToNextSourceAsync(download, token).ConfigureAwait(false))
-                    return JobResult.Handled;
+                switch (await TryStepDownToNextSourceAsync(download, Left.Spent, endOfLine: true, token).ConfigureAwait(false))
+                {
+                    case HandOff.Handed:
+                        return JobResult.Handled;
+                    case HandOff.OnDisk:
+                        // Another source has it, so the series is fine, but this
+                        // source cannot fetch it: a storage source would queue it
+                        // again on every scan for ever. Only this source holds back.
+                        await StampGiveUpAsync(download, token, onlyThisSource: true).ConfigureAwait(false);
+                        return JobResult.Handled;
+                    case HandOff.Paused:
+                        return JobResult.Failed; // nothing tried elsewhere: not a reason to hold it back
+                    case HandOff.QueueFailed:
+                        // There was a source to hand it to, the queuing just failed
+                        // (its extension reloading): try the hand-off again later.
+                        await PersistRescheduleAsync(download, DateTime.UtcNow.Add(appSettings.ChapterDownloadFailRetryTime), token).ConfigureAwait(false);
+                        return JobResult.Handled;
+                }
 
-                _logger.LogWarning("Max retries reached for chapter {ChapterNumber} of series {SeriesTitle} from {ProviderName}, and no other enabled source has it. Giving up.", download.Chapter.ChapterNumber, download.Title, download.ProviderName);
+                int count = await StampGiveUpAsync(download, token).ConfigureAwait(false);
+                _logger.LogWarning("Max retries reached for chapter {ChapterNumber} of series {SeriesTitle} from {ProviderName}, and no other enabled source has it. Giving up; scans leave it alone for {Backoff}.",
+                    download.Chapter.ParsedNumber, download.Title, download.ProviderName, DownloadsExtensions.GiveUpBackoff(count));
                 return JobResult.Failed;
             }
 
-            string groupKey = $"{download.ProviderName}";
-            DateTime nextTime = DateTime.UtcNow.Add(appSettings.ChapterDownloadFailRetryTime);
-            await _jobManagementService.ScheduleJobAsync(JobType.Download, download, nextTime, "Downloads", key, groupKey, download.SeriesId.ToString(), Priority.Normal, download.Retries, token).ConfigureAwait(false);
+            DateTime nextTime = DateTime.UtcNow.Add(transient ? TransientRetryDelay : appSettings.ChapterDownloadFailRetryTime);
+            await PersistRescheduleAsync(download, nextTime, token).ConfigureAwait(false);
             return JobResult.Handled;
         }
 
         /// <summary>
-        /// Hands a chapter whose retries are spent to the NEXT enabled source that
-        /// holds it, in the same priority order the initial choice used.
+        /// Writes the job back for <paramref name="when"/>, on its own queue row.
+        ///
+        /// Not on the job's token: when the job's 20-minute deadline fired, that
+        /// token is cancelled, and a cancelled write lost the retry count it was
+        /// meant to save. A short limit of its own instead.
+        /// </summary>
+        private async Task PersistRescheduleAsync(ChapterDownload download, DateTime when, CancellationToken token)
+        {
+            using var write = CancellationTokenSource.CreateLinkedTokenSource(
+                token.IsCancellationRequested ? CancellationToken.None : token);
+            write.CancelAfter(TimeSpan.FromSeconds(30));
+            // Same series+chapter-number key as QueueChapterDownloadsAsync — see there.
+            string key = $"{download.SeriesId}|{download.Chapter.ParsedNumber.FormatDecimal()}";
+            await _jobManagementService.ScheduleJobAsync(JobType.Download, download, when, "Downloads", key, $"{download.ProviderName}",
+                download.SeriesId.ToString(), Priority.Normal, download.Retries, write.Token).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Hands a chapter its source could not deliver to the best other enabled
+        /// source that holds it and has not failed recently, in the same priority
+        /// order the initial choice used (TryStepDownToNextSourceAsync).
         ///
         /// This is the other half of "download from one source only". Choosing a
         /// single source up front is what stops the same chapter being fetched from
@@ -1046,13 +1254,7 @@ namespace RenzoBackend.Services.Downloads
         /// the top source — missing pages, a dead CDN — loses the chapter entirely.
         /// The chapter steps down only when the source it was given to has actually
         /// failed, so the extra download is paid for once, on demand, rather than
-        /// speculatively.
-        ///
-        /// The walk is POSITIONAL and carries no state: it resumes from where the
-        /// failed source sits in the ordering and only ever moves forward. Picking
-        /// "the best source that is not the one that just failed" would instead
-        /// bounce between the top two forever, each bounce costing a full retry
-        /// budget.
+        /// speculatively. A copy already on disk is never deleted for it.
         /// </summary>
         /// <summary>
         /// Median page count across this series' already-downloaded chapters —
@@ -1089,7 +1291,53 @@ namespace RenzoBackend.Services.Downloads
             }
         }
 
-        private async Task<bool> TryStepDownToNextSourceAsync(ChapterDownload download, CancellationToken token)
+        private enum HandOff
+        {
+            /// <summary>Queued on another source.</summary>
+            Handed,
+            /// <summary>Another source already has the chapter on disk; nothing to fetch.</summary>
+            OnDisk,
+            /// <summary>Early hand-off of a chapter another source already has on disk: a better copy, so it is kept, not handed on.</summary>
+            Upgrade,
+            /// <summary>No source left to hand it to.</summary>
+            NoSource,
+            /// <summary>There was one, but queuing it there failed.</summary>
+            QueueFailed,
+            /// <summary>The series is paused.</summary>
+            Paused,
+        }
+
+        /// <summary>How the chapter is leaving its current source.</summary>
+        private enum Left
+        {
+            /// <summary>It did not fail there: the source is stepped down because of other chapters, or switched off.</summary>
+            Not,
+            /// <summary>It failed there once and the source stepped down; its retries there are unused.</summary>
+            Early,
+            /// <summary>Its retries there are spent, or the source listed it short.</summary>
+            Spent,
+        }
+
+        /// <summary>Providers the owner has a working site login for (paid copies count only there).</summary>
+        private async Task<HashSet<string>> OwnerLoginProvidersAsync(Guid ownerId, CancellationToken token) =>
+            (await _db.SiteCredentials.AsNoTracking()
+                .Where(c => (c.Status == "ok" || c.Status == "manual_cookie") && (ownerId == Guid.Empty || c.UserId == ownerId))
+                .Select(c => c.Provider)
+                .ToListAsync(token).ConfigureAwait(false))
+            .ToHashSet(StringComparer.Ordinal);
+
+        /// <param name="left">
+        /// Spent: the source joins <see cref="ChapterDownload.TriedSourceIds"/> and
+        /// is never handed back to. Early: it joins
+        /// <see cref="ChapterDownload.LeftEarlySourceIds"/>, ranked with the
+        /// stepped-down sources. Not: neither.
+        /// </param>
+        /// <param name="endOfLine">
+        /// The alternative is giving up (retries spent, a short listing, a disabled
+        /// source), so a stepped-down source may be picked, ranked last. Otherwise
+        /// only a source that has not failed recently is.
+        /// </param>
+        private async Task<HandOff> TryStepDownToNextSourceAsync(ChapterDownload download, Left left, bool endOfLine, CancellationToken token)
         {
             decimal number = download.Chapter.ParsedNumber;
 
@@ -1097,39 +1345,57 @@ namespace RenzoBackend.Services.Downloads
                 .AsNoTracking()
                 .FirstOrDefaultAsync(s => s.Id == download.SeriesId, token).ConfigureAwait(false);
             if (series == null)
-                return false;
+                return HandOff.NoSource;
 
             if (series.PauseDownloads)
-                return false; // pause is authoritative; do not quietly start elsewhere
+                return HandOff.Paused; // pause is authoritative; do not quietly start elsewhere
 
-            // EVERY source, ordered exactly as DownloadSourceSelector orders them —
-            // including ones that cannot serve this chapter, because the failed
-            // source's position has to be found in the same list the walk advances
-            // through.
-            List<SeriesProviderEntity> ordered = series.Sources
-                .OrderBy(p => p.Priority)
-                .ThenByDescending(p => p.IsStorage)
-                .ThenBy(p => p.Id)
-                .ToList();
+            // An early hand-off of a chapter that some other source already has on
+            // disk is a priority upgrade on its way to a better copy. Handing it on
+            // can only end in "already on disk" and close the job, and nothing
+            // would ever queue the upgrade again.
+            if (!endOfLine && series.Sources.Any(sp => sp.Id != download.SeriesProviderId
+                    && sp.Chapters.Any(c => c.Number == number && !c.IsDeleted && !string.IsNullOrEmpty(c.Filename))))
+                return HandOff.Upgrade;
 
-            int from = ordered.FindIndex(p => p.Id == download.SeriesProviderId);
+            List<Guid> tried = download.TriedSourceIds.ToList();
+            List<Guid> leftEarly = download.LeftEarlySourceIds.ToList();
+            if (left == Left.Spent)
+            {
+                if (!tried.Contains(download.SeriesProviderId))
+                    tried.Add(download.SeriesProviderId);
+                leftEarly.Remove(download.SeriesProviderId);
+            }
+            else if (left == Left.Early && !leftEarly.Contains(download.SeriesProviderId))
+                leftEarly.Add(download.SeriesProviderId);
 
-            SeriesProviderEntity? next = ordered
-                .Skip(from + 1)   // from == -1 (row deleted) starts at the top, which is right: that source is gone
-                .FirstOrDefault(p => DownloadSourceSelector.CanDownloadFrom(p)
-                    && DownloadSourceSelector.HasChapter(p, number));
+            // The best source that is not this one, has not already failed this
+            // chapter, and (early on) has not failed recently itself
+            // (DownloadSourceSelector.PickHandOff).
+            //
+            // This used to walk FORWARD only from the failed source's position,
+            // carrying no state, because picking "the best source that is not the
+            // one that just failed" bounced between the top two forever. The
+            // chapter now carries the sources it failed on, which ends the bounce,
+            // and the forward-only walk's own faults go with it: it skipped a
+            // better source sitting ABOVE the failed one after a reorder, and gave
+            // up with "no other enabled source has it" while one did (Caught by
+            // the Villain: MangaFire, for two hours).
+            HashSet<string> logins = await OwnerLoginProvidersAsync(series.OwnerId, token).ConfigureAwait(false);
+            SeriesProviderEntity? next = DownloadSourceSelector.PickHandOff(series.Sources, number,
+                p => p.Id == download.SeriesProviderId || tried.Contains(p.Id),
+                p => _health.IsSteppedDown(p) || leftEarly.Contains(p.Id), allowSteppedDown: endOfLine, logins, DateTime.UtcNow);
 
             if (next == null)
-                return false;
+                return HandOff.NoSource;
 
             _logger.LogInformation(
                 "Chapter {ChapterNumber} of '{SeriesTitle}' failed on {Failed}; stepping down to the next enabled source {Next} (priority {Priority}).",
                 number, download.Title, download.ProviderName, next.Provider, next.Priority);
 
-            // RedownloadChapterAsync re-fetches the source's live chapter list, so
-            // the retry uses a fresh URL rather than the dead one that just failed,
-            // and falls back to the stored chapter row when the source has dropped
-            // the entry. Resolved through a scope because SeriesCommandService
+            // RedownloadChapterAsync builds the job from the next source's stored
+            // chapter row (keepExisting); the job refreshes a stale reference itself
+            // if that source's URL has moved. Resolved through a scope because SeriesCommandService
             // depends on THIS service — taking it as a constructor dependency would
             // be a cycle.
             //
@@ -1143,25 +1409,68 @@ namespace RenzoBackend.Services.Downloads
             // reuse it for the new source; the job's own close-on-Handled only
             // touches a row that is still Running, so it leaves the new one alone.
             string rowKey = $"{JobType.Download}_{download.SeriesId}|{number.FormatDecimal()}";
-            await _db.Queues
+            int released = await _db.Queues
                 .Where(q => q.Key == rowKey && q.Status == QueueStatus.Running)
                 .ExecuteUpdateAsync(u => u.SetProperty(q => q.Status, QueueStatus.Completed), token)
                 .ConfigureAwait(false);
 
-            using IServiceScope scope = _scopeFactory.CreateScope();
-            var seriesCommand = scope.ServiceProvider.GetRequiredService<Series.SeriesCommandService>();
-            Series.RedownloadResult result = await seriesCommand
-                .RedownloadChapterAsync(download.SeriesId, number, next.Id, token).ConfigureAwait(false);
+            Series.RedownloadResult result;
+            try
+            {
+                using IServiceScope scope = _scopeFactory.CreateScope();
+                var seriesCommand = scope.ServiceProvider.GetRequiredService<Series.SeriesCommandService>();
+                result = await seriesCommand
+                    .RedownloadChapterAsync(download.SeriesId, number, next.Id, token, keepExisting: true,
+                        triedSourceIds: tried, leftEarlySourceIds: leftEarly).ConfigureAwait(false);
+            }
+            catch
+            {
+                await RestoreRunningRowAsync(rowKey, released).ConfigureAwait(false);
+                throw;
+            }
+
+            if (result.Outcome == Series.RedownloadOutcome.AlreadyDownloaded)
+            {
+                _logger.LogInformation(
+                    "Chapter {ChapterNumber} of '{SeriesTitle}' is already on disk from {Holder}; nothing to fetch.",
+                    number, download.Title, result.SourceProviderName);
+                return HandOff.OnDisk;
+            }
 
             if (result.Outcome != Series.RedownloadOutcome.Queued)
             {
+                // Not handed on after all: this job still owns its row.
+                await RestoreRunningRowAsync(rowKey, released).ConfigureAwait(false);
                 _logger.LogWarning(
                     "Step-down for chapter {ChapterNumber} of '{SeriesTitle}' to {Next} did not queue ({Outcome}).",
                     number, download.Title, next.Provider, result.Outcome);
-                return false;
+                return result.Outcome == Series.RedownloadOutcome.Paused ? HandOff.Paused : HandOff.QueueFailed;
             }
 
-            return true;
+            return HandOff.Handed;
+        }
+
+        /// <summary>
+        /// Puts the job's row back to Running after a hand-off that did not happen.
+        /// Only a row this hand-off released (still Completed): a scan that queued
+        /// the key again meanwhile is left alone. StartedDate was never touched, so
+        /// the job's own close and the stuck-job reclaim match it again.
+        /// </summary>
+        private async Task RestoreRunningRowAsync(string rowKey, int released)
+        {
+            if (released == 0)
+                return;
+            try
+            {
+                await _db.Queues
+                    .Where(q => q.Key == rowKey && q.Status == QueueStatus.Completed)
+                    .ExecuteUpdateAsync(u => u.SetProperty(q => q.Status, QueueStatus.Running), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "Could not put queue row {Key} back to running.", rowKey);
+            }
         }
     }
 }

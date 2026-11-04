@@ -48,10 +48,20 @@ public static class DownloadsExtensions
     /// tried again. Twice a day: often enough that a purchase lands on its own,
     /// rare enough that unowned chapters stop monopolising the download slots.
     /// </summary>
-    private static readonly TimeSpan PaywallRetryInterval = TimeSpan.FromHours(12);
+    internal static readonly TimeSpan PaywallRetryInterval = TimeSpan.FromHours(12);
 
 
-    public static List<ChapterDownload> GenerateDownloadsFromChapterData(this RenzoBackend.Models.Database.SeriesEntity series, SeriesProviderEntity serie, List<ParsedChapter>? chapterData, bool downloadAll = false, bool allowLocked = false)
+    /// <summary>
+    /// How long a chapter that ran out of retries on every source is left alone
+    /// before a scan queues it again: 6 h, then 12 h, 24 h ... a week at most.
+    /// </summary>
+    internal static TimeSpan GiveUpBackoff(int count) =>
+        TimeSpan.FromHours(Math.Min(6 * Math.Pow(2, Math.Max(0, count - 1)), 24 * 7));
+
+    /// <param name="steppedDown">Sources that just failed (SourceHealthService.IsSteppedDown); see DownloadSourceSelector.Prepare.</param>
+    /// <param name="ignoreGiveUp">The user pressed "Download all": chapters given up on are queued anyway.</param>
+    public static List<ChapterDownload> GenerateDownloadsFromChapterData(this RenzoBackend.Models.Database.SeriesEntity series, SeriesProviderEntity serie, List<ParsedChapter>? chapterData, bool downloadAll = false, bool allowLocked = false,
+        Func<SeriesProviderEntity, bool>? steppedDown = null, bool ignoreGiveUp = false)
     {
         List<ParsedChapter> wanted = [];
         List<ParsedChapter> skip_the_filter = [];
@@ -113,6 +123,20 @@ public static class DownloadsExtensions
                 }).ToList();
             }
 
+            // A chapter that ran out of retries on every source it was handed to
+            // used to be queued again by the very next scan with a fresh retry
+            // budget, so a chapter that can never download held its source's
+            // slots forever (A Baby Cat Who Commands the Dog Clan: 28 such
+            // chapters, retried around the clock, kept Comic Asura from
+            // finishing anything for a day). It now waits out a growing backoff.
+            DateTime giveUpNow = DateTime.UtcNow;
+            wanted = ignoreGiveUp ? wanted : wanted.Where(a =>
+            {
+                Models.Chapter? stored = serie.Chapters.FirstOrDefault(c => c.Number == a.ParsedNumber);
+                return stored?.GaveUpAt == null
+                    || giveUpNow - stored.GaveUpAt.Value >= GiveUpBackoff(stored.GiveUpCount);
+            }).ToList();
+
             // Per-series option: skip fractional ".5"-style sub-chapters (often
             // self-promo/dupe pages some uploaders inject) from downloads too.
             if (series.HideDecimalChapters)
@@ -145,7 +169,13 @@ public static class DownloadsExtensions
                     }
                 }
             }
-            if (!serie.IsStorage)
+            // A storage source wants its own copy of everything; any other
+            // source only what nobody has yet. A storage source that has just
+            // failed is not trusted with that (see DownloadSourceSelector), and a
+            // copy held by ANOTHER storage source already is the permanent copy,
+            // so it is not fetched a second time.
+            bool storageActive = serie.IsStorage && !(steppedDown?.Invoke(serie) ?? false);
+            if (!storageActive)
             {
                 List<decimal?> exists = allSeries.SelectMany(s => s.Chapters)
                     .Where(c => c.Filename != null)
@@ -156,6 +186,10 @@ public static class DownloadsExtensions
             {
                 List<decimal?> exists = serie.Chapters
                     .Where(c => c.Filename != null)
+                    .Concat(allSeries
+                        .Where(s => s.Id != serie.Id && s.IsStorage && !s.IsDisabled && !s.IsUninstalled)
+                        .SelectMany(s => s.Chapters)
+                        .Where(c => !c.IsDeleted && !string.IsNullOrEmpty(c.Filename)))
                     .Select(c => c.Number).ToList();
                 wanted = wanted.Where(c => !exists.Contains(c.ParsedNumber)).ToList();
             }
@@ -174,7 +208,7 @@ public static class DownloadsExtensions
             // one of them keeps the chapter and the rest drop it here instead
             // of racing to a queue key that silently discards the loser.
             DownloadSourceSelector.PreferredSourceLookup preferred =
-                DownloadSourceSelector.Prepare(series, serie, downloadAll);
+                DownloadSourceSelector.Prepare(series, serie, downloadAll, steppedDown);
             // The incoming name carries lock markers the stored row may not have
             // yet (this scan has not been persisted), so pass it through — the
             // lookup already knows about the source's PERSISTED locked chapters.

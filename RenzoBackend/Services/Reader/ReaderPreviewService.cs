@@ -29,6 +29,7 @@ public class ReaderPreviewService
     private readonly SiteAuth.SiteAuthService _siteAuth;
     private readonly Series.VComicsContentService _vcomics;
     private readonly Downloads.DownloadCommandService _downloads;
+    private readonly SourceHealthService _health;
     private readonly ILogger _logger;
 
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
@@ -79,8 +80,9 @@ public class ReaderPreviewService
     public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache,
         SiteAuth.SiteAuthService siteAuth, StreamImageCache imageCache,
         Series.VComicsContentService vcomics, Downloads.DownloadCommandService downloads,
-        ILogger<ReaderPreviewService> logger)
+        ILogger<ReaderPreviewService> logger, SourceHealthService health)
     {
+        _health = health;
         _downloads = downloads;
         _db = db;
         _mihon = mihon;
@@ -389,33 +391,49 @@ public class ReaderPreviewService
     /// image so the first page then loads instantly. Returns false on timeout /
     /// failure so the caller falls through to the next source in priority order.
     /// </summary>
-    private async Task<bool> ProbeAndCacheFirstImageAsync(
-        Guid seriesId, decimal chapterNumber, ISourceInterop src, List<Page> pages, CancellationToken token)
+    private enum Probe { Failed, Live, Cached }
+
+    /// <param name="trustCached">
+    /// Page 0 already in the cache came from THIS source (it won last time). The
+    /// cache key does not say which source an image came from, and with sources
+    /// re-ranked by health another one can win now: trusting its cached page 0
+    /// let a source win, and be reported healthy, on an image it never served.
+    /// </param>
+    /// <param name="onFailure">Told why when it fails, for SourceHealthService; not told for a client abort.</param>
+    private async Task<Probe> ProbeAndCacheFirstImageAsync(
+        Guid seriesId, decimal chapterNumber, ISourceInterop src, List<Page> pages, CancellationToken token,
+        bool trustCached, Action<SourceFailureKind>? onFailure = null)
     {
         // The reader is waiting on this: it goes ahead of the download queue
         // for this source's image slots (SourceImageGate).
         Mihon.ExtensionsBridge.Core.Runtime.Sidecar.ImageFetchPriority.MarkInteractive();
         if (pages.Count == 0)
-            return false;
+            return Probe.Failed;
         string imgKey = $"lib:img:{seriesId}:{chapterNumber}:0";
-        if (_imageCache.TryGet(imgKey, out _))
-            return true; // page 0 already cached from a good source
+        if (trustCached && _imageCache.TryGet(imgKey, out _))
+            return Probe.Cached; // page 0 already cached from this source
         try
         {
             ContentTypeStream? img = await SourceTimeout
                 .RunAsync(c => src.GetPageImageAsync(pages[0], c), StreamProbeTimeout, token)
                 .ConfigureAwait(false);
             if (img == null)
-                return false;
+            {
+                onFailure?.Invoke(SourceFailureKind.Error);
+                return Probe.Failed;
+            }
             string ct = string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType;
             _imageCache.Set(imgKey, img.ToArray(), ct);
-            return true;
+            return Probe.Live;
         }
-        catch (TimeoutException) { return false; }
+        // 15 s is a probe limit, not a source failing: an error, not a timeout step-down.
+        catch (TimeoutException) { onFailure?.Invoke(SourceFailureKind.Error); return Probe.Failed; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }  // the reader went away
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Stream: image probe errored for ch {Chapter}", chapterNumber);
-            return false;
+            onFailure?.Invoke(SourceHealthService.Classify(ex));
+            return Probe.Failed;
         }
     }
 
@@ -510,8 +528,31 @@ public class ReaderPreviewService
             .ToList();
     }
 
+    /// <summary>
+    /// A reader timeout is 20 s, against 120 s for a download, so one slow reader
+    /// call (a Cloudflare solve, a big chapter list) is only a plain error, not
+    /// the instant step-down a download timeout is: that step-down is shared with
+    /// the downloads, which would have waited long enough.
+    /// </summary>
+    private static SourceFailureKind ForReader(SourceFailureKind k) =>
+        k == SourceFailureKind.Timeout ? SourceFailureKind.Error : k;
+
+    /// <summary>
+    /// The streaming order with sources that failed recently (SourceHealthService,
+    /// shared with the downloader) moved behind the other enabled ones. A stalled
+    /// download queue does not count: it says nothing about reading. Applied on
+    /// every read rather than cached with the list, so a step-down or a recovery
+    /// shows at once. AllManga's captcha cost about 9 s on every open before.
+    /// </summary>
+    private List<SeriesProviderEntity> Ranked(List<SeriesProviderEntity> providers) =>
+        providers
+            .OrderByDescending(p => !p.IsDisabled)
+            .ThenBy(p => _health.IsUnhealthy(p))
+            .ToList();
+
     /// <summary>Resolves one specific source to its live chapter object.</summary>
-    private async Task<(SeriesProviderEntity provider, ISourceInterop src, ParsedChapter chapter)?> ResolveProviderChapterAsync(
+    /// <returns>fromDb: rebuilt from the stored row because the live listing lacks it (a coin-gated chapter).</returns>
+    private async Task<(SeriesProviderEntity provider, ISourceInterop src, ParsedChapter chapter, bool fromDb)?> ResolveProviderChapterAsync(
         SeriesProviderEntity target, decimal chapterNumber, bool forceRefresh, CancellationToken token)
     {
         ISourceInterop src;
@@ -546,7 +587,20 @@ public class ReaderPreviewService
             if (manga == null)
                 return null;
             try { chapters = await SourceTimeout.RunAsync(c => src.GetChaptersAsync(manga, c), StreamSourceTimeout, token).ConfigureAwait(false); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Stream: source {Provider} failed/timed out fetching chapter list", target.Provider); return null; }
+            // The reader closed the request: not the source's failure, and not
+            // worth a warning (they made up most of these lines).
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Stream: source {Provider} failed/timed out fetching chapter list", target.Provider);
+                // Only a captcha is held against the source here. The listing is
+                // shared by every chapter, so each retry of one read would count
+                // as new evidence, and a 20 s limit says little about the 120 s a
+                // download allows its listing.
+                if (SourceHealthService.Classify(ex) == SourceFailureKind.Captcha)
+                    _health.ReportFailure(target, target.Title, SourceFailureKind.Captcha);
+                return null;
+            }
             if (chapters == null)
                 return null;
             chapters.ForEach(a => { if (string.IsNullOrEmpty(a.Scanlator)) a.Scanlator = target.Provider; });
@@ -562,7 +616,7 @@ public class ReaderPreviewService
 
         ParsedChapter? match = pool.FirstOrDefault(c => c.ParsedNumber == chapterNumber);
         if (match != null)
-            return (target, src, match);
+            return (target, src, match, false);
 
         // Not in the source's live chapter listing — this is the coin-gated-chapter
         // case LockedChapterSupplementService documents: sites running the WordPress
@@ -601,7 +655,7 @@ public class ReaderPreviewService
                 ? new DateTimeOffset(DateTime.SpecifyKind(stored.ProviderUploadDate.Value, DateTimeKind.Utc))
                 : DateTimeOffset.UtcNow,
         };
-        return (target, src, reconstructed);
+        return (target, src, reconstructed, true);
     }
 
     /// <summary>Strips scheme+host off an absolute URL, leaving the path (+query/fragment)
@@ -615,10 +669,10 @@ public class ReaderPreviewService
     }
 
     /// <summary>Resolves the source that served the cached page list (for image fetches).</summary>
-    private async Task<(SeriesProviderEntity provider, ISourceInterop src, ParsedChapter chapter)?> ResolveWinningProviderAsync(
+    private async Task<(SeriesProviderEntity provider, ISourceInterop src, ParsedChapter chapter, bool fromDb)?> ResolveWinningProviderAsync(
         Guid seriesId, decimal chapterNumber, CancellationToken token)
     {
-        List<SeriesProviderEntity> providers = await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
+        List<SeriesProviderEntity> providers = Ranked(await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false));
         if (providers.Count == 0)
             return null;
 
@@ -632,8 +686,10 @@ public class ReaderPreviewService
     /// coin sources whose session lapsed. Returns null on failure/timeout, an empty
     /// list when the source withholds the pages (locked), or the pages.
     /// </summary>
+    /// <param name="onFailure">Told why, when the result is null (SourceHealthService).</param>
     private async Task<List<Page>?> TryGetPagesFromSourceAsync(
-        ISourceInterop src, ParsedChapter chapter, SeriesProviderEntity provider, Guid? userId, CancellationToken token)
+        ISourceInterop src, ParsedChapter chapter, SeriesProviderEntity provider, Guid? userId, CancellationToken token,
+        Action<SourceFailureKind>? onFailure = null)
     {
         async Task<List<Page>?> Fetch()
         {
@@ -641,9 +697,20 @@ public class ReaderPreviewService
             {
                 return await SourceTimeout.RunAsync(c => src.GetPagesAsync(chapter, c), StreamSourceTimeout, token).ConfigureAwait(false);
             }
-            catch (TimeoutException) { _logger.LogWarning("Stream: source {Provider} timed out fetching pages for ch {Chapter}", provider.Provider, chapter.ParsedNumber); return null; }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("Stream: source {Provider} timed out fetching pages for ch {Chapter}", provider.Provider, chapter.ParsedNumber);
+                onFailure?.Invoke(SourceFailureKind.Timeout);
+                return null;
+            }
             catch (Exception ex) when (IsPurchaseError(ex)) { return new List<Page>(); }  // locked on this source
-            catch (Exception ex) { _logger.LogWarning(ex, "Stream: source {Provider} failed page list for ch {Chapter}", provider.Provider, chapter.ParsedNumber); return null; }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }  // the reader went away
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Stream: source {Provider} failed page list for ch {Chapter}", provider.Provider, chapter.ParsedNumber);
+                onFailure?.Invoke(SourceHealthService.Classify(ex));
+                return null;
+            }
         }
 
         List<Page>? pages = await Fetch().ConfigureAwait(false);
@@ -791,6 +858,8 @@ public class ReaderPreviewService
     private async Task<List<Page>?> GetLibraryPageListAsync(Guid seriesId, decimal chapterNumber, Guid? userId, bool forceRefresh, bool refreshChapterList, CancellationToken token)
     {
         string key = $"lib:pg:{seriesId}:{chapterNumber}";
+        // The source whose page 0 is in the image cache, if any (see the probe).
+        Guid cachedFrom = _cache.TryGetValue($"lib:win:{seriesId}:{chapterNumber}", out Guid cw) ? cw : Guid.Empty;
         // Force refresh skips the cached (often empty) page list so a chapter that
         // just got purchased / turned free is actually re-fetched from the source.
         List<Page>? stale = null;
@@ -815,7 +884,18 @@ public class ReaderPreviewService
                 return cached;
         }
 
-        List<SeriesProviderEntity> providers = await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
+        List<SeriesProviderEntity> providers = Ranked(await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false));
+        // The source that served this chapter last stays first while it can. Its
+        // pages are what the reader and the image cache are numbered by, and a
+        // health re-ranking switching sources in the middle of a read mixed two
+        // sources' pages (another split, other page counts) in one chapter.
+        int previous = cachedFrom == Guid.Empty ? -1 : providers.FindIndex(p => p.Id == cachedFrom);
+        if (previous > 0)
+        {
+            SeriesProviderEntity kept = providers[previous];
+            providers.RemoveAt(previous);
+            providers.Insert(0, kept);
+        }
         if (providers.Count == 0)
         {
             // This is one of the two ways the reader answers 404 for a chapter, and
@@ -844,25 +924,39 @@ public class ReaderPreviewService
         // a last resort so a single-source read is never worse than before.
         List<Page>? servedPages = null;
         Guid? servedWinner = null;
+        // What each source tried before the winner did, for the log line below:
+        // the log never said which source a streamed chapter came from.
+        List<string> passedOver = [];
 
         foreach (SeriesProviderEntity provider in providers)
         {
             token.ThrowIfCancellationRequested();
             var resolved = await ResolveProviderChapterAsync(provider, chapterNumber, refreshChapterList, token).ConfigureAwait(false);
             if (resolved == null)
+            {
+                passedOver.Add($"{provider.Provider} (no chapter)");
                 continue;
+            }
             anyResolved = true;
-            (_, ISourceInterop src, ParsedChapter chapter) = resolved.Value;
+            (_, ISourceInterop src, ParsedChapter chapter, bool fromDb) = resolved.Value;
 
-            List<Page>? attempt = await TryGetPagesFromSourceAsync(src, chapter, provider, userId, token).ConfigureAwait(false);
+            SourceFailureKind failure = SourceFailureKind.Error;
+            List<Page>? attempt = await TryGetPagesFromSourceAsync(src, chapter, provider, userId, token, k => failure = k).ConfigureAwait(false);
             if (attempt == null)
             {
                 anyFailed = true;
+                // A chapter rebuilt from the database (not in the live listing: a
+                // coin-gated one) fails on sources that need their own listing's
+                // memo (Philia: HTTP 404). That is our reference, not the source.
+                if (!fromDb)
+                    _health.ReportFailure(provider, provider.Title, ForReader(failure), chapterNumber);
+                passedOver.Add($"{provider.Provider} ({failure.ToString().ToLowerInvariant()})");
                 continue; // timed out or errored — says nothing about whether it is paid
             }
             if (attempt.Count == 0)
             {
                 anyWithheld = true;
+                passedOver.Add($"{provider.Provider} (paid)");
                 continue; // the source said "requires purchase" — real paywall evidence
             }
 
@@ -872,10 +966,19 @@ public class ReaderPreviewService
             // which makes every page time out. Probe page 0's image and only commit
             // to a source that can actually serve images — otherwise fall through to
             // the next one in priority order. The probe caches page 0.
-            if (await ProbeAndCacheFirstImageAsync(seriesId, chapterNumber, src, attempt, token).ConfigureAwait(false))
+            SourceFailureKind? probeFailure = null;
+            Probe probe = await ProbeAndCacheFirstImageAsync(seriesId, chapterNumber, src, attempt, token,
+                trustCached: provider.Id == cachedFrom, k => probeFailure = k).ConfigureAwait(false);
+            if (probe != Probe.Failed)
             {
                 pages = attempt;
                 winner = provider.Id;
+                // Only an image actually fetched from it now is evidence it works.
+                if (probe == Probe.Live)
+                    _health.ReportSuccess(provider, provider.Title);
+                _logger.LogInformation("Stream: ch {Chapter} of series {SeriesId} served by {Provider}{PassedOver}.",
+                    chapterNumber, seriesId, provider.Provider,
+                    passedOver.Count == 0 ? "" : " after " + string.Join(", ", passedOver));
                 // Pages actually came back — whatever the DB's stale IsLocked flag
                 // says, this chapter is reachable now. Persist that so the chapter
                 // list (which reads IsLocked, not this live result) stops showing
@@ -884,6 +987,9 @@ public class ReaderPreviewService
                 break;
             }
             _logger.LogWarning("Stream: source {Provider} served a page list but its images wouldn't load for ch {Chapter}; trying the next source", provider.Provider, chapterNumber);
+            if (probeFailure is SourceFailureKind pk)
+                _health.ReportFailure(provider, provider.Title, pk, chapterNumber);
+            passedOver.Add($"{provider.Provider} (images)");
         }
 
         // No source served serviceable images → fall back to the first that at least
@@ -919,7 +1025,9 @@ public class ReaderPreviewService
 
         // Remember which source served the pages so image fetches use the same one.
         if (winner != null)
-            _cache.Set($"lib:win:{seriesId}:{chapterNumber}", winner.Value, CacheTtl);
+            // A day, as long as clients keep page images (max-age=86400), so the
+            // winner is still known when the page list itself has expired.
+            _cache.Set($"lib:win:{seriesId}:{chapterNumber}", winner.Value, TimeSpan.FromDays(1));
 
         // Drop the cached page images ONLY if this refresh actually changed
         // something. They are keyed by page index, so they go stale exactly when
@@ -956,7 +1064,14 @@ public class ReaderPreviewService
 
         // Cache real results; never poison the cache with an empty list during a
         // forced poll, so the next 3s tick re-checks instead of returning 0.
-        if (pages.Count > 0 || !forceRefresh)
+        //
+        // Nor when the sources merely FAILED. An empty list cached after every
+        // source errored answered each later non-forced request with 0 pages for
+        // half an hour without asking any source again — the web's
+        // load-the-next-chapter-while-scrolling path doesn't force, so its retries
+        // all got the same empty answer (the Hub always forces, so it never saw
+        // this). Only a paywall a source actually stated is worth remembering.
+        if (pages.Count > 0 || (!forceRefresh && anyWithheld && !anyFailed))
             _cache.Set(key, pages, CacheTtl);
         return pages;
     }

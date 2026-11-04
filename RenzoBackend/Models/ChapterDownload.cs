@@ -30,6 +30,43 @@ public class ChapterDownload : DownloadSummaryBase, IBridgeItemInfo
 
     public int Retries { get; set; }
 
+    /// <summary>
+    /// Retries after our own plumbing failed (the extension runner restarted
+    /// mid-chapter). They cost nothing from <see cref="Retries"/>, but only up to
+    /// a cap: a failure that only LOOKS like a restart and happens every time
+    /// would otherwise be retried every few minutes for ever.
+    /// </summary>
+    public int TransientRetries { get; set; }
+
+    /// <summary>
+    /// The series' sources this chapter has already failed on, carried from one
+    /// hand-off to the next. A hand-off never goes back to one of them, so a
+    /// chapter broken on two sources cannot bounce between them for ever, and
+    /// once every source is in here the chapter is given up on.
+    /// </summary>
+    public List<Guid> TriedSourceIds { get; set; } = [];
+
+    /// <summary>
+    /// Sources the chapter left early, after one failure stepped the source down
+    /// (its retries there unused). An early hand-off never goes back to one; at
+    /// the end of the line, before giving up, one may be tried again, ranked last.
+    /// </summary>
+    public List<Guid> LeftEarlySourceIds { get; set; } = [];
+
+    /// <summary>
+    /// This job was handed on from another source (a step-down or a move off a
+    /// stalled queue). Finding the chapter paid here then hands it on again,
+    /// instead of ending the chain with the chapter queued nowhere.
+    /// </summary>
+    public bool HandedOff { get; set; }
+
+    /// <summary>
+    /// The user asked for this chapter from this source ("Re-download from X").
+    /// It is tried there even while the source is stepped down, and keeps its
+    /// full retry budget there before it is handed on.
+    /// </summary>
+    public bool ForcedSource { get; set; }
+
 
     private string _storagePath = string.Empty;
     public string StoragePath

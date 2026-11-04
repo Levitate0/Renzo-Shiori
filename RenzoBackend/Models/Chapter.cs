@@ -44,6 +44,14 @@ public class Chapter : ChapterDescriptorBase
     /// paid, so a purchase is not made to wait out the backoff.
     /// </summary>
     public DateTime? LockedCheckedAt { get; set; }
+    /// <summary>
+    /// When this chapter last ran out of retries on every source it was handed
+    /// to (UTC), and how many times in a row that has happened. A scan leaves
+    /// it alone for a growing while (DownloadsExtensions.GiveUpBackoff) instead
+    /// of queuing it again with a fresh budget; a download clears both.
+    /// </summary>
+    public DateTime? GaveUpAt { get; set; }
+    public int GiveUpCount { get; set; }
     public int? PageCount { get; set; }
     public string? Filename { get; set; }
     public List<string> Pages { get; set; } = [];

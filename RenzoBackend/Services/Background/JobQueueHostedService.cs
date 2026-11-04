@@ -37,6 +37,9 @@ namespace RenzoBackend.Services.Background
         // each tick guarantees every group eventually lands inside the window.
         private readonly ConcurrentDictionary<JobQueues, int> _groupRotation = new();
 
+        /// <summary>Which series of a group goes first this round; see SeriesInReadingOrder.</summary>
+        private readonly ConcurrentDictionary<string, int> _seriesRotation = new(StringComparer.Ordinal);
+
         /// <summary>
         /// Hard ceiling on a single job. Generous — a big chapter over a slow
         /// source is legitimately minutes — but finite, so a job that will never
@@ -244,7 +247,8 @@ namespace RenzoBackend.Services.Background
         }
 
         /// <summary>
-        /// Orders one group's jobs so a series downloads lowest chapter first.
+        /// Orders one group's jobs: each series lowest chapter first, the series
+        /// taking turns.
         ///
         /// Within a group the queue used to take jobs in whatever order the
         /// database returned them, which is insertion order — and a series'
@@ -253,28 +257,52 @@ namespace RenzoBackend.Services.Background
         /// last. Reading order is the useful one: the first chapters are ready
         /// soonest.
         ///
-        /// Only the order WITHIN a series changes. Series keep the order they
-        /// already had (first appearance), and FairShareOrderBy still
-        /// interleaves the groups afterwards, so no series or provider gains or
-        /// loses its turn. Non-download jobs, or a key whose last segment is not
-        /// a chapter number, keep their original position.
+        /// Series used to go one after another, in the order they first appeared.
+        /// With two slots per source that let ONE series hold its source: the
+        /// order effectively follows the oldest due job, a series with a job
+        /// queued in August stayed first, and its lowest chapters failed and were
+        /// retried around the clock (A Baby Cat Who Commands the Dog Clan held
+        /// Comic Asura for a day, 1,238 jobs of 46 series behind it). Now every
+        /// series in the group gets one turn per round, the starting series
+        /// rotates (<paramref name="rotation"/>) so the slots are shared, and a
+        /// series spends its turn on a chapter not tried yet before a retry, so a
+        /// failing chapter waits behind its own series' fresh work instead of
+        /// costing the series its turn.
+        ///
+        /// Non-download jobs, or a key whose last segment is not a chapter
+        /// number, keep their position within their series.
         /// </summary>
-        private static IEnumerable<EnqueueEntity> SeriesInReadingOrder(IEnumerable<EnqueueEntity> jobs)
+        internal static IEnumerable<EnqueueEntity> SeriesInReadingOrder(IEnumerable<EnqueueEntity> jobs, int rotation = 0)
         {
             List<EnqueueEntity> list = jobs.ToList();
             if (list.Count < 2)
                 return list;
 
-            var seriesRank = new Dictionary<string, int>(StringComparer.Ordinal);
-            foreach (EnqueueEntity j in list)
-                seriesRank.TryAdd(j.ExtraKey ?? string.Empty, seriesRank.Count);
-
-            return list
+            // GroupBy keeps first-appearance order, which stays the base order.
+            List<List<EnqueueEntity>> series = list
                 .Select((job, index) => (job, index))
-                .OrderBy(x => seriesRank[x.job.ExtraKey ?? string.Empty])
-                .ThenBy(x => ChapterNumberOf(x.job) ?? decimal.MaxValue)
-                .ThenBy(x => x.index)
-                .Select(x => x.job);
+                .GroupBy(x => x.job.ExtraKey ?? string.Empty)
+                .Select(g => g
+                    .OrderBy(x => x.job.RetryCount > 0)
+                    .ThenBy(x => ChapterNumberOf(x.job) ?? decimal.MaxValue)
+                    .ThenBy(x => x.index)
+                    .Select(x => x.job)
+                    .ToList())
+                .ToList();
+
+            int offset = (int)((uint)rotation % (uint)series.Count);
+            List<List<EnqueueEntity>> turns = series.Skip(offset).Concat(series.Take(offset)).ToList();
+
+            var ordered = new List<EnqueueEntity>(list.Count);
+            for (int round = 0; ordered.Count < list.Count; round++)
+            {
+                foreach (List<EnqueueEntity> s in turns)
+                {
+                    if (round < s.Count)
+                        ordered.Add(s[round]);
+                }
+            }
+            return ordered;
         }
 
         /// <summary>The chapter number a download job's key ends with, or null.</summary>
@@ -319,7 +347,8 @@ namespace RenzoBackend.Services.Background
                 var rotatedGroups = groups.Skip(offset).Concat(groups.Take(offset));
 
                 var groupedJobs = rotatedGroups
-                    .ToDictionary(g => g.Key, g => SeriesInReadingOrder(g).Take(runningCounts.GetLocalGroupMax(g.Key, queueSettings.MaxPerGroup)).ToList());
+                    .ToDictionary(g => g.Key, g => SeriesInReadingOrder(g, _seriesRotation.AddOrUpdate(g.Key ?? string.Empty, 0, (_, v) => v + 1))
+                        .Take(runningCounts.GetLocalGroupMax(g.Key, queueSettings.MaxPerGroup)).ToList());
 
                 jobsByPriority[priority] = groupedJobs.SelectMany(a => a.Value).FairShareOrderBy(a => a.GroupKey).ToList();
             }

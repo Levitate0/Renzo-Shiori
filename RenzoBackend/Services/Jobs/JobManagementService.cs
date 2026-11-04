@@ -198,18 +198,24 @@ namespace RenzoBackend.Services.Jobs
 
         #region Immediate Jobs (previously JobEnqueueService)
 
+        /// <param name="replaceWaiting">
+        /// A job already WAITING under this key is replaced with this one (new
+        /// parameters and source, due now) instead of left as it is. For a user's
+        /// own re-download: a job parked for hours on another source must not
+        /// swallow it. A running job is still left alone.
+        /// </param>
         public async Task<Guid> EnqueueJobAsync<T>(JobType jobType, T parameters, 
             Priority priority = Priority.Normal, string? key = null, string? groupKey = null, 
-            string? extraKey = null, string queue = "Default", CancellationToken token = default)
+            string? extraKey = null, string queue = "Default", CancellationToken token = default, bool replaceWaiting = false)
         {
             string parametersJson = JsonSerializer.Serialize(parameters);
-            return await EnqueueJobAsIsAsync(jobType, parametersJson, priority, key, groupKey, extraKey, queue, token);
+            return await EnqueueJobAsIsAsync(jobType, parametersJson, priority, key, groupKey, extraKey, queue, token, replaceWaiting);
         }
 
 
         public async Task<Guid> EnqueueJobAsIsAsync(JobType jobType, string parametersJson, 
             Priority priority = Priority.Normal, string? key = null, string? groupKey = null, 
-            string? extraKey = null, string queue = "Default", CancellationToken token = default)
+            string? extraKey = null, string queue = "Default", CancellationToken token = default, bool replaceWaiting = false)
         {
             using (await _lock.LockAsync(token))
             {
@@ -254,6 +260,30 @@ namespace RenzoBackend.Services.Jobs
                             await UpdateJobAsync(existingJob, token).ConfigureAwait(false);
                             _logger.LogInformation("Job {type} {key} with status {oldStatus}. Set to Reprocessing...", jobType, groupKey ?? key, oldStatus);
                             return existingJob.Id;
+                        }
+                        if (replaceWaiting && existingJob.Status == QueueStatus.Waiting)
+                        {
+                            // Only while it is still waiting: the picker marks rows
+                            // Running by id without looking, so this must not turn
+                            // one it just took back into a waiting one.
+                            Guid id = existingJob.Id;
+                            DateTime now = DateTime.UtcNow;
+                            int replaced = await _db.Queues
+                                .Where(q => q.Id == id && q.Status == QueueStatus.Waiting)
+                                .ExecuteUpdateAsync(u => u
+                                    .SetProperty(q => q.JobParameters, parametersJson)
+                                    .SetProperty(q => q.GroupKey, groupKey)
+                                    .SetProperty(q => q.ExtraKey, extraKey)
+                                    .SetProperty(q => q.Priority, priority)
+                                    .SetProperty(q => q.EnqueuedDate, now)
+                                    .SetProperty(q => q.ScheduledDate, now)
+                                    .SetProperty(q => q.RetryCount, 0), token).ConfigureAwait(false);
+                            if (replaced == 1)
+                            {
+                                _db.Entry(existingJob).State = EntityState.Detached;
+                                _logger.LogInformation("Job {type} {key} was waiting; replaced with the new request.", jobType, groupKey ?? key);
+                                return id;
+                            }
                         }
                         _logger.LogInformation("Job {type} {key} already running or waiting. Skipping...", jobType, groupKey ?? key);
                         return existingJob.Id;

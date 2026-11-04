@@ -29,7 +29,9 @@ namespace RenzoBackend.Services.Downloads;
 /// enabled source once its retries are spent, in
 /// <c>DownloadCommandService.TryStepDownToNextSourceAsync</c>. The extra
 /// download is then paid for once, on demand, instead of every source racing
-/// speculatively.
+/// speculatively. A source that has just failed is remembered
+/// (SourceHealthService) and ranks last until it is re-checked, so the next
+/// chapter goes straight to the source that worked.
 /// </summary>
 public static class DownloadSourceSelector
 {
@@ -55,8 +57,69 @@ public static class DownloadSourceSelector
     /// and a list allocation per chapter, per sweep. Building the lookup once
     /// turns each decision into a walk of the sources with O(1) set probes.
     /// </summary>
-    public static PreferredSourceLookup Prepare(SeriesEntity series, SeriesProviderEntity candidate, bool downloadAll = false) =>
-        new(series, candidate, series.PrioritizeFreeChapters, downloadAll);
+    /// <param name="steppedDown">
+    /// Which sources just failed (SourceHealthService.IsSteppedDown). They rank
+    /// after every source that has not, so a chapter goes to the source that
+    /// works; null treats every source as healthy.
+    /// </param>
+    public static PreferredSourceLookup Prepare(SeriesEntity series, SeriesProviderEntity candidate, bool downloadAll = false,
+        Func<SeriesProviderEntity, bool>? steppedDown = null) =>
+        new(series, candidate, series.PrioritizeFreeChapters, downloadAll, steppedDown);
+
+    /// <summary>
+    /// The download order: per-series Priority, storage first on a tie, Id to
+    /// make it total — with stepped-down sources moved behind the rest. The
+    /// initial choice and the step-down walk both use it; change one, change all.
+    /// </summary>
+    public static IEnumerable<SeriesProviderEntity> Ordered(IEnumerable<SeriesProviderEntity> sources,
+        Func<SeriesProviderEntity, bool>? steppedDown = null) =>
+        sources
+            .OrderBy(p => steppedDown != null && steppedDown(p))
+            .ThenBy(p => p.Priority)
+            .ThenByDescending(p => p.IsStorage)
+            .ThenBy(p => p.Id);
+
+    /// <summary>
+    /// The source to hand chapter <paramref name="number"/> to when the one it is
+    /// queued on cannot deliver: a step-down, or a move off a stalled queue. One
+    /// rule for both; change one, change all.
+    ///
+    /// Sources that have not failed recently first, then a free copy before a
+    /// paid one, then the usual download order. A paid copy is a candidate only
+    /// when the owner has a site login for that source and the chapter was not
+    /// already found paid there within the scan's paywall interval: handing a
+    /// free chapter to a source where it is paid just marked it locked there and
+    /// left it queued nowhere.
+    /// </summary>
+    /// <param name="excluded">The source it is on now, and any it already failed on.</param>
+    /// <param name="allowSteppedDown">
+    /// Whether a stepped-down source may be picked (ranked last). Yes at the end
+    /// of the line — retries spent, a short listing, a disabled source — where the
+    /// alternative is giving up; no for an early hand-off, where the alternative
+    /// is simply retrying here.
+    /// </param>
+    /// <param name="loginProviders">Providers the series' owner has a working site login for.</param>
+    public static SeriesProviderEntity? PickHandOff(IEnumerable<SeriesProviderEntity> sources, decimal number,
+        Func<SeriesProviderEntity, bool> excluded, Func<SeriesProviderEntity, bool>? steppedDown, bool allowSteppedDown,
+        IReadOnlySet<string> loginProviders, DateTime now)
+    {
+        DateTime paidRecently = now - DownloadsExtensions.PaywallRetryInterval;
+        bool Paid(SeriesProviderEntity p) => HasChapterLocked(p, number);
+        bool KnownPaidRecently(SeriesProviderEntity p) => p.Chapters.Any(c => !c.IsDeleted && c.Number == number
+            && c.IsLocked && c.LockedCheckedAt > paidRecently);
+        bool Down(SeriesProviderEntity p) => steppedDown != null && steppedDown(p);
+
+        return sources
+            .Where(p => !excluded(p) && CanDownloadFrom(p) && HasChapter(p, number)
+                && (allowSteppedDown || !Down(p))
+                && (!Paid(p) || (loginProviders.Contains(p.Provider) && !KnownPaidRecently(p))))
+            .OrderBy(Down)
+            .ThenBy(Paid)
+            .ThenBy(p => p.Priority)
+            .ThenByDescending(p => p.IsStorage)
+            .ThenBy(p => p.Id)
+            .FirstOrDefault();
+    }
 
     /// <summary>Is this source's copy of the chapter paywalled?</summary>
     public static bool HasChapterLocked(SeriesProviderEntity p, decimal number) =>
@@ -78,7 +141,8 @@ public static class DownloadSourceSelector
         private readonly HashSet<decimal> _candidateLocked = [];
         private readonly List<(Guid Id, HashSet<decimal> Numbers)> _ordered = [];
 
-        internal PreferredSourceLookup(SeriesEntity series, SeriesProviderEntity candidate, bool preferFree, bool downloadAll)
+        internal PreferredSourceLookup(SeriesEntity series, SeriesProviderEntity candidate, bool preferFree, bool downloadAll,
+            Func<SeriesProviderEntity, bool>? steppedDown = null)
         {
             _candidateId = candidate.Id;
             _preferFree = preferFree;
@@ -86,7 +150,11 @@ public static class DownloadSourceSelector
             _candidateCutoff = candidate.ContinueAfterChapter;
 
             // A storage source is the on-disk copy, not a competitor for a download.
-            if (candidate.IsStorage)
+            // Unless it has just failed: a storage source that cannot deliver
+            // (AllManga behind a captcha) claimed every chapter, failed each one
+            // and handed it down, all over again on every scan. Stepped down, it
+            // competes like any other source and ranks last.
+            if (candidate.IsStorage && !(steppedDown?.Invoke(candidate) ?? false))
             {
                 _always = true;
                 return;
@@ -100,11 +168,8 @@ public static class DownloadSourceSelector
                 return;
             }
 
-            foreach (SeriesProviderEntity p in series.Sources
-                .Where(p => p.Id == candidate.Id || CanDownloadFrom(p))
-                .OrderBy(p => p.Priority)
-                .ThenByDescending(p => p.IsStorage)
-                .ThenBy(p => p.Id))
+            foreach (SeriesProviderEntity p in Ordered(series.Sources
+                .Where(p => p.Id == candidate.Id || CanDownloadFrom(p)), steppedDown))
             {
                 // The candidate never needs its own set: it is offering the
                 // chapter right now, which is what makes it a holder.

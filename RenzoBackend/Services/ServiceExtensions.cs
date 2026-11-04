@@ -180,6 +180,11 @@ namespace RenzoBackend.Services
             // Download CQRS Services
             services.TryAddScoped<DownloadQueryService>();
             services.TryAddScoped<DownloadCommandService>();
+            // Singleton: which sources just failed is shared by every download
+            // job and every reader request (see SourceHealthService).
+            services.TryAddSingleton<SourceHealthService>();
+            // Moves chapters out of a source whose queue has stopped moving.
+            services.AddHostedService<DownloadRebalanceService>();
             
             return services;
         }

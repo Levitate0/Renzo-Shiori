@@ -447,6 +447,7 @@ namespace RenzoBackend.Controllers
                 return result.Outcome switch
                 {
                     RedownloadOutcome.Queued => Ok(new { success = true, queued = result.Queued, sourceProviderName = result.SourceProviderName }),
+                    RedownloadOutcome.AlreadyDownloaded => Ok(new { success = true, queued = 0, sourceProviderName = result.SourceProviderName }),
                     RedownloadOutcome.Paused => StatusCode(409, new { success = false, error = "Series is paused" }),
                     RedownloadOutcome.SeriesNotFound => NotFound(new { success = false, error = "Series not found" }),
                     RedownloadOutcome.ChapterNotFound => NotFound(new { success = false, error = "Chapter not found at source" }),

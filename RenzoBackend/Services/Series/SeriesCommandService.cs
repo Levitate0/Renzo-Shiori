@@ -47,6 +47,7 @@ namespace RenzoBackend.Services.Series
         private readonly IServiceScopeFactory _scopeFactory;
 
         private readonly Microsoft.Extensions.Caching.Memory.IMemoryCache _memoryCache;
+        private readonly SourceHealthService _health;
 
         public SeriesCommandService(AppDbContext db, SettingsService settings, ArchiveHelperService archiveHelper,
             SeriesProviderService providerService, ILogger<SeriesCommandService> logger,
@@ -58,8 +59,10 @@ namespace RenzoBackend.Services.Series
             LockedChapterSupplementService lockedSupplement,
             IServiceScopeFactory scopeFactory,
             Microsoft.Extensions.Caching.Memory.IMemoryCache memoryCache,
-            UserContentPreferencesService contentPrefs)
+            UserContentPreferencesService contentPrefs,
+            SourceHealthService health)
         {
+            _health = health;
             _scopeFactory = scopeFactory;
             _db = db;
             _settings = settings;
@@ -580,7 +583,7 @@ namespace RenzoBackend.Services.Series
                                 .DownloadAllChapters;
                             downloadAllByOwner[series.OwnerId] = downloadAllLatest;
                         }
-                        List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(u.Item2, u.Item1.Chapters, downloadAllLatest);
+                        List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(u.Item2, u.Item1.Chapters, downloadAllLatest, steppedDown: _health.IsSteppedDown);
                         if (chaps.Count > 0)
                         {
                             await _downloadCommand.QueueChapterDownloadsAsync(u.Item2, chaps, token).ConfigureAwait(false);
@@ -943,7 +946,32 @@ namespace RenzoBackend.Services.Series
                 }
             }
 
-            await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            // The chapter list is one JSON column written whole, and this copy was
+            // read before the source calls above. Saving it as is erased whatever a
+            // download, a step-down, a paywall hit or a give-up wrote meanwhile (a
+            // file name, a lock, a give-up stamp). So, under the series lock the
+            // download path takes, merge: what this scan changed is the scan's,
+            // everything else comes from the stored row as it is now.
+            _db.ChangeTracker.DetectChanges();
+            if (_db.Entry(serie).Property(a => a.Chapters).IsModified)
+            {
+                List<Models.Chapter> original = _db.Entry(serie).Property(a => a.Chapters).OriginalValue ?? [];
+                using (await DownloadCommandService.SeriesLock.LockAsync(serie.SeriesId.ToString(), token).ConfigureAwait(false))
+                {
+                    List<Models.Chapter>? stored = await _db.SeriesProviders.AsNoTracking()
+                        .Where(a => a.Id == serie.Id).Select(a => a.Chapters)
+                        .FirstOrDefaultAsync(token).ConfigureAwait(false);
+                    if (stored != null)
+                    {
+                        serie.Chapters = MergeScan(serie.Chapters, original, stored);
+                        serie.ChapterCount = serie.Chapters.Count;
+                        _db.Touch(serie, a => a.Chapters);
+                    }
+                    await _db.SaveChangesAsync(token).ConfigureAwait(false);
+                }
+            }
+            else
+                await _db.SaveChangesAsync(token).ConfigureAwait(false);
 
             // Recalculate release cadence after fetching new chapters
             await _cadenceService.RecalculateCadenceAsync(series.Id, token).ConfigureAwait(false);
@@ -969,7 +997,13 @@ namespace RenzoBackend.Services.Series
             bool downloadAll = (await _contentPrefs.ForUserAsync(series.OwnerId, token).ConfigureAwait(false)).DownloadAllChapters
                 || _memoryCache.TryGetValue(DownloadAllFlagKey(series.Id), out _);
             bool allowLocked = await OwnerHasSiteLoginAsync(series.OwnerId, serie.Provider, token).ConfigureAwait(false);
-            List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(serie, chapterData, downloadAll, allowLocked);
+            // Every source's chapter list as it is NOW, not as loaded before the
+            // source calls: a chapter that finished downloading or was given up
+            // on meanwhile must not be queued again. Everything is saved by here,
+            // so the reload loses nothing of this scan's.
+            foreach (SeriesProviderEntity p in series.Sources)
+                await _db.Entry(p).ReloadAsync(token).ConfigureAwait(false);
+            List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(serie, chapterData, downloadAll, allowLocked, _health.IsSteppedDown);
 
             // Priority upgrades (per-user, off until the owner sets it up): this
             // source just gained chapters that are already downloaded from a
@@ -982,6 +1016,10 @@ namespace RenzoBackend.Services.Series
             bool redownloadEnabled = series.OwnerId != Guid.Empty
                 && (await _db.Users.FirstOrDefaultAsync(u => u.Id == series.OwnerId, token).ConfigureAwait(false))
                     ?.GetRedownloadFromHigherPrioritySources() == true;
+            // Queued even from a source that has just failed: the download job
+            // keeps an upgrade waiting on it until its re-check (it is not handed
+            // on, since another source has the chapter already), and nothing
+            // would ever queue these chapters again once this scan has passed.
             if (redownloadEnabled && newlyGained.Count > 0)
             {
                 HashSet<decimal> alreadyQueued = chaps.Select(c => c.Chapter.ParsedNumber).ToHashSet();
@@ -1200,7 +1238,8 @@ namespace RenzoBackend.Services.Series
                 if (known.Count == 0)
                     continue;
                 bool allowLocked = await OwnerHasSiteLoginAsync(series.OwnerId, p.Provider, token).ConfigureAwait(false);
-                List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(p, known, downloadAll: true, allowLocked: allowLocked);
+                List<ChapterDownload> chaps = series.GenerateDownloadsFromChapterData(p, known, downloadAll: true, allowLocked: allowLocked, steppedDown: _health.IsSteppedDown,
+                    ignoreGiveUp: true);
                 if (chaps.Count > 0)
                 {
                     await _downloadCommand.QueueChapterDownloadsAsync(p, chaps, token).ConfigureAwait(false);
@@ -1434,6 +1473,54 @@ namespace RenzoBackend.Services.Series
                 token).ConfigureAwait(false);
         }
 
+        private static readonly System.Reflection.PropertyInfo[] ChapterFields = typeof(Models.Chapter).GetProperties()
+            .Where(p => p.CanRead && p.CanWrite && p.Name != nameof(Models.Chapter.Number))
+            .ToArray();
+
+        private static bool SameValue(object? a, object? b) =>
+            a is List<string> la && b is List<string> lb ? la.SequenceEqual(lb) : Equals(a, b);
+
+        /// <summary>
+        /// A scan's chapter list merged with the stored one (see GetChaptersAsync).
+        /// Per chapter and per field: a field the scan changed from what it loaded
+        /// (<paramref name="original"/>) keeps the scan's value, any other field
+        /// takes the stored value. Chapters only one side has are kept from that
+        /// side: the scan's new ones, and rows another writer added meanwhile.
+        /// </summary>
+        internal static List<Models.Chapter> MergeScan(List<Models.Chapter> working, List<Models.Chapter> original, List<Models.Chapter> stored)
+        {
+            static Dictionary<decimal, Models.Chapter> ByNumber(List<Models.Chapter> list)
+            {
+                Dictionary<decimal, Models.Chapter> d = [];
+                foreach (Models.Chapter c in list)
+                {
+                    if (c?.Number is decimal n)
+                        d.TryAdd(n, c);
+                }
+                return d;
+            }
+            Dictionary<decimal, Models.Chapter> before = ByNumber(original);
+            Dictionary<decimal, Models.Chapter> now = ByNumber(stored);
+
+            foreach (Models.Chapter c in working)
+            {
+                if (c.Number is not decimal n || !now.TryGetValue(n, out Models.Chapter? fresh))
+                    continue;
+                before.TryGetValue(n, out Models.Chapter? loaded);
+                foreach (System.Reflection.PropertyInfo f in ChapterFields)
+                {
+                    // Unchanged by the scan (or a row both added): the stored value wins.
+                    if (loaded == null || SameValue(f.GetValue(c), f.GetValue(loaded)))
+                        f.SetValue(c, f.GetValue(fresh));
+                }
+            }
+
+            HashSet<decimal> kept = working.Where(c => c.Number != null).Select(c => c.Number!.Value).ToHashSet();
+            List<Models.Chapter> merged = [.. working];
+            merged.AddRange(stored.Where(c => c.Number is decimal n && !kept.Contains(n) && !before.ContainsKey(n)));
+            return merged;
+        }
+
         internal static ParsedChapter ChapterToParsedChapter(Models.Chapter c, SeriesProviderEntity p)
         {
             decimal num = c.Number ?? 0m;
@@ -1545,8 +1632,20 @@ namespace RenzoBackend.Services.Series
         /// <param name="chapterNumber">The chapter number to (re-)download.</param>
         /// <param name="providerId">Optional explicit source to force; null = priority default.</param>
         /// <param name="token">Cancellation token.</param>
+        /// <param name="keepExisting">
+        /// A step-down to another source, not a user's re-download: a chapter
+        /// already on disk is left alone (<see cref="RedownloadOutcome.AlreadyDownloaded"/>)
+        /// and nothing is deleted. The step-down used to delete every copy first,
+        /// so a storage source that failed on a captcha (AllManga) wiped the good
+        /// MangaFire file of each chapter it handed down and had it fetched again:
+        /// 260 downloads for 113 chapters in a day, and chapters unreadable in
+        /// between, some for good when the hand-down went to a stalled source.
+        /// </param>
+        /// <param name="triedSourceIds">Step-down only: the sources the chapter already failed on, carried into the new job.</param>
+        /// <param name="leftEarlySourceIds">Step-down only: the sources it left early (ChapterDownload.LeftEarlySourceIds).</param>
         public async Task<RedownloadResult> RedownloadChapterAsync(Guid seriesId, decimal chapterNumber,
-            Guid? providerId = null, CancellationToken token = default)
+            Guid? providerId = null, CancellationToken token = default, bool keepExisting = false,
+            IReadOnlyCollection<Guid>? triedSourceIds = null, IReadOnlyCollection<Guid>? leftEarlySourceIds = null)
         {
             Models.Database.SeriesEntity? series = await _db.Series.Include(a => a.Sources)
                 .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
@@ -1584,20 +1683,43 @@ namespace RenzoBackend.Services.Series
                     return new RedownloadResult(RedownloadOutcome.NoSourceAvailable);
             }
 
-            // Re-fetch the live chapter list so the download uses a fresh URL.
-            ISourceInterop src;
-            try
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            if (keepExisting)
             {
-                src = await _mihon.SourceFromProviderIdAsync(target.MihonProviderId!, token).ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Unable to resolve source for provider {Provider}", target.Provider);
-                return new RedownloadResult(RedownloadOutcome.NoSourceAvailable);
+                // Any file actually on disk counts, whatever its row's IsDeleted
+                // says (a partial archive scan sets that and keeps the name).
+                SeriesProviderEntity? holder = series.Sources.FirstOrDefault(sp => sp.Chapters.Any(c =>
+                    c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)
+                    && File.Exists(Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!))));
+                if (holder != null)
+                    return new RedownloadResult(RedownloadOutcome.AlreadyDownloaded, holder.Provider);
             }
 
-            List<ParsedChapter>? chapterData = await _mihon.MihonErrorWrapperAsync(
-                () => src.GetChaptersAsync(target.ToManga()!, token),
+            // Re-fetch the live chapter list so the download uses a fresh URL.
+            //
+            // Not for a step-down: it builds from the stored chapter row, as the
+            // stalled-queue mover does. The job refreshes a stale reference itself
+            // (one cached listing per source), and a hand-off of every queued
+            // chapter of a stepped-down source fetched the target's whole listing
+            // once per chapter, against the host about to serve their images.
+            ISourceInterop? src = null;
+            if (!keepExisting)
+            {
+                try
+                {
+                    src = await _mihon.SourceFromProviderIdAsync(target.MihonProviderId!, token).ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    _logger.LogError(e, "Unable to resolve source for provider {Provider}", target.Provider);
+                    return new RedownloadResult(RedownloadOutcome.NoSourceAvailable);
+                }
+            }
+
+            // Bounded like every other source call: a step-down runs this while
+            // still holding the failed job's download slot.
+            List<ParsedChapter>? chapterData = src == null ? null : await _mihon.MihonErrorWrapperAsync(
+                () => Search.SourceTimeout.RunAsync(ct => src.GetChaptersAsync(target.ToManga()!, ct), token),
                 "Unable to get Chapters from {series} from {provider}", series.Title, target.Provider).ConfigureAwait(false);
 
             ParsedChapter? match = null;
@@ -1635,35 +1757,68 @@ namespace RenzoBackend.Services.Series
 
             // Remove any existing on-disk copy of this chapter (held by whichever source) and reset
             // its row, so the fresh download replaces it instead of leaving an orphan or duplicate.
-            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
+            // A step-down (keepExisting) only clears rows whose file is already gone: there is
+            // no copy on disk to delete, or it would have stopped above.
+            //
+            // Under the series lock, on rows read fresh after the network call above: the
+            // chapter list is one JSON column written whole, and the tracked copy loaded at the
+            // top is seconds old by now. Two step-downs of neighbouring chapters, or one and a
+            // download finishing, each saved their own stale copy over the other's, so the
+            // database said "downloaded" for files that were gone and the reverse.
             bool cleared = false;
-            foreach (SeriesProviderEntity sp in series.Sources)
+            using (await DownloadCommandService.SeriesLock.LockAsync(series.Id.ToString(), token).ConfigureAwait(false))
             {
-                foreach (Models.Chapter c in sp.Chapters.Where(c => c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)))
+                foreach (SeriesProviderEntity sp in series.Sources)
+                    await _db.Entry(sp).ReloadAsync(token).ConfigureAwait(false);
+                if (keepExisting)
                 {
-                    _hashCache.DeleteChapterHash(series.StoragePath, c.Filename!);
-                    string full = Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!);
-                    if (File.Exists(full))
-                    {
-                        try { File.Delete(full); }
-                        catch (Exception e) { _logger.LogWarning(e, "Unable to delete file {full} for re-download", full); }
-                    }
-                    c.Filename = null;
-                    c.DownloadDate = null;
-                    c.ShouldDownload = true;
-                    _db.Touch(sp, a => a.Chapters);
-                    cleared = true;
+                    // Again on the fresh rows, before anything is touched: a file
+                    // that landed meanwhile is kept, never deleted.
+                    SeriesProviderEntity? landed = series.Sources.FirstOrDefault(sp => sp.Chapters.Any(c =>
+                        c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)
+                        && File.Exists(Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!))));
+                    if (landed != null)
+                        return new RedownloadResult(RedownloadOutcome.AlreadyDownloaded, landed.Provider);
                 }
+                foreach (SeriesProviderEntity sp in series.Sources)
+                {
+                    foreach (Models.Chapter c in sp.Chapters.Where(c => c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)))
+                    {
+                        string full = Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!);
+                        bool onDisk = File.Exists(full);
+                        _hashCache.DeleteChapterHash(series.StoragePath, c.Filename!);
+                        if (onDisk)
+                        {
+                            try { File.Delete(full); }
+                            catch (Exception e) { _logger.LogWarning(e, "Unable to delete file {full} for re-download", full); }
+                        }
+                        c.Filename = null;
+                        c.DownloadDate = null;
+                        c.ShouldDownload = true;
+                        _db.Touch(sp, a => a.Chapters);
+                        cleared = true;
+                    }
+                }
+                if (cleared)
+                    await _db.SaveChangesAsync(token).ConfigureAwait(false);
             }
             if (cleared)
-            {
-                await _db.SaveChangesAsync(token).ConfigureAwait(false);
                 await _stateService.SyncToRenzoJsonAsync(series.Id, token).ConfigureAwait(false);
-            }
 
             // Build a single targeted download, bypassing the bulk "already downloaded" filters.
             List<ChapterDownload> chaps = series.ToDownloads(target, new List<ParsedChapter> { match }, series.StoragePath);
-            await _downloadCommand.QueueChapterDownloadsAsync(target, chaps, token).ConfigureAwait(false);
+            foreach (ChapterDownload c in chaps)
+            {
+                if (triedSourceIds != null)
+                    c.TriedSourceIds = [.. triedSourceIds];
+                if (leftEarlySourceIds != null)
+                    c.LeftEarlySourceIds = [.. leftEarlySourceIds];
+                c.HandedOff = keepExisting;
+                // The user picked this source: try it there even while it is
+                // stepped down (a step-down passes keepExisting and never pins).
+                c.ForcedSource = providerId.HasValue && !keepExisting;
+            }
+            await _downloadCommand.QueueChapterDownloadsAsync(target, chaps, token, replaceWaiting: !keepExisting).ConfigureAwait(false);
 
             _logger.LogInformation("Queued re-download of chapter {Chapter} for series {Series} from {Provider}",
                 chapterNumber, series.Title, target.Provider);
@@ -2046,6 +2201,8 @@ namespace RenzoBackend.Services.Series
     public enum RedownloadOutcome
     {
         Queued,
+        /// <summary>Step-down only: another source already has the chapter on disk, so nothing was queued.</summary>
+        AlreadyDownloaded,
         Paused,
         SeriesNotFound,
         NoSourceAvailable,
