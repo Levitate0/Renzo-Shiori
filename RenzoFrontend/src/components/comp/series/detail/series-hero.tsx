@@ -20,6 +20,9 @@ import { FavoriteButton } from "@/components/comp/series/favorite-button";
 import { ReadSeriesButton } from "@/components/comp/series/read-series-button";
 import { SeriesTrackingButton } from "@/components/comp/series/series-tracking-button";
 
+/** Tag pills shown before "Show more". Same number in the Hub (SeriesHeroSection.kt). */
+const TAG_LIMIT = 12;
+
 // Tiny relative-time helper — no external dependency
 function formatRelative(dateString: string | null | undefined): string {
   if (!dateString) return '—';
@@ -193,6 +196,7 @@ export function SeriesHero({
   onToggleHideDecimal,
 }: SeriesHeroProps) {
   const [expanded, setExpanded] = useState(false);
+  const [tagsExpanded, setTagsExpanded] = useState(false);
   const [coverExpanded, setCoverExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
@@ -314,10 +318,14 @@ export function SeriesHero({
               )}
             </div>
 
-            {/* Genre pills */}
+            {/* Genre pills. Sources with tag-heavy metadata (merged MangaUpdates
+                + AniList themes) can run to 80+ pills and push the buttons
+                screens away, so past TAG_LIMIT they collapse like the
+                description does. Hub twin: SeriesHeroSection.kt. */}
             {series.genre && series.genre.length > 0 && (
+              <div>
               <div className="flex flex-wrap gap-1.5">
-                {series.genre.map(g => (
+                {(tagsExpanded ? series.genre : series.genre.slice(0, TAG_LIMIT)).map(g => (
                   <span
                     key={g}
                     className="inline-flex items-center rounded-full bg-foreground/[0.06] border border-border/40 px-2 py-0.5 text-[11px] text-foreground/80"
@@ -325,6 +333,15 @@ export function SeriesHero({
                     {g}
                   </span>
                 ))}
+              </div>
+              {series.genre.length > TAG_LIMIT && (
+                <button
+                  onClick={() => setTagsExpanded(v => !v)}
+                  className="mt-1.5 text-xs font-medium text-primary hover:underline"
+                >
+                  {tagsExpanded ? 'Show less' : `Show more (${series.genre.length - TAG_LIMIT})`}
+                </button>
+              )}
               </div>
             )}
 
