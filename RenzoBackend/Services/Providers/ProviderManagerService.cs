@@ -261,7 +261,7 @@ namespace RenzoBackend.Services.Providers
                 }
 
                 // Re-enable existing providers and restore SeriesProvider state
-                await ReEnableProvidersForPackageAsync(pkgName, token).ConfigureAwait(false);
+                await ReEnableProvidersForPackageAsync(g, token).ConfigureAwait(false);
                 await _providerCache.RefreshCacheAsync(false, token).ConfigureAwait(false);
                 return true;
             }
@@ -292,8 +292,7 @@ namespace RenzoBackend.Services.Providers
                 _logger.LogInformation("Provider {name} added to local extensions", repo.Name);
 
                 // Re-enable existing providers and restore SeriesProvider state
-                string pkgName = repo.GetActiveEntry().Extension.Package;
-                await ReEnableProvidersForPackageAsync(pkgName, token).ConfigureAwait(false);
+                await ReEnableProvidersForPackageAsync(repo, token).ConfigureAwait(false);
                 await _providerCache.RefreshCacheAsync(false, token).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -309,12 +308,24 @@ namespace RenzoBackend.Services.Providers
         /// Sets IsEnabled=true, IsDead=false, IsBroken=false on ProviderStorageEntity,
         /// sets IsUninstalled=false on previously uninstalled SeriesProviderEntity entries,
         /// and attempts to reconnect local SeriesProviders that match this package's sources.
+        ///
+        /// Only the sources the installed version has: an id the extension dropped
+        /// (a source moved to a new id, SourceIdChanges) stays dead with its rows,
+        /// which SourceMoveService follows to the new id. Reviving it left those
+        /// rows "installed" on a source that no longer exists, and they stayed so:
+        /// the cache refresh marks the id dead again but only re-uninstalls its rows
+        /// while its catalogue job is on, and a dead id's job is off.
         /// </summary>
-        private async Task ReEnableProvidersForPackageAsync(string pkgName, CancellationToken token)
+        private async Task ReEnableProvidersForPackageAsync(RepositoryGroup group, CancellationToken token)
         {
-            var existingStorages = await _db.Providers
+            RepositoryEntry entry = group.GetActiveEntry();
+            string pkgName = entry.Extension.Package;
+            HashSet<string> current = entry.Extension.Sources.Select(s => entry.GetMihonProviderId(s)).ToHashSet(StringComparer.Ordinal);
+            var existingStorages = (await _db.Providers
                 .Where(a => a.SourcePackageName == pkgName)
-                .ToListAsync(token).ConfigureAwait(false);
+                .ToListAsync(token).ConfigureAwait(false))
+                .Where(a => current.Contains(a.MihonProviderId))
+                .ToList();
 
             foreach (var storage in existingStorages)
             {

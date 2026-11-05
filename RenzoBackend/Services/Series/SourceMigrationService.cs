@@ -7,10 +7,14 @@ using RenzoBackend.Models;
 using RenzoBackend.Models.Abstractions;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
+using RenzoBackend.Services.Bridge;
 using RenzoBackend.Services.Downloads;
 using RenzoBackend.Services.Images;
+using RenzoBackend.Services.Import;
+using RenzoBackend.Services.Providers;
 using RenzoBackend.Services.Search;
 using RenzoBackend.Services.Settings;
+using ParsedChapter = Mihon.ExtensionsBridge.Models.Extensions.ParsedChapter;
 
 namespace RenzoBackend.Services.Series;
 
@@ -365,23 +369,7 @@ public sealed class SourceMigrationService
                 // The catalogue cache, by title key, per source looked on: most
                 // matches come from here without asking the site anything.
                 foreach (ProviderStorageEntity src in targetSources)
-                {
-                    var titles = await db.LatestSeries.AsNoTracking()
-                        .Where(l => l.MihonProviderId == src.MihonProviderId)
-                        .Select(l => new { l.MihonId, l.Title })
-                        .ToListAsync(token).ConfigureAwait(false);
-                    var index = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-                    foreach (var t in titles)
-                    {
-                        string k = AltTitles.Key(t.Title);
-                        if (k.Length == 0 || string.IsNullOrEmpty(t.MihonId))
-                            continue;
-                        if (!index.TryGetValue(k, out List<string>? ids))
-                            index[k] = ids = [];
-                        ids.Add(t.MihonId);
-                    }
-                    catalogue[src.MihonProviderId] = index;
-                }
+                    catalogue[src.MihonProviderId] = await CatalogueIndexAsync(db, src, token).ConfigureAwait(false);
             }
 
             lock (run.Items)
@@ -527,10 +515,7 @@ public sealed class SourceMigrationService
                     Latest = Latest(numbers),
                     Coverage = Coverage(wanted, numbers.Select(n => (decimal?)n)),
                 };
-                // Many more chapters than the series has anywhere: likely another
-                // work. Counted, not the highest number: sources list the odd stray
-                // ("Chapter 2023" in a 63-chapter series).
-                candidate.Suspect = numbers.Select(decimal.Truncate).Distinct().Count(n => n > seriesLatest) > Math.Max(20, seriesLatest / 2);
+                candidate.Suspect = IsSuspect(numbers, seriesLatest);
                 found.Add(candidate);
                 if (Better(candidate, best))
                     best = candidate;
@@ -608,6 +593,14 @@ public sealed class SourceMigrationService
     private static bool Better(MigrationCandidateDto a, MigrationCandidateDto? b) =>
         b == null || (a.Suspect != b.Suspect ? !a.Suspect : a.Coverage > b.Coverage);
 
+    /// <summary>
+    /// Many more chapters than the series has anywhere: likely another work with
+    /// the same name. Counted, not the highest number: sources list the odd stray
+    /// ("Chapter 2023" in a 63-chapter series).
+    /// </summary>
+    internal static bool IsSuspect(IEnumerable<decimal> numbers, decimal seriesLatest) =>
+        numbers.Select(decimal.Truncate).Distinct().Count(n => n > seriesLatest) > Math.Max(20, seriesLatest / 2);
+
     /// <summary>The old source's chapters by whole number (locked titles and notices left out): what a match must list.</summary>
     internal static HashSet<decimal> WantedWholes(SeriesEntity series, string from, string? language)
     {
@@ -648,6 +641,26 @@ public sealed class SourceMigrationService
             .ThenBy(x => x.i)
             .Select(x => x.n)
             .ToList();
+    }
+
+    /// <summary>A source's catalogue cache by title key: the series ids filed under each.</summary>
+    private static async Task<Dictionary<string, List<string>>> CatalogueIndexAsync(AppDbContext db, ProviderStorageEntity src, CancellationToken token)
+    {
+        var titles = await db.LatestSeries.AsNoTracking()
+            .Where(l => l.MihonProviderId == src.MihonProviderId)
+            .Select(l => new { l.MihonId, l.Title })
+            .ToListAsync(token).ConfigureAwait(false);
+        var index = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var t in titles)
+        {
+            string k = AltTitles.Key(t.Title);
+            if (k.Length == 0 || string.IsNullOrEmpty(t.MihonId))
+                continue;
+            if (!index.TryGetValue(k, out List<string>? ids))
+                index[k] = ids = [];
+            ids.Add(t.MihonId);
+        }
+        return index;
     }
 
     private static async Task<List<LinkedSeriesDto>> CatalogueHitsAsync(AppDbContext db, ProviderStorageEntity target, List<string> names,
@@ -820,4 +833,438 @@ public sealed class SourceMigrationService
             pick.SeriesId, run.From, sp.Provider, sp.Title, disableOld ? "; old source switched off" : "");
         return ("migrated", null);
     }
+
+    // ----- following a source to its new id (SourceMoveService) -----
+
+    /// <summary>One live search on the new id; a slow or blocked site is "unreachable", never a solver.</summary>
+    private static readonly TimeSpan LiveSearchTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Finds a library row's series on the same source under its new id, after an
+    /// extension update changed the id (SourceIdChanges). Stricter than a
+    /// migration preview, since nobody reviews the match before it is applied:
+    /// exactly one series on the new id has the row's own title, its group for the
+    /// row's scanlator lists nine in ten of the row's chapters (by whole number),
+    /// and it is not suspect. The catalogue cache first, then the site's search
+    /// under the row's and the series' names (other names only when distinctive).
+    /// </summary>
+    public async Task<ReplacementResult> FindReplacementAsync(Guid seriesId, Guid rowId, ProviderStorageEntity target, Guid ownerId,
+        CancellationToken token)
+    {
+        using IServiceScope scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var augment = scope.ServiceProvider.GetRequiredService<SearchCommandService>();
+        var mihon = scope.ServiceProvider.GetRequiredService<MihonBridgeService>();
+
+        SeriesEntity? series = await db.Series.Include(s => s.Sources).AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
+        SeriesProviderEntity? stored = series?.Sources.FirstOrDefault(p => p.Id == rowId);
+        if (series == null || stored == null)
+            return new ReplacementResult { Status = SourceIdChanges.NoMatch, Message = "The row is gone." };
+        SeriesProviderEntity row = stored;
+
+        HashSet<decimal> wanted = RowWholes(row);
+        string titleKey = AltTitles.Key(row.Title);
+        var sameTitle = new HashSet<string>(StringComparer.Ordinal);
+        var groups = new List<ReplacementCandidate>();
+        bool unreachable = false;
+        ReplacementResult Verdict() => JudgeReplacement(row, wanted.Count, sameTitle, groups, unreachable);
+        if (wanted.Count == 0 || titleKey.Length == 0)
+            return Verdict();
+
+        decimal seriesLatest = Latest(series.Sources.SelectMany(p => p.Chapters).Where(Real).Select(c => c.Number!.Value)) ?? 0;
+        var measured = new HashSet<string>(StringComparer.Ordinal);
+        async Task MeasureAsync(LinkedSeriesDto hit)
+        {
+            if (hit.MihonId == null || !measured.Add(hit.MihonId))
+                return;
+            AugmentedResponseDto aug = await augment.AugmentSeriesAsync([hit], ownerId, token).ConfigureAwait(false);
+            List<ProviderSeriesDetails> found = aug.Series.Where(g => g.MihonId == hit.MihonId).ToList();
+            if (found.Count == 0 && aug.DroppedSeries.Any(d => d.Reason == "unreachable"))
+                unreachable = true;
+            foreach (ProviderSeriesDetails g in found)
+            {
+                var numbers = g.Chapters.Where(Real).Select(c => c.Number!.Value).ToList();
+                groups.Add(new ReplacementCandidate(hit.MihonId, g.Scanlator,
+                    Coverage(wanted, numbers.Select(n => (decimal?)n)), IsSuspect(numbers, seriesLatest), g));
+            }
+        }
+
+        // Only the row's own title can be accepted, so the catalogue is asked for
+        // that alone; two usable rows under it are already an ambiguity.
+        var catalogue = new Dictionary<string, Dictionary<string, List<string>>>
+        {
+            [target.MihonProviderId] = await CatalogueIndexAsync(db, target, token).ConfigureAwait(false),
+        };
+        foreach (LinkedSeriesDto hit in await CatalogueHitsAsync(db, target, [row.Title], catalogue, token).ConfigureAwait(false))
+        {
+            sameTitle.Add(hit.MihonId!);
+            await MeasureAsync(hit).ConfigureAwait(false);
+        }
+        // More results cannot settle an ambiguity, only add to it.
+        ReplacementResult fromCatalogue = Verdict();
+        if (fromCatalogue.Status is SourceIdChanges.Matched or SourceIdChanges.Ambiguous)
+            return fromCatalogue;
+
+        // The catalogue can be stale or not have it at all: ask the site.
+        foreach (string name in ReplacementNames(series, row).Take(NamesSearched))
+        {
+            (List<LinkedSeriesDto> results, bool failed) = await LiveSearchAsync(mihon, target, name, token).ConfigureAwait(false);
+            unreachable |= failed;
+            List<LinkedSeriesDto> same = results.Where(r => r.MihonId != null && AltTitles.Key(r.Title) == titleKey).ToList();
+            same.ForEach(r => sameTitle.Add(r.MihonId!));
+            foreach (LinkedSeriesDto h in same.Where(r => !measured.Contains(r.MihonId!)).Take(CandidatesPerSource))
+                await MeasureAsync(h).ConfigureAwait(false);
+            if (same.Count > 0)
+                break;
+        }
+        return Verdict();
+    }
+
+    private async Task<(List<LinkedSeriesDto> Results, bool Failed)> LiveSearchAsync(MihonBridgeService mihon, ProviderStorageEntity target,
+        string name, CancellationToken token)
+    {
+        try
+        {
+            var src = await mihon.SourceFromProviderIdAsync(target.MihonProviderId, token).ConfigureAwait(false);
+            var page = await SourceTimeout.RunAsync(c => src.SearchAsync(1, name, c), LiveSearchTimeout, token).ConfigureAwait(false);
+            var found = (page?.Mangas ?? []).Select(m => (m, target.MihonProviderId, src.Language)).ToList();
+            List<LinkedSeriesDto> linked = found.FindAndLinkSimilarSeries();
+            linked.ForEach(l =>
+            {
+                l.Provider = target.Name;
+                l.IsStorage = false;
+            });
+            return (linked.DistinctBy(l => l.MihonId).ToList(), false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogInformation("Searching {Source} for '{Name}' failed: {Error}", target.Name, name, e.Message);
+            return ([], true);
+        }
+    }
+
+    /// <summary>
+    /// Re-points a library row at the same source's new id, in place: the same
+    /// row, so its id, files, priority, flags, cutoff, switched-off state and
+    /// scheduled scan all stay. Only where it points changes, plus its chapter
+    /// links, merged by exact number (<see cref="ApplyRepoint"/>) in the same
+    /// save, so the first scan finds the listing already known and queues no
+    /// upgrades for it. No file is moved, renamed or reassigned, and no
+    /// add-series merge or priority-upgrade pass runs (see ApplyOneAsync for why).
+    ///
+    /// The row as it was goes to <paramref name="undoFile"/> first, one JSON line,
+    /// so a wrong match can be put back. Null when the row changed meanwhile.
+    /// </summary>
+    public async Task<RepointCounts?> RepointAsync(Guid seriesId, Guid rowId, string oldProviderId, ProviderSeriesDetails chosen,
+        string undoFile, CancellationToken token)
+    {
+        using IServiceScope scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var thumbs = scope.ServiceProvider.GetRequiredService<ThumbCacheService>();
+        var providers = scope.ServiceProvider.GetRequiredService<SeriesProviderService>();
+        var state = scope.ServiceProvider.GetRequiredService<SeriesStateService>();
+
+        // The cover first, the way creating a row does: registering it saves
+        // through this context, which has nothing else pending yet.
+        string? thumb = null;
+        if (!string.IsNullOrWhiteSpace(chosen.ThumbnailUrl))
+        {
+            thumb = chosen.ThumbnailUrl.StartsWith("/api/image/")
+                ? (await thumbs.GetEtagAsync(chosen.ThumbnailUrl[11..], token).ConfigureAwait(false))?.Url
+                : await thumbs.AddUrlAsync(chosen.ThumbnailUrl, chosen.MihonProviderId, token).ConfigureAwait(false);
+        }
+
+        SeriesProviderEntity row;
+        string oldMihonId;
+        bool paused;
+        RepointCounts counts;
+        using (await DownloadCommandService.SeriesLock.LockAsync(seriesId.ToString(), token).ConfigureAwait(false))
+        {
+            SeriesEntity? series = await db.Series.Include(s => s.Sources)
+                .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
+            SeriesProviderEntity? found = series?.Sources.FirstOrDefault(p => p.Id == rowId);
+            if (series == null || found == null || found.MihonProviderId != oldProviderId
+                || series.Sources.Any(p => p.MihonProviderId == chosen.MihonProviderId))
+                return null;
+            row = found;
+            oldMihonId = row.MihonId ?? "";
+            paused = series.PauseDownloads;
+
+            await File.AppendAllTextAsync(undoFile, UndoLine(row, chosen.MihonProviderId) + "\n", token).ConfigureAwait(false);
+            counts = ApplyRepoint(row, chosen, thumb, DateTime.UtcNow);
+            db.Touch(row, r => r.Chapters);
+            await db.SaveChangesAsync(token).ConfigureAwait(false);
+        }
+        // The new id's catalogue row shows as in the library, the old one's no longer.
+        await providers.CheckIfTheStorageFlagsChangedTheInLibraryStatusOfLastSeriesAsync([row], [oldMihonId], token).ConfigureAwait(false);
+        // Its own scheduled scan back on (left off while switched off or paused).
+        await providers.RescheduleIfNeededAsync([row], true, paused, token).ConfigureAwait(false);
+        await state.SyncToRenzoJsonAsync(seriesId, token).ConfigureAwait(false);
+        AppDbContext.BumpLibraryVersion();
+        return counts;
+    }
+
+    /// <summary>The row's pointer and per-chapter link state before a re-point, as one JSON line.</summary>
+    private static string UndoLine(SeriesProviderEntity row, string? to) => System.Text.Json.JsonSerializer.Serialize(new
+    {
+        at = DateTime.UtcNow,
+        rowId = row.Id,
+        seriesId = row.SeriesId,
+        to,
+        mihonProviderId = row.MihonProviderId,
+        mihonId = row.MihonId,
+        bridgeItemInfo = row.BridgeItemInfo,
+        url = row.Url,
+        thumbnailUrl = row.ThumbnailUrl,
+        isUninstalled = row.IsUninstalled,
+        isLocal = row.IsLocal,
+        consecutiveErrorCount = row.ConsecutiveErrorCount,
+        lastErrorDate = row.LastErrorDate,
+        chapters = row.Chapters.Select(c => new
+        {
+            number = c.Number,
+            url = c.Url,
+            providerIndex = c.ProviderIndex,
+            isLocked = c.IsLocked,
+            lockedCheckedAt = c.LockedCheckedAt,
+            gaveUpAt = c.GaveUpAt,
+            giveUpCount = c.GiveUpCount,
+        }),
+    });
+
+    /// <summary>A row's own chapters by whole number (locked titles and notices left out): what its replacement must list.</summary>
+    internal static HashSet<decimal> RowWholes(SeriesProviderEntity row) =>
+        row.Chapters.Where(c => c.Number is decimal n && n >= 0 && !ModelExtensions.IsLockedChapterName(c.Name))
+            .Select(c => decimal.Truncate(c.Number!.Value))
+            .ToHashSet();
+
+    /// <summary>
+    /// What a row's series is searched for under on the new id: the row's own
+    /// title, the series' and its sources' titles, then other names the sources
+    /// list, but only distinctive ones ("Dear" or "One Day" find other works).
+    /// </summary>
+    internal static List<string> ReplacementNames(SeriesEntity series, SeriesProviderEntity row)
+    {
+        var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        void Add(string? n)
+        {
+            string k = AltTitles.Key(n);
+            if (k.Length > 0 && seen.Add(k))
+                names.Add(n!.Trim());
+        }
+        Add(row.Title);
+        Add(series.Title);
+        foreach (SeriesProviderEntity p in series.Sources)
+            Add(p.Title);
+        string?[] own = [series.Title, .. series.Sources.Select(p => p.Title)];
+        foreach (SeriesProviderEntity p in series.Sources)
+        {
+            foreach (string alt in AltTitles.Parse(p.Description, own).Where(AltTitles.Distinctive))
+                Add(alt);
+        }
+        // Names written in Latin letters first, after the row's own (NamesOf).
+        return names.Select((n, i) => (n, i))
+            .OrderByDescending(x => x.i == 0 || AltTitles.Latin(x.n))
+            .ThenBy(x => x.i)
+            .Select(x => x.n)
+            .ToList();
+    }
+
+    /// <summary>
+    /// The scan's scanlator scoping (SeriesCommandService, DownloadsExtensions):
+    /// a row named after its source takes the chapters with no group or the
+    /// source's name, any other row only its own group. A replacement group must
+    /// pass it, or the row's scans would find nothing after the re-point.
+    /// </summary>
+    internal static bool SameScanlator(SeriesProviderEntity row, string? group) =>
+        string.IsNullOrEmpty(row.Scanlator) || row.Scanlator == row.Provider
+            ? string.IsNullOrEmpty(group) || group == row.Provider
+            : group == row.Scanlator;
+
+    /// <summary>The accept rule of <see cref="FindReplacementAsync"/>, on what it found.</summary>
+    /// <param name="wanted">The row's own whole chapter numbers (<see cref="RowWholes"/>).</param>
+    /// <param name="sameTitle">Series ids on the new id whose title has the row title's key, measured or not.</param>
+    /// <param name="groups">The scanlator groups measured, of any of them.</param>
+    /// <param name="unreachable">A search or a read of the new id failed.</param>
+    internal static ReplacementResult JudgeReplacement(SeriesProviderEntity row, int wanted, IReadOnlyCollection<string> sameTitle,
+        IReadOnlyList<ReplacementCandidate> groups, bool unreachable)
+    {
+        ReplacementResult Fail(string status, string message, ReplacementCandidate? c = null) =>
+            new() { Status = status, Message = message, Coverage = c?.Coverage ?? 0, Chosen = c?.Details };
+        if (wanted == 0)
+            return Fail(SourceIdChanges.LowCoverage, "It lists no chapter numbers to compare with.");
+        if (sameTitle.Count == 0)
+            return unreachable
+                ? Fail(SourceIdChanges.Unreachable, "The new id could not be searched.")
+                : Fail(SourceIdChanges.NoMatch, $"No series named '{row.Title}' on the new id.");
+        if (sameTitle.Count > 1)
+            return Fail(SourceIdChanges.Ambiguous, $"{sameTitle.Count} series named '{row.Title}' on the new id.");
+        string id = sameTitle.First();
+        List<ReplacementCandidate> mine = groups.Where(g => g.MihonId == id).ToList();
+        if (mine.Count == 0)
+            return unreachable
+                ? Fail(SourceIdChanges.Unreachable, "Its chapters could not be read.")
+                : Fail(SourceIdChanges.NoMatch, "It lists no chapters.");
+        ReplacementCandidate? pick = mine.Where(g => SameScanlator(row, g.Scanlator))
+            .OrderByDescending(g => g.Coverage)
+            .FirstOrDefault();
+        if (pick == null)
+            return Fail(SourceIdChanges.NoMatch, $"Only other groups list it ({string.Join(", ", mine.Select(g => g.Scanlator))}).");
+        if (pick.Suspect)
+            return Fail(SourceIdChanges.NoMatch, "It lists far more chapters than the series has: likely another work.", pick);
+        if (pick.Coverage < GoodEnough)
+            return Fail(SourceIdChanges.LowCoverage, $"It lists {pick.Coverage:P0} of the row's chapters.", pick);
+        return new ReplacementResult { Status = SourceIdChanges.Matched, Coverage = pick.Coverage, Chosen = pick.Details };
+    }
+
+    /// <summary>
+    /// Points <paramref name="row"/> at <paramref name="chosen"/> and merges its
+    /// chapter list by exact (decimal) number. A chapter on both takes the new
+    /// link and index and its paywall and give-up state starts over (a lock only
+    /// where there is no file: the new site's scan sets it again). Its file,
+    /// download state, deletion marks and name stay. A number only the new id
+    /// lists is added as a scan adds it; one only the row has stays as it is.
+    /// Title, provider, scanlator, priority, flags, cutoff and switched-off state
+    /// are not touched. Works on a detached copy too, for the dry run.
+    /// </summary>
+    internal static RepointCounts ApplyRepoint(SeriesProviderEntity row, ProviderSeriesDetails chosen, string? thumbnailUrl, DateTime now)
+    {
+        row.MihonProviderId = chosen.MihonProviderId;
+        row.MihonId = chosen.MihonId;
+        row.BridgeItemInfo = chosen.BridgeItemInfo;
+        row.Url = chosen.Url;
+        if (!string.IsNullOrEmpty(thumbnailUrl))
+            row.ThumbnailUrl = thumbnailUrl;
+        row.IsUninstalled = false;
+        row.IsLocal = false;
+        row.ConsecutiveErrorCount = 0;
+        row.LastErrorDate = null;
+
+        var incoming = new Dictionary<decimal, Chapter>();
+        foreach (Chapter c in chosen.Chapters)
+        {
+            if (c.Number is decimal n)
+                incoming.TryAdd(n, c);
+        }
+        int matched = 0, unmatched = 0, unmatchedFiles = 0;
+        var have = new HashSet<decimal>();
+        foreach (Chapter c in row.Chapters)
+        {
+            if (c.Number is not decimal n || !incoming.TryGetValue(n, out Chapter? nc))
+            {
+                unmatched++;
+                if (!string.IsNullOrEmpty(c.Filename))
+                    unmatchedFiles++;
+                continue;
+            }
+            have.Add(n);
+            c.Url = nc.Url;
+            c.ProviderIndex = nc.ProviderIndex;
+            c.LockedCheckedAt = null;
+            c.GaveUpAt = null;
+            c.GiveUpCount = 0;
+            if (string.IsNullOrEmpty(c.Filename))
+                c.IsLocked = false;
+            matched++;
+        }
+        bool established = row.Chapters.Count > 0;
+        int added = 0;
+        foreach (Chapter nc in chosen.Chapters)
+        {
+            if (nc.Number is not decimal n || !have.Add(n))
+                continue;
+            row.Chapters.Add(new Chapter
+            {
+                Name = nc.Name,
+                Number = n,
+                ProviderUploadDate = nc.ProviderUploadDate,
+                Url = nc.Url,
+                ProviderIndex = nc.ProviderIndex,
+                DateFetched = established ? now : (ModelExtensions.HasRealUploadDate(nc.ProviderUploadDate) ? nc.ProviderUploadDate : null),
+                ShouldDownload = row.ContinueAfterChapter < n || row.ContinueAfterChapter == null,
+            });
+            added++;
+        }
+        row.ChapterCount = row.Chapters.Count;
+        return new RepointCounts(matched, added, unmatched, unmatchedFiles);
+    }
+
+    /// <summary>
+    /// Downloads the re-pointed row's first scan would queue if the site lists
+    /// what was measured: the scan's own selection on <paramref name="series"/>
+    /// (a detached copy holding the re-pointed <paramref name="row"/>). None for
+    /// a switched-off row or a paused series: they are not scanned.
+    /// </summary>
+    internal static int FirstScanDownloads(SeriesEntity series, SeriesProviderEntity row, ProviderSeriesDetails chosen, bool downloadAll, bool allowLocked)
+    {
+        if (row.IsDisabled || series.PauseDownloads)
+            return 0;
+        List<ParsedChapter> listing = chosen.Chapters.Where(c => c.Number != null)
+            .Select(c => SeriesCommandService.ChapterToParsedChapter(c, row))
+            .ToList();
+        return series.GenerateDownloadsFromChapterData(row, listing, downloadAll, allowLocked).Count;
+    }
+
+    /// <summary>
+    /// Re-downloads the next priority-upgrade pass (a priority change, or Apply
+    /// to All) would queue from <paramref name="row"/> once it is live again: the
+    /// holder rule of SeriesCommandService.QueuePriorityUpgradesAsync, change one,
+    /// change all. A better source that lists a chapter takes it first, so this
+    /// is what the row adds to the pass. Measured, never queued: the re-point
+    /// runs no such pass.
+    /// </summary>
+    /// <param name="loginProviders">Providers the owner has a working site login for: their paid chapters count.</param>
+    internal static int UpgradeExposure(SeriesEntity series, SeriesProviderEntity row, IReadOnlySet<string> loginProviders)
+    {
+        Dictionary<decimal, int> holders = series.Sources
+            .Where(sp => !sp.IsUninstalled)
+            .SelectMany(sp => sp.Chapters
+                .Where(c => c.Number != null && !c.IsDeleted && !string.IsNullOrEmpty(c.Filename))
+                .Select(c => (number: c.Number!.Value, priority: sp.Priority)))
+            .GroupBy(x => x.number)
+            .ToDictionary(g => g.Key, g => g.Min(x => x.priority));
+        int count = 0;
+        foreach (SeriesProviderEntity sp in series.Sources.Where(DownloadSourceSelector.CanDownloadFrom).OrderBy(p => p.Priority))
+        {
+            bool allowLocked = loginProviders.Contains(sp.Provider);
+            foreach (Chapter c in sp.Chapters)
+            {
+                if (c.Number == null || c.IsDeleted || !string.IsNullOrEmpty(c.Filename))
+                    continue;
+                if (!holders.TryGetValue(c.Number.Value, out int holderPriority) || holderPriority <= sp.Priority)
+                    continue;
+                if (!allowLocked && (c.IsLocked || ModelExtensions.IsLockedChapterName(c.Name)))
+                    continue;
+                holders[c.Number.Value] = sp.Priority;
+                if (sp.Id == row.Id)
+                    count++;
+            }
+        }
+        return count;
+    }
 }
+
+/// <summary>One scanlator group of a series on the new id, as measured against the row.</summary>
+internal sealed record ReplacementCandidate(string MihonId, string? Scanlator, double Coverage, bool Suspect, ProviderSeriesDetails? Details);
+
+/// <summary>
+/// What <see cref="SourceMigrationService.FindReplacementAsync"/> found: one of
+/// SourceIdChanges' statuses (matched, ambiguous, no-match, low-coverage,
+/// unreachable), the group to re-point to when matched.
+/// </summary>
+public sealed class ReplacementResult
+{
+    public string Status { get; init; } = "";
+    public string? Message { get; init; }
+    public double Coverage { get; init; }
+    public ProviderSeriesDetails? Chosen { get; init; }
+}
+
+/// <summary>What a re-point did to the row's chapter list. Unmatched rows keep their old link; UnmatchedFiles of them hold a file.</summary>
+public readonly record struct RepointCounts(int Matched, int Added, int Unmatched, int UnmatchedFiles);

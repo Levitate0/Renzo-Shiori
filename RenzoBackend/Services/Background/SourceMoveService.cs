@@ -1,7 +1,11 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RenzoBackend.Data;
+using RenzoBackend.Models.Database;
 using RenzoBackend.Services.Bridge;
 using RenzoBackend.Services.Providers;
+using RenzoBackend.Services.Series;
+using RenzoBackend.Services.Settings;
 using RenzoBackend.Services.SiteAuth;
 
 namespace RenzoBackend.Services.Background;
@@ -29,6 +33,15 @@ namespace RenzoBackend.Services.Background;
 /// The rewrite is plain SQL REPLACE, so it never overwrites a concurrent save
 /// with stale data; a save that lands in between can at worst put an old link
 /// back, which the next pass fixes. Idempotent, so it simply runs periodically.
+///
+/// Also follows a source to its new id. An extension can change a source's id
+/// (a new versionId when the site changed too much to keep its links: Valir
+/// Scans on 2026-08-28, Asmodeus Scans on 2026-10-15), and every library row on
+/// the old id then goes uninstalled and stops updating, silently; the host pass
+/// never sees it, since it follows one id. See <see cref="SourceIdChanges"/> for
+/// how a change is recognised and FollowIdChangesAsync for what is done about
+/// it. Off by default: "SourceIdFollow": "apply" in appsettings turns it on,
+/// otherwise each pass only logs what it would do.
 /// </summary>
 public class SourceMoveService : BackgroundService
 {
@@ -81,10 +94,38 @@ public class SourceMoveService : BackgroundService
         }
     }
 
-    /// <summary>One pass over every installed source. Returns how many sources were moved.</summary>
+    /// <summary>
+    /// One pass over every installed source: host moves, then id changes, each
+    /// on its own so a failure in one never stops the other. Returns how many
+    /// sources were moved to a new host.
+    /// </summary>
     public async Task<int> RunOnceAsync(CancellationToken token)
     {
         using IServiceScope scope = _scopeFactory.CreateScope();
+        int moved = 0;
+        try
+        {
+            moved = await MoveHostsAsync(scope, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Source address check failed");
+        }
+        try
+        {
+            await FollowIdChangesAsync(scope, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Source id check failed");
+        }
+        return moved;
+    }
+
+    private async Task<int> MoveHostsAsync(IServiceScope scope, CancellationToken token)
+    {
         AppDbContext db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         SourceHostsService hosts = scope.ServiceProvider.GetRequiredService<SourceHostsService>();
         MihonBridgeService mihon = scope.ServiceProvider.GetRequiredService<MihonBridgeService>();
@@ -164,6 +205,231 @@ public class SourceMoveService : BackgroundService
             }
         }
         return moved;
+    }
+
+    // ----- id changes -----
+
+    /// <summary>Library rows looked at per pass: each can cost a few calls to the source.</summary>
+    private const int RowsPerPass = 50;
+
+    /// <summary>The row left the old id meanwhile (re-pointed, removed): nothing to remember.</summary>
+    private const string Gone = "gone";
+
+    /// <summary>
+    /// Follows sources an extension update gave a new id (SourceIdChanges). The
+    /// users who had the old id enabled get the new one, and each library row on
+    /// the old id is re-pointed in place at its series on the new id once that is
+    /// found with confidence (SourceMigrationService.FindReplacementAsync and
+    /// RepointAsync). "SourceIdFollow" in appsettings: "log" (the default) reads
+    /// and measures everything and changes nothing; "apply" does it.
+    ///
+    /// A re-pointed row is no longer on the old id, so success needs no record.
+    /// Failures are kept in source-id-follow.local.json so a row is not searched
+    /// again every pass: unreachable backs off, the rest are tried a week apart
+    /// and after three tries left to the owner, with one warning.
+    /// </summary>
+    private async Task FollowIdChangesAsync(IServiceScope scope, CancellationToken token)
+    {
+        IConfiguration config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+        AppDbContext db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        MihonBridgeService mihon = scope.ServiceProvider.GetRequiredService<MihonBridgeService>();
+
+        List<ProviderStorageEntity> providers = await db.Providers.AsNoTracking().ToListAsync(token).ConfigureAwait(false);
+        List<SourceIdChange> changes = SourceIdChanges.Detect(providers, mihon.ListExtensions(), mihon.ListOnlineRepositories());
+        if (changes.Count == 0)
+            return;
+
+        bool apply = string.Equals(config["SourceIdFollow"], "apply", StringComparison.OrdinalIgnoreCase);
+        string runtimeDir = config["runtimeDirectory"] ?? ".";
+        string stateFile = Path.Combine(runtimeDir, "source-id-follow.local.json");
+        string undoFile = Path.Combine(runtimeDir, "source-id-follow.undo.jsonl");
+        Dictionary<string, SourceIdChanges.FollowState> state = ReadFollowState(stateFile);
+        bool stateChanged = false;
+        int budget = RowsPerPass;
+
+        foreach (SourceIdChange change in changes)
+        {
+            token.ThrowIfCancellationRequested();
+            var rows = await db.SeriesProviders.AsNoTracking()
+                .Where(p => p.MihonProviderId == change.OldProviderId && !p.IsUnknown && p.MihonId != null && p.MihonId != "")
+                .OrderBy(p => p.SeriesId)
+                .Select(p => new { p.Id, p.SeriesId })
+                .ToListAsync(token).ConfigureAwait(false);
+            List<Guid> users = await UsersToCarryAsync(db, change, token).ConfigureAwait(false);
+            // Followed already: the old id stays in the extension's history, so say nothing.
+            if (rows.Count == 0 && users.Count == 0)
+                continue;
+
+            string versions = Versions(change);
+            _logger.LogInformation("{Provider} ({Lang}) has a new source id: {Old} → {New} ({Versions}); {Rows} library rows still on the old id{Mode}.",
+                change.Name, change.Language, change.OldSourceId, change.NewSourceId, versions, rows.Count,
+                apply ? "" : "; SourceIdFollow is \"log\", so nothing is changed");
+            await CarryUserSourcesAsync(db, change, users, apply, token).ConfigureAwait(false);
+
+            ProviderStorageEntity target = providers.First(p => p.MihonProviderId == change.NewProviderId);
+            foreach (var r in rows)
+            {
+                string key = r.Id.ToString();
+                state.TryGetValue(key, out SourceIdChanges.FollowState? before);
+                if (!SourceIdChanges.Due(before, change, DateTime.UtcNow))
+                    continue;
+                if (budget == 0)
+                    break;
+                budget--;
+
+                string status;
+                try
+                {
+                    status = await FollowRowAsync(scope, change, target, r.SeriesId, r.Id, versions, apply, undoFile, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Following {Provider} to its new id failed for series {Series}", change.Name, r.SeriesId);
+                    status = SourceIdChanges.Unreachable;
+                }
+                if (status is SourceIdChanges.Matched or Gone)
+                {
+                    stateChanged |= state.Remove(key);
+                    continue;
+                }
+                SourceIdChanges.FollowState after = SourceIdChanges.Next(before, change, status, DateTime.UtcNow);
+                if (after.Status == SourceIdChanges.Manual)
+                    _logger.LogWarning(
+                        "{Provider}: series {Series} could not be followed to the new id after {Tries} tries; it needs a manual migration. Its row stays on the old id.",
+                        change.Name, r.SeriesId, after.Attempts);
+                state[key] = after;
+                stateChanged = true;
+            }
+        }
+        // A dry run leaves no trace but its log.
+        if (apply && stateChanged)
+            WriteFollowState(stateFile, state);
+    }
+
+    /// <summary>One row: superseded, or looked for on the new id and, when matched, re-pointed (or, in log mode, measured).</summary>
+    private async Task<string> FollowRowAsync(IServiceScope scope, SourceIdChange change, ProviderStorageEntity target, Guid seriesId, Guid rowId,
+        string versions, bool apply, string undoFile, CancellationToken token)
+    {
+        AppDbContext db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SourceMigrationService migration = scope.ServiceProvider.GetRequiredService<SourceMigrationService>();
+        UserContentPreferencesService prefs = scope.ServiceProvider.GetRequiredService<UserContentPreferencesService>();
+
+        // Untracked: the measuring below changes this copy, never the stored row.
+        SeriesEntity? series = await db.Series.Include(s => s.Sources).AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
+        SeriesProviderEntity? row = series?.Sources.FirstOrDefault(p => p.Id == rowId);
+        if (series == null || row == null || row.MihonProviderId != change.OldProviderId)
+            return Gone;
+        // Already on the new id too (added by hand): two rows are never merged automatically.
+        if (series.Sources.Any(p => p.MihonProviderId == change.NewProviderId))
+        {
+            _logger.LogWarning("{Provider}: '{Series}' already has a row on the new id; its row on the old id is left as it is.",
+                change.Name, series.Title);
+            return SourceIdChanges.Superseded;
+        }
+
+        ReplacementResult found = await migration.FindReplacementAsync(seriesId, rowId, target, series.OwnerId, token).ConfigureAwait(false);
+        if (found.Status != SourceIdChanges.Matched || found.Chosen == null)
+        {
+            _logger.LogInformation("{Provider}: '{Series}' not followed to the new id: {Status}. {Message}",
+                change.Name, series.Title, found.Status, found.Message);
+            return found.Status == SourceIdChanges.Matched ? SourceIdChanges.NoMatch : found.Status;
+        }
+
+        // What the re-point would set off, on this copy: the first scan's
+        // downloads, and the re-downloads the next priority-upgrade pass (a
+        // priority change, Apply to All) would queue from the row once it is live.
+        int files = row.Chapters.Count(c => !string.IsNullOrEmpty(c.Filename));
+        RepointCounts counts = SourceMigrationService.ApplyRepoint(row, found.Chosen, null, DateTime.UtcNow);
+        Guid owner = series.OwnerId;
+        // The scan's own rule for queuing paid chapters (SeriesCommandService.OwnerHasSiteLoginAsync), per source.
+        HashSet<string> logins = (await db.SiteCredentials.AsNoTracking()
+            .Where(c => (c.Status == "ok" || c.Status == "manual_cookie") && (owner == Guid.Empty || c.UserId == owner))
+            .Select(c => c.Provider)
+            .ToListAsync(token).ConfigureAwait(false)).ToHashSet(StringComparer.Ordinal);
+        bool downloadAll = (await prefs.ForOwnerOfAsync(seriesId, token).ConfigureAwait(false)).DownloadAllChapters;
+        int firstScan = SourceMigrationService.FirstScanDownloads(series, row, found.Chosen, downloadAll, logins.Contains(row.Provider));
+        int exposure = SourceMigrationService.UpgradeExposure(series, row, logins);
+
+        if (apply)
+        {
+            RepointCounts? done = await migration.RepointAsync(seriesId, rowId, change.OldProviderId, found.Chosen, undoFile, token).ConfigureAwait(false);
+            if (done == null)
+            {
+                _logger.LogInformation("{Provider}: '{Series}' changed meanwhile; it is looked at again next pass.", change.Name, series.Title);
+                return Gone;
+            }
+            counts = done.Value;
+        }
+        _logger.LogInformation(
+            "{Provider}: {Done} row {Row} of '{Series}' from {Old} to {New} ({Versions}), matched '{Title}' at {Coverage:P0}{Disabled}. " +
+            "{Files} files stay on the row; {Matched} chapters relinked, {Added} added, {Unmatched} not listed any more ({UnmatchedFiles} with a file). " +
+            "First scan queues {FirstScan} downloads; a priority-upgrade pass would queue {Exposure} re-downloads from it.",
+            change.Name, apply ? "re-pointed" : "would re-point", rowId, series.Title, change.OldSourceId, change.NewSourceId, versions,
+            found.Chosen.Title, found.Coverage, row.IsDisabled ? " (switched off, stays off)" : "",
+            files, counts.Matched, counts.Added, counts.Unmatched, counts.UnmatchedFiles, firstScan, exposure);
+        return SourceIdChanges.Matched;
+    }
+
+    /// <summary>The users who have the old id enabled and not the new one.</summary>
+    private static Task<List<Guid>> UsersToCarryAsync(AppDbContext db, SourceIdChange change, CancellationToken token) =>
+        db.UserProviders.AsNoTracking()
+            .Where(u => u.MihonProviderId == change.OldProviderId
+                && !db.UserProviders.Any(n => n.UserId == u.UserId && n.MihonProviderId == change.NewProviderId))
+            .Select(u => u.UserId).Distinct()
+            .ToListAsync(token);
+
+    /// <summary>Everyone who had the old id enabled gets the new one, so the source stays in their Search and Browse.</summary>
+    private async Task CarryUserSourcesAsync(AppDbContext db, SourceIdChange change, List<Guid> users, bool apply, CancellationToken token)
+    {
+        if (users.Count == 0)
+            return;
+        if (apply)
+        {
+            foreach (Guid user in users)
+                db.UserProviders.Add(new UserProviderEntity { Id = Guid.NewGuid(), UserId = user, MihonProviderId = change.NewProviderId });
+            await db.SaveChangesAsync(token).ConfigureAwait(false);
+        }
+        _logger.LogInformation("{Provider}: {Done} the new id for {Count} user(s): {Users}.",
+            change.Name, apply ? "enabled" : "would enable", users.Count, string.Join(", ", users));
+    }
+
+    /// <summary>"versionId 1→2" when the ids are the usual hash of small versionIds; evidence for the log only.</summary>
+    private static string Versions(SourceIdChange change)
+    {
+        int? from = SourceIdChanges.VersionOf(change.Name, change.Language, change.OldSourceId);
+        int? to = SourceIdChanges.VersionOf(change.Name, change.Language, change.NewSourceId);
+        return from != null && to != null ? $"versionId {from}→{to}" : "versionId unknown";
+    }
+
+    private Dictionary<string, SourceIdChanges.FollowState> ReadFollowState(string file)
+    {
+        try
+        {
+            if (!File.Exists(file))
+                return new();
+            return JsonSerializer.Deserialize<Dictionary<string, SourceIdChanges.FollowState>>(File.ReadAllText(file)) ?? new();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read {File}", file);
+            return new();
+        }
+    }
+
+    private void WriteFollowState(string file, Dictionary<string, SourceIdChanges.FollowState> state)
+    {
+        try
+        {
+            string tmp = file + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(tmp, file, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not write {File}", file);
+        }
     }
 
     private static async Task<string?> LiveHostAsync(MihonBridgeService mihon, List<string> providerIds, CancellationToken token)

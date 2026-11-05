@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Services.Downloads;
+using RenzoBackend.Services.Search;
 using RenzoBackend.Services.Series;
 using Xunit;
 
@@ -76,5 +77,94 @@ public class SourceMigrationTests
         Assert.Equal(280m, SourceMigrationService.Latest([278m, 279m, 280m, 1000m]));
         Assert.Equal(1m, SourceMigrationService.Latest([1m]));
         Assert.Null(SourceMigrationService.Latest([]));
+    }
+
+    // ----- following a source to its new id: the accept rule -----
+
+    private static SeriesProviderEntity Row(string scanlator = "Valir Scans") => new()
+    {
+        Id = Guid.NewGuid(),
+        Provider = "Valir Scans",
+        Scanlator = scanlator,
+        Title = "A Baby Cat Who Commands the Dog Clan",
+        Language = "en",
+    };
+
+    private static ReplacementCandidate Group(string id, double coverage, string? scanlator = "Valir Scans", bool suspect = false) =>
+        new(id, scanlator, coverage, suspect, new ProviderSeriesDetails { MihonId = id, Title = "A Baby Cat Who Commands the Dog Clan" });
+
+    [Fact]
+    public void One_exact_title_listing_the_rows_chapters_is_accepted()
+    {
+        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 1.0)], unreachable: false);
+        Assert.Equal("matched", r.Status);
+        Assert.Equal("cat", r.Chosen!.MihonId);
+    }
+
+    [Fact]
+    public void Two_series_with_the_rows_title_are_never_picked_from()
+    {
+        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), 35, ["cat", "cat2"], [Group("cat", 1.0)], unreachable: false);
+        Assert.Equal(("ambiguous", null), (r.Status, r.Chosen));
+    }
+
+    [Fact]
+    public void Coverage_below_nine_in_ten_is_not_enough()
+    {
+        Assert.Equal("low-coverage", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 0.85)], false).Status);
+        Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 0.9)], false).Status);
+    }
+
+    [Fact]
+    public void A_suspect_match_is_rejected()
+    {
+        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 1.0, suspect: true)], false).Status);
+    }
+
+    [Fact]
+    public void A_row_with_nothing_to_compare_is_never_matched()
+    {
+        Assert.Equal("low-coverage", SourceMigrationService.JudgeReplacement(Row(), 0, ["cat"], [Group("cat", 1.0)], false).Status);
+        Assert.Empty(SourceMigrationService.RowWholes(Row()));
+    }
+
+    [Fact]
+    public void Another_scanlator_group_is_rejected()
+    {
+        // The row's scans keep only its own group, so they would find nothing.
+        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 1.0, "Other Group")], false).Status);
+        // Of several groups, the row's own is the one measured.
+        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"],
+            [Group("cat", 1.0, "Other Group"), Group("cat", 0.95, "Valir Scans")], false);
+        Assert.Equal(("matched", 0.95), (r.Status, r.Coverage));
+        Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row("Team X"), 35, ["cat"], [Group("cat", 1.0, "Team X")], false).Status);
+    }
+
+    [Fact]
+    public void The_scanlator_rule_is_the_scans_own()
+    {
+        Assert.True(SourceMigrationService.SameScanlator(Row(), "Valir Scans"));
+        Assert.True(SourceMigrationService.SameScanlator(Row(""), ""));
+        Assert.True(SourceMigrationService.SameScanlator(Row(""), "Valir Scans"));
+        Assert.False(SourceMigrationService.SameScanlator(Row(), "Team X"));
+        Assert.False(SourceMigrationService.SameScanlator(Row("Team X"), "Valir Scans"));
+    }
+
+    [Fact]
+    public void A_site_that_could_not_be_searched_is_unreachable_not_a_miss()
+    {
+        Assert.Equal("unreachable", SourceMigrationService.JudgeReplacement(Row(), 35, [], [], unreachable: true).Status);
+        Assert.Equal("unreachable", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [], unreachable: true).Status);
+        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), 35, [], [], unreachable: false).Status);
+    }
+
+    [Fact]
+    public void Only_distinctive_other_names_are_searched()
+    {
+        var row = Source("Valir Scans", "The Father and the Daughter", "Alternative Names: Dear; Appa Ttal Iyagi");
+        var s = new SeriesEntity { Title = "Like Father, Like Daughter", Sources = [row, Source("MangaHub", "Like Father, Like Daughter", null)] };
+        Assert.Contains("Dear", AltTitles.Parse(row.Description));
+        Assert.Equal(["The Father and the Daughter", "Like Father, Like Daughter", "Appa Ttal Iyagi"],
+            SourceMigrationService.ReplacementNames(s, row));
     }
 }
