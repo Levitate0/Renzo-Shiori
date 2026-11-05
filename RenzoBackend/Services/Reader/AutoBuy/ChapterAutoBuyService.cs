@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Mihon.ExtensionsBridge.Core.Runtime.Sidecar;
 using RenzoBackend.Data;
 using RenzoBackend.Extensions;
+using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Services.SiteAuth;
@@ -75,25 +76,60 @@ public class ChapterAutoBuyService
         _logger = logger;
     }
 
+    /// <summary>What a purchase needs once the checks pass.</summary>
+    private sealed record Plan(SeriesEntity Series, Guid OwnerId, SeriesProviderEntity Source, Chapter Chapter,
+        SiteCredentialEntity Cred, SidecarProcessManager Sidecar);
+
+    /// <summary>
+    /// The answer that needs no browser, or null when there is a purchase to try:
+    /// auto-buy off, not the owner, a failure remembered, no source to buy from,
+    /// no login for it, no browser. The reader gets these at once (AutoBuyRunner),
+    /// so it never shows "buying" for a chapter that won't be bought.
+    /// </summary>
+    public async Task<AutoBuyResultDto?> PrecheckAsync(Guid seriesId, decimal chapterNumber, UserEntity? requester, CancellationToken token, bool dryRun = false) =>
+        (await PlanAsync(seriesId, chapterNumber, requester, dryRun, token).ConfigureAwait(false)).Answer;
+
     public async Task<AutoBuyResultDto> TryBuyAsync(Guid seriesId, decimal chapterNumber, UserEntity? requester, CancellationToken token, bool dryRun = false)
+    {
+        var (answer, plan) = await PlanAsync(seriesId, chapterNumber, requester, dryRun, token).ConfigureAwait(false);
+        if (answer != null || plan == null)
+            return answer ?? Fail("unavailable", "Couldn't work out where to buy this chapter.");
+
+        if (!await Gate.WaitAsync(TimeSpan.FromMinutes(3), token).ConfigureAwait(false))
+            return Fail("unavailable", "Another chapter is being bought right now. Try again in a moment.", plan.Source.Provider);
+        try
+        {
+            AutoBuyResultDto result = await BuyAsync(plan.Sidecar, seriesId, chapterNumber, plan.OwnerId, plan.Source.Provider, plan.Chapter.Url!, plan.Cred, dryRun, token)
+                .ConfigureAwait(false);
+            _logger.LogInformation("Auto-buy {Series} ch {Chapter} on {Provider}: {Status} {Reason}",
+                plan.Series.Title, chapterNumber, plan.Source.Provider, result.Status, result.Reason ?? "");
+            return result.Status == "bought" || dryRun ? result : Remember(seriesId, chapterNumber, result);
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
+    private async Task<(AutoBuyResultDto? Answer, Plan? Plan)> PlanAsync(Guid seriesId, decimal chapterNumber, UserEntity? requester, bool dryRun, CancellationToken token)
     {
         SeriesEntity? series = await _db.Series.AsNoTracking().Include(s => s.Sources)
             .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
         if (series == null)
-            return Fail("unavailable", "Series not found.");
+            return (Fail("unavailable", "Series not found."), null);
 
         // Coins and site logins belong to the series' owner.
         Guid ownerId = series.OwnerId;
         if (ownerId != Guid.Empty && requester != null && requester.Id != ownerId)
-            return new AutoBuyResultDto { Status = "off", Reason = "not-owner" };
+            return (new AutoBuyResultDto { Status = "off", Reason = "not-owner" }, null);
         UserEntity? owner = ownerId == Guid.Empty ? requester
             : await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, token).ConfigureAwait(false);
         bool enabled = series.AutoBuyPaidChapters ?? owner?.GetAutoBuyPaidChapters() ?? false;
         if (!enabled && !dryRun)
-            return new AutoBuyResultDto { Status = "off" };
+            return (new AutoBuyResultDto { Status = "off" }, null);
 
         if (!dryRun && RecentFailures.TryGetValue((seriesId, chapterNumber), out var recent) && DateTime.UtcNow - recent.At < FailureMemory)
-            return recent.Result;
+            return (recent.Result, null);
 
         // Sources holding this chapter, paid ones first, then by priority.
         var holders = series.Sources
@@ -105,7 +141,7 @@ public class ChapterAutoBuyService
             .ThenBy(x => x.p.Priority)
             .ToList();
         if (holders.Count == 0)
-            return Remember(seriesId, chapterNumber, Fail("unavailable", "None of this series' sources has a link for this chapter to buy it from."));
+            return (Remember(seriesId, chapterNumber, Fail("unavailable", "None of this series' sources has a link for this chapter to buy it from.")), null);
 
         List<SiteCredentialEntity> creds = await _db.SiteCredentials.AsNoTracking()
             .Where(c => (c.Status == "ok" || c.Status == "manual_cookie") && (ownerId == Guid.Empty || c.UserId == ownerId))
@@ -115,28 +151,14 @@ public class ChapterAutoBuyService
         if (pick.cred == null)
         {
             string site = holders[0].p.Provider;
-            return Remember(seriesId, chapterNumber, Fail("no-login",
-                $"You aren't signed in to {site}. Add your {site} login under Settings → Site logins so chapters can be bought there.", site));
+            return (Remember(seriesId, chapterNumber, Fail("no-login",
+                $"You aren't signed in to {site}. Add your {site} login under Settings → Site logins so chapters can be bought there.", site)), null);
         }
 
-        SidecarProcessManager? sidecar = _services.GetService(typeof(SidecarProcessManager)) as SidecarProcessManager;
-        if (sidecar == null)
-            return Fail("unavailable", "Auto-buy needs the extension host's browser, which isn't running.", pick.p.Provider);
+        if (_services.GetService(typeof(SidecarProcessManager)) is not SidecarProcessManager sidecar)
+            return (Fail("unavailable", "Auto-buy needs the extension host's browser, which isn't running.", pick.p.Provider), null);
 
-        if (!await Gate.WaitAsync(TimeSpan.FromMinutes(3), token).ConfigureAwait(false))
-            return Fail("unavailable", "Another chapter is being bought right now. Try again in a moment.", pick.p.Provider);
-        try
-        {
-            AutoBuyResultDto result = await BuyAsync(sidecar, seriesId, chapterNumber, ownerId, pick.p.Provider, pick.c!.Url!, pick.cred, dryRun, token)
-                .ConfigureAwait(false);
-            _logger.LogInformation("Auto-buy {Series} ch {Chapter} on {Provider}: {Status} {Reason}",
-                series.Title, chapterNumber, pick.p.Provider, result.Status, result.Reason ?? "");
-            return result.Status == "bought" || dryRun ? result : Remember(seriesId, chapterNumber, result);
-        }
-        finally
-        {
-            Gate.Release();
-        }
+        return (null, new Plan(series, ownerId, pick.p, pick.c!, pick.cred, sidecar));
     }
 
     private async Task<AutoBuyResultDto> BuyAsync(SidecarProcessManager sidecar, Guid seriesId, decimal chapterNumber, Guid ownerId,

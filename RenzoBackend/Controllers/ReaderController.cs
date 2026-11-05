@@ -248,7 +248,7 @@ public class ReaderController : ControllerBase
     {
         if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
         var runner = HttpContext.RequestServices.GetRequiredService<Services.Reader.AutoBuy.AutoBuyRunner>();
-        return Ok(runner.Start(seriesId, chapter, CurrentUser, dryRun && IsOwnerLevel));
+        return Ok(await runner.StartAsync(seriesId, chapter, CurrentUser, dryRun && IsOwnerLevel, token).ConfigureAwait(false));
     }
 
     [HttpGet("auto-buy")]

@@ -23,11 +23,27 @@ public class AutoBuyRunner
     public AutoBuyResultDto? Status(Guid seriesId, decimal chapter) =>
         _runs.TryGetValue((seriesId, chapter), out AutoBuyResultDto? r) ? r : null;
 
-    /// <summary>Starts a purchase, or returns the one already running for this chapter.</summary>
-    public AutoBuyResultDto Start(Guid seriesId, decimal chapter, UserEntity? requester, bool dryRun)
+    /// <summary>
+    /// Starts a purchase, or returns the one already running for this chapter.
+    /// The checks that need no browser come first, so auto-buy being off (or a
+    /// reason it can't buy) is answered at once: "running" is what the readers
+    /// show as "Auto-buy is buying this chapter…", and it used to come back for
+    /// every paid chapter, auto-buy on or not, until the first poll said "off".
+    /// </summary>
+    public async Task<AutoBuyResultDto> StartAsync(Guid seriesId, decimal chapter, UserEntity? requester, bool dryRun, CancellationToken token)
     {
-        var running = new AutoBuyResultDto { Status = "running" };
         var key = (seriesId, chapter);
+        if (_runs.TryGetValue(key, out AutoBuyResultDto? existing) && existing.Status == "running")
+            return existing;
+        using (IServiceScope scope = _scopes.CreateScope())
+        {
+            AutoBuyResultDto? answer = await scope.ServiceProvider.GetRequiredService<ChapterAutoBuyService>()
+                .PrecheckAsync(seriesId, chapter, requester, token, dryRun).ConfigureAwait(false);
+            if (answer != null)
+                return _runs.AddOrUpdate(key, answer, (_, old) => old.Status == "running" ? old : answer);
+        }
+
+        var running = new AutoBuyResultDto { Status = "running" };
         AutoBuyResultDto current = _runs.AddOrUpdate(key, running,
             (_, old) => old.Status == "running" ? old : running);
         if (!ReferenceEquals(current, running))
