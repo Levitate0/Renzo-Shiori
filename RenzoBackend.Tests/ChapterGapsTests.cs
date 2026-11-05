@@ -3,7 +3,7 @@ using Xunit;
 
 namespace RenzoBackend.Tests;
 
-/// <summary>Missing-chapter labels (the owner's four examples, 2026-11-04, and the live library's traps).</summary>
+/// <summary>Missing-chapter labels (the owner's examples, 2026-11-04, numbering that shifts for a stretch of the list, and the live library's traps).</summary>
 public class ChapterGapsTests
 {
     private static string Gaps(params decimal[] listed) => Gaps(listed, null);
@@ -12,6 +12,8 @@ public class ChapterGapsTests
         string.Join(" ", ChapterGaps.Find(listed, agree)
             .OrderBy(kv => kv.Key)
             .SelectMany(kv => kv.Value.Select(r => $"{kv.Key}:{r.From}-{r.To}x{r.Count}")));
+
+    private static decimal[] Wholes(int from, int to) => [.. Enumerable.Range(from, to - from + 1).Select(i => (decimal)i)];
 
     [Fact]
     public void A_whole_number_with_nothing_under_it() =>
@@ -97,4 +99,67 @@ public class ChapterGapsTests
         // Komi-san: two sources list 333 and 333.2, neither 333.1.
         Assert.Equal("", string.Join(" ", ChapterGaps.Find([332, 332.1m, 332.2m, 333, 333.2m, 334], null, new HashSet<int> { 333 })
             .SelectMany(kv => kv.Value.Select(r => r.From.ToString()))));
+
+    // The owner, 2026-11-04: "the chapter naming scheme changes i.e. 28.1 then 29.1",
+    // "they can shift for parts of the chapter list".
+
+    [Fact]
+    public void A_point_one_stretch_after_a_whole_is_the_numbering() =>
+        // EXP Is Golden: MangaKatana 1-27 with 3.5, MangaHub "Chapter 28", "Chapter 28.1", "Chapter 29.1".
+        Assert.Equal("", Gaps([.. Wholes(1, 9), 3.5m, 10, 10.1m, 10.2m, 11, 12, 12.1m, 12.2m, .. Wholes(13, 28), 28.1m, 29.1m]));
+
+    [Fact]
+    public void A_point_one_stretch_can_shift_back_to_wholes() =>
+        Assert.Equal("", Gaps([.. Wholes(1, 9), 10, 10.1m, 10.2m, .. Wholes(11, 28), 28.1m, 29.1m, 30.1m, 31, 32]));
+
+    [Fact]
+    public void A_point_one_stretch_needs_no_whole_at_its_start() =>
+        Assert.Equal("", Gaps([.. Wholes(1, 27), 28.1m, 29.1m, 30.1m, 31, 32, 33]));
+
+    [Fact]
+    public void A_hole_in_a_point_one_stretch_is_in_its_scheme() =>
+        Assert.Equal("29.1:30.1-30.1x1", Gaps([.. Wholes(1, 27), 28.1m, 29.1m, 31.1m, 32.1m]));
+
+    [Fact]
+    public void A_longer_hole_in_a_point_one_stretch_is_one_label() =>
+        Assert.Equal("29.1:30.1-31.1x2", Gaps([.. Wholes(1, 27), 28.1m, 29.1m, 32.1m, 33.1m]));
+
+    [Fact]
+    public void A_lone_point_one_after_split_chapters_with_wholes_lacks_its_whole() =>
+        // 39.2 may simply not be out yet: the owner's 27, 27.1, 27.2, 28.1, 28.2 → 28.
+        Assert.Equal("38.2:39-39x1", Gaps(36, 37, 37.1m, 37.2m, 38, 38.1m, 38.2m, 39.1m));
+
+    [Fact]
+    public void A_stretch_back_to_wholes_is_judged_on_its_own() =>
+        // 4 of the 5 part chapters have no whole, so the old series-wide vote missed
+        // it; 24 and 25 are split chapters after the .1 stretch, and 24 has one.
+        Assert.Equal("24.2:25-25x1", Gaps(18, 19, 20.1m, 21.1m, 22.1m, 23, 24, 24.1m, 24.2m, 25.1m, 25.2m));
+
+    [Fact]
+    public void A_stretch_of_parts_with_no_whole_is_a_scheme() =>
+        // 6-8 switch to parts with no whole and 9 switches back: not 6, 7 and 8 missing.
+        Assert.Equal("", Gaps(4, 5, 5.1m, 5.2m, 6.1m, 6.2m, 7.1m, 7.2m, 8.1m, 8.2m, 9, 10));
+
+    [Fact]
+    public void A_whole_listed_between_ends_a_stretch()
+    {
+        // A Tale of the Secret Saint with its 30 gone: 30.1 and 40.1 are ten chapters apart, no stretch.
+        Assert.Equal("29:30-30x1", Gaps([.. Wholes(1, 21), 21.1m, 21.2m, 21.3m, .. Wholes(22, 29), 30.1m, .. Wholes(31, 40), 40.1m, 41]));
+        // The owner's 27, 27.1, 27.2, 28.1, 28.2 → 28, with a newest 32 out in parts only.
+        Assert.Equal("27.2:28-28x1", Gaps([1, 1.1m, 1.2m, .. Wholes(2, 27), 27.1m, 27.2m, 28.1m, 28.2m, 29, 30, 31, 32.1m, 32.2m]));
+    }
+
+    [Fact]
+    public void A_hole_does_not_end_a_stretch() =>
+        // 7 is gone from the stretch of parts with no whole; 6 is still in it.
+        Assert.Equal("6.2:7-7x1", Gaps(4, 5, 5.1m, 5.2m, 6.1m, 6.2m, 8.1m, 8.2m, 9, 10));
+
+    [Fact]
+    public void A_point_one_alone_where_the_point_ones_have_a_whole_lacks_its_whole()
+    {
+        // The Executioner and Her Way of Life numbers 1, 1.1, 2, 2.1 … 44, 44.1.
+        Assert.Equal("12.1:13-13x1", Gaps(10, 10.1m, 11, 11.1m, 12, 12.1m, 13.1m));
+        // Different World Slow Life with its 30 gone: the next .1 has its whole.
+        Assert.Equal("29.2:30-30x1", Gaps(29, 29.1m, 29.2m, 30.1m, 31, 31.1m, 32, 32.1m, 32.2m));
+    }
 }
