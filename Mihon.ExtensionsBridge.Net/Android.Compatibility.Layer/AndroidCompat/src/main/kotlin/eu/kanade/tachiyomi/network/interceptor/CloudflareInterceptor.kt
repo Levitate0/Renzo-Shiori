@@ -35,75 +35,183 @@ class CloudflareInterceptor : Interceptor {
     private val logger = androidCompatLogger(CloudflareInterceptor::class.java)
 
     override fun intercept(chain: Interceptor.Chain): Response {
-        val originalRequest = chain.request()
+        val request = chain.request()
 
-        logger.debug { "CloudflareInterceptor is being used." }
-
-        val originalResponse = chain.proceed(originalRequest)
-
-        // Check if Cloudflare anti-bot is on
-        if (!ChallengeSolver.isChallenge(originalResponse)) {
-            return originalResponse
+        // A site whose plain requests Cloudflare refuses while it lets Chromium
+        // through: don't send the doomed one, carry it through Chromium.
+        if (ChallengeSolver.builtInEnabled && ChallengeSolver.verdict(request.url.host) == ChallengeSolver.Verdict.TRANSPORT) {
+            return try {
+                viaTransport(chain, request)
+            } catch (e: IOException) {
+                throw e
+            } catch (e: Exception) {
+                throw IOException(e)
+            }
         }
 
-        if (!Settings.flareSolverrEnabled) {
-            throw IOException("Cloudflare bypass currently disabled")
-        }
+        val sentClearance = CFClearance.clearanceCookie(request.url)
+        val originalResponse = chain.proceed(request)
+        if (ChallengeSolver.classify(originalResponse) == ChallengeSolver.Kind.NONE) return originalResponse
 
-        logger.debug { "Cloudflare anti-bot is on, CloudflareInterceptor is kicking in..." }
+        // Where Cloudflare answered, after any redirects (natomanga.com ->
+        // manganami.com). Retries resend the request this interceptor got;
+        // only the transport and the verdict use the final address.
+        val finalUrl = originalResponse.request.url
+        originalResponse.close()
 
         return try {
-            originalResponse.close()
-            // network.cookieStore.remove(originalRequest.url.toUri())
+            if (!ChallengeSolver.builtInEnabled) {
+                return external(chain, request)
+                    ?: throw IOException("Cloudflare challenge on ${finalUrl.host}; the built-in solver is off (RENZO_CF_BUILTIN=0) and the external solver didn't clear it")
+            }
+            // A clearance that was just answered with a challenge is dead.
+            ChallengeSolver.dropClearance(finalUrl, sentClearance)
+            solveAndRetry(chain, request, finalUrl)
+        } catch (e: IOException) {
+            throw e
+        } catch (e: Exception) {
+            // OkHttp's enqueue only handles IOExceptions; don't crash the app.
+            throw IOException(e)
+        }
+    }
 
+    private fun solveAndRetry(chain: Interceptor.Chain, request: Request, finalUrl: HttpUrl): Response {
+        val host = finalUrl.host
+        // Before any waiting: the solve needs the main looper and Chromium's
+        // threads, so a caller on one of them must not park on the site's lock.
+        if (!BrowserSolver.canRunHere()) {
+            throw IOException("Cloudflare challenge on $host, met on a thread the built-in solver can't wait on; try again")
+        }
+        when (ChallengeSolver.verdict(host)) {
+            ChallengeSolver.Verdict.TRANSPORT -> return viaTransport(chain, request.newBuilder().url(finalUrl).build())
+            ChallengeSolver.Verdict.NEEDS_PERSON -> return external(chain, request) ?: throw needsPerson(finalUrl)
+            ChallengeSolver.Verdict.BLOCKED -> throw blocked(finalUrl)
+            null -> {}
+        }
+
+        // One solve per site at a time (see ChallengeSolver.solveBuiltIn).
+        val outcome = runBlocking { ChallengeSolver.solveBuiltIn(finalUrl, CFClearance.clearance(finalUrl)) }
+        return when (outcome) {
+            // Someone else solved it while this one waited.
+            null -> if (ChallengeSolver.verdict(host) == null) retryWithClearance(chain, request, finalUrl) else solveAndRetry(chain, request, finalUrl)
+            BrowserSolver.Outcome.CLEARED -> retryWithClearance(chain, request, finalUrl)
+            BrowserSolver.Outcome.PASSED -> viaTransport(chain, request.newBuilder().url(finalUrl).build())
+            BrowserSolver.Outcome.BLOCKED -> throw blocked(finalUrl)
+            BrowserSolver.Outcome.NEEDS_PERSON ->
+                external(chain, request)?.also { ChallengeSolver.clearVerdict(host) } ?: throw needsPerson(finalUrl)
+            BrowserSolver.Outcome.FAILED ->
+                external(chain, request) ?: throw IOException("Cloudflare challenge on $host: the built-in solver couldn't run here; try again")
+        }
+    }
+
+    /**
+     * The request again with the jar's (new) clearance and the user agent it
+     * belongs to. Still challenged means OkHttp itself is refused there, so
+     * the site's requests go through Chromium from now on.
+     */
+    private fun retryWithClearance(chain: Interceptor.Chain, request: Request, finalUrl: HttpUrl): Response {
+        val retry = chain.proceed(
+            request.newBuilder()
+                .header("User-Agent", ChallengeSolver.userAgentFor(finalUrl.host) ?: CFClearance.currentUserAgent())
+                .build(),
+        )
+        if (ChallengeSolver.classify(retry) == ChallengeSolver.Kind.NONE) return retry
+        retry.close()
+        ChallengeSolver.setVerdict(finalUrl.host, ChallengeSolver.Verdict.TRANSPORT)
+        return viaTransport(chain, request.newBuilder().url(finalUrl).build())
+    }
+
+    /**
+     * Carries [request] through Chromium, and checks what came back: a fetch
+     * can't pass a challenge, so a challenged answer means the browser's own
+     * standing ran out. Solve once more in a real page, then try again.
+     */
+    private fun viaTransport(chain: Interceptor.Chain, request: Request, resolved: Boolean = false): Response {
+        val response = ChromiumTransport.execute(request)
+        return when (ChallengeSolver.classify(response)) {
+            ChallengeSolver.Kind.NONE -> response
+            ChallengeSolver.Kind.BLOCKED -> {
+                response.close()
+                ChallengeSolver.setVerdict(request.url.host, ChallengeSolver.Verdict.BLOCKED)
+                throw blocked(request.url)
+            }
+            ChallengeSolver.Kind.CHALLENGE -> {
+                response.close()
+                if (resolved) {
+                    ChallengeSolver.setVerdict(request.url.host, ChallengeSolver.Verdict.NEEDS_PERSON)
+                    throw needsPerson(request.url)
+                }
+                ChallengeSolver.clearVerdict(request.url.host)
+                when (runBlocking { ChallengeSolver.solveBuiltIn(request.url, CFClearance.clearance(request.url)) }) {
+                    null, BrowserSolver.Outcome.CLEARED, BrowserSolver.Outcome.PASSED -> {
+                        ChallengeSolver.setVerdict(request.url.host, ChallengeSolver.Verdict.TRANSPORT)
+                        viaTransport(chain, request, resolved = true)
+                    }
+                    BrowserSolver.Outcome.BLOCKED -> throw blocked(request.url)
+                    BrowserSolver.Outcome.NEEDS_PERSON -> throw needsPerson(request.url)
+                    BrowserSolver.Outcome.FAILED -> throw IOException("Cloudflare challenge on ${request.url.host}: the built-in solver couldn't run here; try again")
+                }
+            }
+        }
+    }
+
+    private fun needsPerson(url: HttpUrl) =
+        IOException("Cloudflare on ${url.host} wants a person to pass its check (it did not finish by itself in the built-in browser); retrying in 30 min")
+
+    private fun blocked(url: HttpUrl) =
+        IOException("Cloudflare blocks this server on ${url.host} (\"you have been blocked\"), in a real browser too; retrying in 30 min")
+
+    /** The external FlareSolverr backend, only when it is switched on. Null when it didn't help. */
+    private fun external(chain: Interceptor.Chain, originalRequest: Request): Response? {
+        if (!Settings.flareSolverrEnabled || CFClearance.externalDown()) return null
+        val retry: Request = try {
             val flareResponseFallback = Settings.flareSolverrAsResponseFallback
             val clearanceBefore = CFClearance.clearance(originalRequest.url)
             val flareResponse =
                 runBlocking {
                     CFClearance.resolveWithFlareSolver(originalRequest, !flareResponseFallback, clearanceBefore)
                 }
-                    // Another request for this site solved the challenge while
-                    // this one waited its turn: its clearance is already in the
-                    // jar, so retry with it — and with the user agent it was
-                    // issued to — instead of solving again.
-                    ?: return chain.proceed(
-                        originalRequest.newBuilder()
-                            .header("User-Agent", ChallengeSolver.userAgentFor(originalRequest.url.host) ?: CFClearance.currentUserAgent())
-                            .build(),
-                    )
-
-            if (flareResponse.message.contains("not detected", ignoreCase = true)) {
-                logger.debug { "FlareSolverr failed to detect Cloudflare challenge" }
-
-                if (flareResponseFallback &&
+            if (flareResponse == null) {
+                // Another request for this site solved the challenge while
+                // this one waited its turn: retry with its clearance and the
+                // user agent it was issued to.
+                originalRequest.newBuilder()
+                    .header("User-Agent", ChallengeSolver.userAgentFor(originalRequest.url.host) ?: CFClearance.currentUserAgent())
+                    .build()
+            } else {
+                if (flareResponse.message.contains("not detected", ignoreCase = true) &&
+                    flareResponseFallback &&
                     flareResponse.solution.status in 200..299 &&
-                    flareResponse.solution.response != null
+                    flareResponse.solution.response != null &&
+                    !flareResponse.solution.response.contains(CHROME_IMAGE_TEMPLATE_REGEX)
                 ) {
-                    val isImage = flareResponse.solution.response.contains(CHROME_IMAGE_TEMPLATE_REGEX)
-                    if (!isImage) {
-                        logger.debug { "Falling back to FlareSolverr response" }
-
-                        CFClearance.storeSolution(flareResponse)
-
-                        return originalResponse
-                            .newBuilder()
-                            .code(flareResponse.solution.status)
-                            .body(flareResponse.solution.response.toResponseBody())
-                            .build()
-                    } else {
-                        logger.debug { "FlareSolverr response is an image html template, not falling back" }
-                    }
+                    logger.debug { "Falling back to FlareSolverr response" }
+                    CFClearance.storeSolution(flareResponse)
+                    return Response.Builder()
+                        .request(originalRequest)
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(flareResponse.solution.status)
+                        .message("OK")
+                        .body(flareResponse.solution.response.toResponseBody())
+                        .build()
                 }
+                if (flareResponse.solution.status !in 200..299) return null
+                CFClearance.requestWithFlareSolverr(flareResponse, originalRequest)
             }
-
-            val request = CFClearance.requestWithFlareSolverr(flareResponse, originalRequest)
-
-            chain.proceed(request)
         } catch (e: Exception) {
-            // Because OkHttp's enqueue only handles IOExceptions, wrap the exception so that
-            // we don't crash the entire app
-            throw IOException(e)
+            // Unreachable, a 500 "error solving", a parse error: no help here.
+            if (e is java.net.ConnectException || e.message?.contains("Failed to connect", ignoreCase = true) == true) {
+                CFClearance.markExternalDown()
+            } else {
+                logger.warn { "External Cloudflare solver failed for ${originalRequest.url.host}: ${e.message?.take(200)}" }
+            }
+            return null
         }
+        // The site's own answer, outside the try: its errors are its own.
+        val response = chain.proceed(retry)
+        if (ChallengeSolver.classify(response) == ChallengeSolver.Kind.NONE) return response
+        response.close()
+        return null
     }
 
     companion object {
@@ -138,8 +246,25 @@ object CFClearance {
     private val solveSlots = kotlinx.coroutines.sync.Semaphore(2)
 
     /** The cf_clearance cookie the jar would send to [url] right now, if any. */
-    fun clearance(url: HttpUrl): String? =
-        network.cookieStore.get(url).firstOrNull { it.name in COOKIE_NAMES }?.value
+    fun clearance(url: HttpUrl): String? = clearanceCookie(url)?.value
+
+    fun clearanceCookie(url: HttpUrl): Cookie? =
+        network.cookieStore.get(url).firstOrNull { it.name in COOKIE_NAMES }
+
+    fun hostLock(host: String): Mutex = hostLocks.computeIfAbsent(host) { Mutex() }
+
+    // The external solver crash-looped for weeks (trawl: 602 restarts); every
+    // challenged request then waited out a connect failure. Skip it for two
+    // minutes after one.
+    @Volatile
+    private var externalDownUntil = 0L
+
+    fun externalDown(): Boolean = System.currentTimeMillis() < externalDownUntil
+
+    fun markExternalDown() {
+        externalDownUntil = System.currentTimeMillis() + 2 * 60_000L
+        logger.warn { "External Cloudflare solver unreachable at ${Settings.flareSolverrUrl}; skipping it for 2 min" }
+    }
 
     fun currentUserAgent(): String = network.defaultUserAgentProvider()
 

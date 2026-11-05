@@ -38,13 +38,13 @@ object SidecarPageScript {
         val steps = (req["steps"] as? JsonArray)?.map { it.jsonObject } ?: emptyList()
         if (!gate.tryAcquire(60, TimeUnit.SECONDS)) throw IllegalStateException("another page script is running")
         try {
-            return runLocked(url, req.str("userAgent"), steps)
+            return runLocked(url, req.str("userAgent"), steps, req.str("isolate")?.toBooleanStrictOrNull() == true)
         } finally {
             gate.release()
         }
     }
 
-    private fun runLocked(url: String, ua: String?, steps: List<JsonObject>): String {
+    private fun runLocked(url: String, ua: String?, steps: List<JsonObject>, isolate: Boolean): String {
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val ref = AtomicReference<android.webkit.WebView?>()
         val created = CountDownLatch(1)
@@ -57,6 +57,18 @@ object SidecarPageScript {
                 // sure?") comes out 0 px wide, so the scripts never see it.
                 w.minimumWidth = 1280
                 w.minimumHeight = 900
+                // Isolated: what this Chromium does on its own. Constructing the
+                // WebView pushes the jar's cookies into Chromium, so the site's
+                // Cloudflare cookies are dropped from Chromium (only) after that.
+                if (isolate) {
+                    (w.webViewProvider as? xyz.nulldev.androidcompat.webkit.KcefWebViewProvider)?.isolated = true
+                    runCatching {
+                        val cef = org.cef.network.CefCookieManager.getGlobalManager()
+                        val host = java.net.URI(url).host
+                        for (u in setOf("https://$host/", "https://${host.removePrefix("www.")}/"))
+                            for (name in CF_COOKIES) cef.deleteCookies(u, name)
+                    }
+                }
                 w.settings.javaScriptEnabled = true
                 w.settings.domStorageEnabled = true
                 if (!ua.isNullOrBlank()) w.settings.userAgentString = ua
@@ -99,7 +111,25 @@ object SidecarPageScript {
         return buildJsonObject {
             put("seconds", (System.currentTimeMillis() - t0) / 1000)
             put("results", buildJsonArray { results.forEach { add(it) } })
+            if (isolate) put("cfCookies", buildJsonArray { cloudflareCookies(url).forEach { add(it) } })
         }.toString()
+    }
+
+    private val CF_COOKIES = listOf("cf_clearance", "__cf_bm")
+
+    /** Names and expiry (never values) of Chromium's Cloudflare cookies for [url]. */
+    private fun cloudflareCookies(url: String): List<String> {
+        val out = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val done = CountDownLatch(1)
+        val started = runCatching {
+            org.cef.network.CefCookieManager.getGlobalManager()?.visitUrlCookies(url, true) { c, count, total, _ ->
+                if (c.name in CF_COOKIES || c.name.startsWith("cf_")) out += "${c.name}@${c.domain} exp=${c.expires}"
+                if (count >= total - 1) done.countDown()
+                true
+            } ?: false
+        }.getOrDefault(false)
+        if (started) done.await(2, TimeUnit.SECONDS)
+        return out.toList()
     }
 
     private fun isEmpty(v: String?): Boolean =

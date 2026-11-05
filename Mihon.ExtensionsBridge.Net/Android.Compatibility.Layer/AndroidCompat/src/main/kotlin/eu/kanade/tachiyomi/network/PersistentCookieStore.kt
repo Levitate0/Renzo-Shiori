@@ -100,6 +100,17 @@ class PersistentCookieStore(
         }
     }
 
+    /** Removes one stored cookie (same domain, name and path). */
+    fun remove(cookie: Cookie) {
+        lock.withLock {
+            val cookies = cookieMap[cookie.domain] ?: return@withLock
+            val kept = cookies.filterNot { it.name == cookie.name && it.path == cookie.path }
+            if (kept.size == cookies.size) return@withLock
+            cookieMap[cookie.domain] = kept
+            saveToDisk(setOf(cookie.domain))
+        }
+    }
+
     fun get(url: HttpUrl): List<Cookie> =
         lock.withLock {
             // A domain matches itself and its subdomains only. A bare endsWith

@@ -49,7 +49,7 @@ internal object KcefFidelity {
      * page, which CSP forbids on sites like valirscans.org, where it answered
      * nothing at all.
      */
-    fun evaluate(browser: CefBrowser, script: String): CompletableFuture<String?> {
+    fun evaluate(browser: CefBrowser, script: String, userGesture: Boolean = true): CompletableFuture<String?> {
         val out = CompletableFuture<String?>()
         val client = runCatching { browser.devToolsClient }.getOrNull()
         if (client == null || client.isClosed) {
@@ -60,7 +60,10 @@ internal object KcefFidelity {
             put("expression", script)
             put("returnByValue", true)
             put("awaitPromise", false)
-            put("userGesture", true)
+            // Android's evaluateJavascript runs with a user gesture. Shiori's own
+            // probes must not: on a Cloudflare page that would hand the check a
+            // human-interaction signal nobody gave.
+            put("userGesture", userGesture)
         }.toString()
         runCatching {
             client.executeDevToolsMethod("Runtime.evaluate", params).whenComplete { res, err ->
@@ -133,7 +136,7 @@ internal object KcefFidelity {
 
     /** Completes true when the main frame shows a Cloudflare challenge. */
     fun isChallengePage(browser: CefBrowser): CompletableFuture<Boolean> =
-        evaluate(browser, "document.title + '\\u0001' + (typeof window._cf_chl_opt !== 'undefined')").thenApply { r ->
+        evaluate(browser, "document.title + '\\u0001' + (typeof window._cf_chl_opt !== 'undefined')", userGesture = false).thenApply { r ->
             val text = r?.let { runCatching { Json.parseToJsonElement(it) as? JsonPrimitive }.getOrNull()?.contentOrNull } ?: ""
             val title = text.substringBefore('\u0001')
             eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.isChallengeTitle(title) || text.endsWith("\u0001true")

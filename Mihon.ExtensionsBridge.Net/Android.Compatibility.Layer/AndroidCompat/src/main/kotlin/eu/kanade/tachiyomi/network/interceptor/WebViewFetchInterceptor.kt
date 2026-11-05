@@ -114,12 +114,13 @@ class WebViewFetchInterceptor(
     ) {
         @JavascriptInterface
         fun onResponse(
-            statusCode: Int,
+            // KCEF hands every JavaScript-interface argument over as a string.
+            statusCode: String,
             statusMessage: String,
             headers: String,
             bodyBase64: String,
         ) {
-            response.statusCode = statusCode
+            response.statusCode = statusCode.toIntOrNull() ?: 0
             response.statusMessage = statusMessage
             response.headers = headers
             response.bodyBase64 = bodyBase64
@@ -282,7 +283,7 @@ class WebViewFetchInterceptor(
 
                     // Call Android interface
                     window.android.onResponse(
-                        response.status,
+                        String(response.status),
                         response.statusText,
                         headersJson,
                         bodyBase64
@@ -326,7 +327,7 @@ class WebViewFetchInterceptor(
 
             // Establish context by using the same domain as the request
             val baseUrl = loadUrl ?: "${request.url.scheme}://${request.url.host}/"
-            webview.loadDataWithBaseURL(baseUrl, " ", "text/html", null, null)
+            webview.loadDataWithBaseURL(baseUrl, " ", "text/html", "utf-8", null)
         }
 
         // Wait for response. The destroy must be scheduled even if await() is

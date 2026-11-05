@@ -125,6 +125,14 @@ object SidecarServer {
         // needs from the network layer, and what a WebView actually ends up on.
         server.createContext("/debug/probe") { ex -> guarded(ex) { SidecarProbe.probe(sources.values.toList(), readObj(ex)) } }
         server.createContext("/debug/webview") { ex -> guarded(ex) { SidecarProbe.webView(readObj(ex)) } }
+        server.createContext("/debug/cloudflare") { ex ->
+            guarded(ex) {
+                buildJsonObject {
+                    put("sites", buildJsonObject { eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.describe().forEach { (k, v) -> put(k, v) } })
+                    put("transport", eu.kanade.tachiyomi.network.interceptor.ChromiumTransport.status())
+                }.toString()
+            }
+        }
         server.createContext("/debug/fetch") { ex -> guarded(ex) { SidecarProbe.fetchVia(src(readObj(ex).also { lastDebug = it }), lastDebug!!) } }
 
         server.start()

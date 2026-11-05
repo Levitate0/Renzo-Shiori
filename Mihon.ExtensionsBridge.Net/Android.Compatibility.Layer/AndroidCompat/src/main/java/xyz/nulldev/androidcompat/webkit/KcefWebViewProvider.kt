@@ -145,7 +145,7 @@ class KcefWebViewProvider(
      */
     private fun afterMainFrameLoad(cefBrowser: CefBrowser, url: String, report: () -> Unit) {
         val httpUrl = url.toHttpUrlOrNull()
-        if (httpUrl == null) {
+        if (httpUrl == null || isolated) {
             report()
             return
         }
@@ -167,6 +167,23 @@ class KcefWebViewProvider(
         }
     }
     private var initialRequestData: InitialRequestData? = null
+
+    /**
+     * A browser that stands on its own: no per-site user agent from a stored
+     * clearance, no external solver when it meets a challenge, and nothing it
+     * earns copied into the HTTP jar. For measuring what this Chromium passes
+     * by itself, and for the built-in solver, which harvests explicitly.
+     */
+    @Volatile
+    var isolated: Boolean = false
+
+    /**
+     * Shiori's own Cloudflare browsers (one solve at a time, at most two
+     * transport pages) must not be reaped mid-request by the MAX_LIVE
+     * overflow; they still count toward it, and the idle sweep still applies.
+     */
+    @Volatile
+    var exemptFromOverflow: Boolean = false
 
     private var cefClient: CefClient? = null
     private var browser: CefBrowser? = null
@@ -563,11 +580,14 @@ class KcefWebViewProvider(
             val stale = liveProviders.entries
                 .filter { now - it.value > IDLE_TTL_MS }
                 .map { it.key }
-            val overflow = if (liveProviders.size - stale.size > MAX_LIVE) {
-                liveProviders.entries
-                    .filterNot { stale.contains(it.key) }
+            // Shiori's own Cloudflare browsers count toward the budget (each is
+            // a renderer like any other) but are never the ones reaped for it.
+            val counted = liveProviders.entries.filterNot { stale.contains(it.key) }
+            val overflow = if (counted.size > MAX_LIVE) {
+                counted
+                    .filterNot { it.key.exemptFromOverflow }
                     .sortedBy { it.value }
-                    .take(liveProviders.size - stale.size - MAX_LIVE)
+                    .take(counted.size - MAX_LIVE)
                     .map { it.key }
             } else {
                 emptyList()
@@ -1163,7 +1183,7 @@ class KcefWebViewProvider(
             // Measured: the same clearance, Chrome UA -> "Just a moment..." for
             // 50 s; solver UA -> the page in 1 s. Same rule as the HTTP side
             // (UserAgentInterceptor).
-            val clearanceUa = runCatching { java.net.URI(request.url).host }.getOrNull()
+            val clearanceUa = if (isolated) null else runCatching { java.net.URI(request.url).host }.getOrNull()
                 ?.let { eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.userAgentFor(it) }
             request.setHeaderByName("user-agent", clearanceUa ?: settings.userAgentString, true)
 
@@ -1913,7 +1933,7 @@ class KcefWebViewProvider(
         }
 
         val source = script.removePrefix("javascript:")
-        KcefFidelity.evaluate(activeBrowser, source).whenComplete { result, _ ->
+        KcefFidelity.evaluate(activeBrowser, source, userGesture = !isolated).whenComplete { result, _ ->
             if (result != null) {
                 handler.post { cb.onReceiveValue(result) }
             } else {
