@@ -468,7 +468,7 @@ namespace RenzoBackend.Services.Providers
                     .ToListAsync(token).ConfigureAwait(false);
                 var localProviders = named.Where(sp => !OnAnotherIdOfPackage(sp.MihonProviderId, mihonProviderId)).ToList();
                 if (localProviders.Count < named.Count)
-                    _logger.LogInformation("Leaving {Count} local provider(s) of '{Source}' on another id of its package to the source id follower",
+                    _logger.LogInformation("Leaving {Count} local provider(s) of '{Source}' on another id of its package alone: they belong to a dropped id, which only the source id follower may move (or a manual migration)",
                         named.Count - localProviders.Count, sourceName);
 
                 if (localProviders.Count == 0)

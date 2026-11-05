@@ -159,7 +159,8 @@ public class SourceMigrationTests
         // A versionId bump can come with a new casing of the name; a chapter with
         // no group is listed under it, and the scan files it under the row's name.
         Assert.True(SourceMigrationService.SameScanlator(Row(), "Valir scans", "Valir scans"));
-        Assert.True(SourceMigrationService.SameScanlator(Row(""), "VALIR SCANS", "Valir scans"));
+        Assert.False(SourceMigrationService.SameScanlator(Row(""), "VALIR SCANS", "Valir scans"));
+        Assert.True(SourceMigrationService.SameScanlator(Row(""), "Valir scans", "Valir scans"));
         Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row(), "Valir scans", 35, ["cat"], [Group("cat", 1.0, "Valir scans")], false).Status);
         // Only the source's own name, and only for a row named after the source.
         Assert.False(SourceMigrationService.SameScanlator(Row(), "Valir scans", null));

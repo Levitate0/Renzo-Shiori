@@ -1117,16 +1117,17 @@ public sealed class SourceMigrationService
     /// source's name, any other row only its own group. A replacement group must
     /// pass it, or the row's scans would find nothing after the re-point.
     ///
-    /// For a row named after its source, the new id's own name counts too, in
-    /// any case: a versionId bump can come with a recased name, and a chapter
-    /// with no group is listed under the new name (AugmentSeriesAsync) while the
-    /// scan files it under the row's.
+    /// For a row named after its source, the new id's own name counts too: a
+    /// versionId bump can come with a recased name, and a chapter with no group
+    /// is listed under the new name (AugmentSeriesAsync) while the scan files it
+    /// under the row's. Exactly that name, not any casing of it: chapters the
+    /// site itself labels "VALIR SCANS" are dropped by the scan's exact match.
     /// </summary>
     /// <param name="targetProvider">The new id's source name.</param>
     internal static bool SameScanlator(SeriesProviderEntity row, string? group, string? targetProvider) =>
         string.IsNullOrEmpty(row.Scanlator) || row.Scanlator == row.Provider
             ? string.IsNullOrEmpty(group) || group == row.Provider
-                || (!string.IsNullOrEmpty(targetProvider) && string.Equals(group, targetProvider, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(targetProvider) && group == targetProvider)
             : group == row.Scanlator;
 
     /// <summary>The accept rule of <see cref="FindReplacementAsync"/>, on what it found.</summary>
