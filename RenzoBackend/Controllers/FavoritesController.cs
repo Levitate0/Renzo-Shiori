@@ -39,6 +39,17 @@ public class RenameFavoriteListDto
     public string Name { get; set; } = string.Empty;
 }
 
+public class ReorderFavoriteListsDto
+{
+    /// <summary>Whose sub-lists are being ordered; null for the top-level tabs.</summary>
+    [JsonPropertyName("parentId")]
+    public Guid? ParentId { get; set; }
+
+    /// <summary>Every sibling list's id, in the new order.</summary>
+    [JsonPropertyName("ids")]
+    public List<Guid> Ids { get; set; } = [];
+}
+
 public class FavoriteItemRequestDto
 {
     [JsonPropertyName("seriesId")]
@@ -117,17 +128,17 @@ public class FavoritesController : ControllerBase
             FavoriteListEntity? parent = await _db.FavoriteLists
                 .FirstOrDefaultAsync(l => l.Id == dto.ParentId && l.UserId == userId, token).ConfigureAwait(false);
             if (parent == null)
-                return BadRequest(new { error = "Parent list not found" });
+                return BadRequest(new { error = "Parent collection not found" });
             // One nesting level: sub-lists can't have children of their own.
             if (parent.ParentId != null)
-                return BadRequest(new { error = "Sub-lists cannot contain further sub-lists" });
+                return BadRequest(new { error = "Sub-collections cannot contain further sub-collections" });
         }
 
         bool duplicate = await _db.FavoriteLists.AnyAsync(
             l => l.UserId == userId && l.ParentId == dto.ParentId && l.Name.ToLower() == name.ToLower(),
             token).ConfigureAwait(false);
         if (duplicate)
-            return BadRequest(new { error = "A list with that name already exists here" });
+            return BadRequest(new { error = "A collection with that name already exists here" });
 
         int sortOrder = await _db.FavoriteLists
             .Where(l => l.UserId == userId && l.ParentId == dto.ParentId)
@@ -166,6 +177,57 @@ public class FavoritesController : ControllerBase
             return NotFound();
 
         list.Name = name;
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        return Ok(new { success = true });
+    }
+
+    /// <summary>
+    /// Puts one set of siblings in a new order: the top-level tabs (parentId
+    /// null), or one tab's sub-lists. Each list's SortOrder becomes its index
+    /// in <c>ids</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>ids</c> must be exactly that sibling set, no more and no less. A client
+    /// whose copy is stale (a list created or deleted on another device since it
+    /// last fetched) would otherwise write an order for only part of the set,
+    /// and the lists it never saw would keep SortOrders that now collide with
+    /// the new ones and sort in among them by accident. Any mismatch is
+    /// therefore a 409 and nothing is written: the client refetches and moves
+    /// again from what is really there. The same check refuses another user's
+    /// ids, which can never be in this user's sibling set.
+    /// The literal "order" can't reach RenameAsync: that route only matches a guid.
+    /// </remarks>
+    [HttpPut("order")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(400)]
+    [ProducesResponseType(409)]
+    public async Task<ActionResult> ReorderAsync([FromBody] ReorderFavoriteListsDto dto, CancellationToken token = default)
+    {
+        List<Guid> ids = dto.Ids ?? [];
+        if (ids.Count == 0)
+            return BadRequest(new { error = "At least one collection id is required" });
+        if (ids.Distinct().Count() != ids.Count)
+            return BadRequest(new { error = "Each collection id may appear only once" });
+        Guid userId = CurrentUserId;
+
+        if (dto.ParentId != null)
+        {
+            bool parentExists = await _db.FavoriteLists
+                .AnyAsync(l => l.Id == dto.ParentId && l.UserId == userId, token).ConfigureAwait(false);
+            if (!parentExists)
+                return BadRequest(new { error = "Parent collection not found" });
+        }
+
+        Dictionary<Guid, FavoriteListEntity> siblings = await _db.FavoriteLists
+            .Where(l => l.UserId == userId && l.ParentId == dto.ParentId)
+            .ToDictionaryAsync(l => l.Id, token).ConfigureAwait(false);
+        // ids has no duplicates, so equal counts plus every id being a sibling
+        // means the two sets are the same.
+        if (ids.Count != siblings.Count || !ids.All(siblings.ContainsKey))
+            return Conflict(new { error = "The collections changed elsewhere — refresh and try again" });
+
+        for (int i = 0; i < ids.Count; i++)
+            siblings[ids[i]].SortOrder = i;
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
         return Ok(new { success = true });
     }

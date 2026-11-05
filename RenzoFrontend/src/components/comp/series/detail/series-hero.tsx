@@ -10,7 +10,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useSettings } from "@/lib/api/hooks/useSettings";
+import { toast } from "sonner";
+import { useReorderCategories, useSettings } from "@/lib/api/hooks/useSettings";
+import { useAuth } from "@/contexts/auth-context";
+import { DragHandle, SortableRow, SortableRows } from "@/components/comp/sortable-rows";
 import { ResponsiveModal, ResponsiveModalBody } from "@/components/ui/responsive-modal";
 import { copyToClipboard } from "@/lib/utils/clipboard";
 import { SeriesStatus, type SeriesExtendedInfo } from "@/lib/api/types";
@@ -398,7 +401,7 @@ export function SeriesHero({
               {/* Built-in reader — primary action; resumes where the user left off */}
               <ReadSeriesButton seriesId={series.id} />
 
-              {/* Favourites — personal lists, available to every user level */}
+              {/* Collections — personal lists, available to every user level */}
               <FavoriteButton seriesId={series.id} />
 
               {/* Track on connected trackers (MAL/AniList/…) — self-hides when
@@ -610,38 +613,98 @@ export function SeriesHero({
           description="Move this series into a category folder."
         >
           <ResponsiveModalBody>
-            <div className="flex flex-col gap-1.5 py-1">
-              {categories.map((cat) => (
-                <Button
-                  key={cat}
-                  variant={cat === currentCategory ? "default" : "outline"}
-                  className="justify-start gap-2"
-                  onClick={() => {
-                    setCategoryDialogOpen(false);
-                    if (cat !== currentCategory) onSetCategory(cat);
-                  }}
-                >
-                  <Check className={`h-4 w-4 ${cat === currentCategory ? "opacity-100" : "opacity-0"}`} />
-                  {cat}
-                </Button>
-              ))}
-              {currentCategory && (
-                <Button
-                  variant="ghost"
-                  className="justify-start gap-2 text-muted-foreground"
-                  onClick={() => {
-                    setCategoryDialogOpen(false);
-                    onSetCategory(null);
-                  }}
-                >
-                  <span className="h-4 w-4" />
-                  Uncategorized
-                </Button>
-              )}
-            </div>
+            <CategoryPicker
+              categories={categories}
+              currentCategory={currentCategory}
+              onPick={(cat) => {
+                setCategoryDialogOpen(false);
+                if (cat !== currentCategory) onSetCategory(cat);
+              }}
+            />
           </ResponsiveModalBody>
         </ResponsiveModal>
       )}
     </section>
+  );
+}
+
+/**
+ * The Category picker's list. Pick a row to move the series there. The owner
+ * also gets a grip on each row to reorder the categories; a drop saves at once
+ * (the order is the server's, so the library filter and Settings follow it).
+ * Hub twin: SeriesHeroSection.kt `CategoryPicker`.
+ */
+function CategoryPicker({
+  categories,
+  currentCategory,
+  onPick,
+}: {
+  categories: string[];
+  currentCategory: string | null;
+  onPick: (category: string | null) => void;
+}) {
+  const { canOwner } = useAuth();
+  const reorder = useReorderCategories();
+
+  const option = (cat: string) => (
+    <Button
+      variant={cat === currentCategory ? "default" : "outline"}
+      className="min-w-0 flex-1 justify-start gap-2"
+      onClick={() => onPick(cat)}
+    >
+      <Check className={`h-4 w-4 ${cat === currentCategory ? "opacity-100" : "opacity-0"}`} />
+      <span className="truncate">{cat}</span>
+    </Button>
+  );
+
+  return (
+    <div className="flex flex-col gap-1.5 py-1">
+      {canOwner ? (
+        <SortableRows
+          ids={categories}
+          onReorder={(order) =>
+            reorder.mutate(order, {
+              onError: (err) =>
+                toast.error("Failed to reorder categories", {
+                  description: err instanceof Error ? err.message : undefined,
+                }),
+            })
+          }
+          className="flex flex-col gap-1.5"
+        >
+          {categories.map((cat) => (
+            <SortableRow key={cat} id={cat} className="flex items-center gap-1">
+              {(handle) => (
+                <>
+                  <DragHandle handle={handle} label={`Drag to reorder ${cat}`} />
+                  {option(cat)}
+                </>
+              )}
+            </SortableRow>
+          ))}
+        </SortableRows>
+      ) : (
+        categories.map((cat) => (
+          <div key={cat} className="flex">
+            {option(cat)}
+          </div>
+        ))
+      )}
+      {currentCategory && (
+        <Button
+          variant="ghost"
+          className="justify-start gap-2 text-muted-foreground"
+          onClick={() => onPick(null)}
+        >
+          <span className="h-4 w-4" />
+          Uncategorized
+        </Button>
+      )}
+      {canOwner && categories.length > 1 && (
+        <p className="pt-1 text-xs text-muted-foreground">
+          Drag a grip to reorder the categories. The library and Settings use the same order.
+        </p>
+      )}
+    </div>
   );
 }

@@ -37,6 +37,30 @@ export const useUpdateSettings = () => {
   });
 };
 
+/**
+ * Reorders the categories from the series page's Category picker. The new
+ * order shows at once; a failure puts the saved one back.
+ */
+export const useReorderCategories = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (order: string[]) => settingsService.reorderCategories(order),
+    onMutate: async (order) => {
+      await queryClient.cancelQueries({ queryKey: ['settings'], exact: true });
+      const previous = queryClient.getQueryData<Settings>(['settings']);
+      if (previous) queryClient.setQueryData<Settings>(['settings'], { ...previous, categories: order });
+      return { previous };
+    },
+    onError: (_err, _order, context) => {
+      if (context?.previous) queryClient.setQueryData(['settings'], context.previous);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'], exact: true });
+    },
+  });
+};
+
 /** The calling user's own content preferences (language order, 18+, download-all). */
 export const useContentPreferences = () => {
   return useQuery({

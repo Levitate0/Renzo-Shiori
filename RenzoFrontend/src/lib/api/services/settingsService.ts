@@ -39,6 +39,15 @@ export const settingsService = {
     return apiClient.put<SettingsUpdateResponse>('/api/settings', settingsPayload);
   },
 
+  /**
+   * Saves a new order for the categorized-folder categories, and nothing else
+   * (owner only). `order` must hold every saved category; a different set is a
+   * 409 because the list changed elsewhere.
+   */
+  async reorderCategories(order: string[]): Promise<string[]> {
+    return apiClient.put<string[]>('/api/settings/categories/order', order);
+  },
+
   /** Sends a test email through the configured SMTP relay (owner only). */
   async sendTestEmail(to: string): Promise<{ success: boolean; message: string }> {
     return apiClient.post<{ success: boolean; message: string }>('/api/settings/test-email', { to });

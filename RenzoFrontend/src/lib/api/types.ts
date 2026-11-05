@@ -1179,9 +1179,10 @@ export interface OAuthAuthorizeResponse {
 }
 
 /**
- * A user-defined favorites list. Top-level lists (parentId null) are the
- * broad tabs ("Manhwa favourites"); lists with a parentId are sub-lists
- * grouped under that tab.
+ * A user-defined collection (named "favorites" in the API and DB). Top-level
+ * collections (parentId null) are the broad groups ("Manhwa"); ones with a
+ * parentId are sub-collections grouped under that collection. sortOrder is
+ * the position among its siblings.
  */
 export interface FavoriteList {
   id: string;

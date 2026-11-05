@@ -55,6 +55,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { RadioGroup, RadioGroupItem } from "../ui/radio-group";
 import { SettingsSectionNav } from "@/components/comp/layout/settings-section-nav";
+import { DragHandle, SortableRow, SortableRows } from "@/components/comp/sortable-rows";
 
 // Helper functions
 const isValidUrl = (url: string): boolean => {
@@ -898,24 +899,40 @@ function StorageSection({
             <Label>Categories</Label>
             <p className="text-muted-foreground mb-2 text-sm">
               Define categories for organizing series. Category will be
-              selectable when adding series.
+              selectable when adding series. Drag to reorder them; the library
+              and the series page list them in this order.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <SortableRows
+            ids={localSettings.categories || []}
+            onReorder={(categories) =>
+              setLocalSettings((prev) => ({ ...prev, categories }))
+            }
+            className="space-y-1.5"
+          >
             {(localSettings.categories || []).map((category) => (
-              <Badge
+              <SortableRow
                 key={category}
-                variant="secondary"
-                className="flex items-center gap-1"
+                id={category}
+                className="flex items-center gap-2 rounded-md border border-border/60 bg-card px-2 py-1.5"
               >
-                {category}
-                <X
-                  className="hover:text-destructive h-3 w-3 cursor-pointer"
-                  onClick={() => removeCategory(category)}
-                />
-              </Badge>
+                {(handle) => (
+                  <>
+                    <DragHandle handle={handle} label={`Drag to reorder ${category}`} />
+                    <span className="min-w-0 flex-1 truncate text-sm">{category}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${category}`}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-destructive"
+                      onClick={() => removeCategory(category)}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                )}
+              </SortableRow>
             ))}
-          </div>
+          </SortableRows>
           <div className="flex items-center gap-2">
             <Input
               placeholder="Enter category name"

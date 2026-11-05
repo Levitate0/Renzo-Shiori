@@ -228,6 +228,24 @@ namespace RenzoBackend.Controllers
         }
 
         /// <summary>
+        /// PUT /api/settings/categories/order — reorders the categorized-folder categories without
+        /// a full settings save, for the drag handles in the series page's Category picker. The
+        /// body is every saved category in the new order; a different set answers 409 (the list
+        /// changed elsewhere) and the caller reloads. The order is the one the library filter, the
+        /// Category picker and Settings show.
+        /// </summary>
+        [HttpPut("categories/order")]
+        [RequireUserLevel(UserLevel.Owner)]
+        [ProducesResponseType(typeof(string[]), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(object), StatusCodes.Status409Conflict)]
+        public async Task<ActionResult<string[]>> ReorderCategoriesAsync([FromBody][Required] string[] order, CancellationToken token = default)
+        {
+            if (!await _settingsService.SaveCategoryOrderAsync(order, token).ConfigureAwait(false))
+                return Conflict(new { error = "The categories changed since this list was loaded. Reload and try again." });
+            return Ok(order);
+        }
+
+        /// <summary>
         /// Sends a test email through the configured SMTP relay so the owner can
         /// verify their settings (and diagnose provider/ISP issues) before relying
         /// on password-reset emails.

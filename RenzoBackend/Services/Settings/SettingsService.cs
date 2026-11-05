@@ -371,6 +371,36 @@ namespace RenzoBackend.Services.Settings
             }
         }
         
+        /// <summary>
+        /// Saves a new order for the categorized-folder categories and nothing else, so a reorder
+        /// made from the series page can't put back other settings a stale page still holds.
+        /// <paramref name="order"/> must be exactly the categories already saved, in a new order.
+        /// Returns false when it isn't: a category was added or removed elsewhere since the caller
+        /// loaded the list.
+        /// </summary>
+        public async Task<bool> SaveCategoryOrderAsync(string[] order, CancellationToken token = default)
+        {
+            SettingsDto current = await GetSettingsAsync(token).ConfigureAwait(false);
+            if (!IsReorderOf(order, current.Categories ?? []))
+                return false;
+
+            const string name = nameof(EditableSettingsDto.Categories);
+            string value = string.Join('|', order);
+            SettingEntity? row = await _db.Settings.FirstOrDefaultAsync(s => s.Name == name, token).ConfigureAwait(false);
+            if (row == null)
+                _db.Settings.Add(new SettingEntity { Name = name, Value = value });
+            else
+                row.Value = value;
+            await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            current.Categories = order;
+            return true;
+        }
+
+        /// <summary>True when <paramref name="order"/> holds exactly the <paramref name="saved"/> names, each as often.</summary>
+        internal static bool IsReorderOf(string[] order, string[] saved) =>
+            order.Length == saved.Length
+            && order.Order(StringComparer.Ordinal).SequenceEqual(saved.Order(StringComparer.Ordinal), StringComparer.Ordinal);
+
         public async Task SaveSettingsAsync(SettingsDto settings, bool force, CancellationToken token = default)
         {
             // Convert Settings to EditableSettings since the existing logic works with EditableSettings

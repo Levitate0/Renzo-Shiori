@@ -85,9 +85,11 @@ export default function RootPage() {
   const { data: favoriteLists } = useFavorites();
   const [hideAdult, toggleHideAdult] = useHideAdult();
 
-  // Favourites dropdown entries: each top-level tab followed by its indented
-  // sub-lists. Selecting a tab shows its own series plus every sub-list's
-  // (aggregate view); selecting a sub-list shows just that sub-list.
+  // Collections dropdown entries: each top-level collection followed by its
+  // indented sub-collections, both in the user's own order (sortOrder, set
+  // from the series page's Collect dialog). Selecting a collection shows its
+  // own series plus every sub-collection's (aggregate view); selecting a
+  // sub-collection shows just that sub-collection.
   const favoriteOptions = useMemo(() => {
     const lists = favoriteLists ?? [];
     const topLevel = lists.filter((l) => !l.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
@@ -102,7 +104,7 @@ export default function RootPage() {
     return options;
   }, [favoriteLists]);
 
-  // Membership set for the currently selected favourites entry.
+  // Membership set for the currently selected collections entry.
   const favoriteFilterIds = useMemo<Set<string> | null>(() => {
     if (!selectedFavList || !favoriteLists) return null;
     const list = favoriteLists.find((l) => l.id === selectedFavList);
@@ -212,11 +214,9 @@ export default function RootPage() {
 
   // Determine if the categories filter should be shown
   const showCategoriesFilter = settings?.categorizedFolders === true;
-  // Categories come from settings, sorted alphabetically
-  const categories = useMemo(() => {
-    if (!settings?.categories) return [];
-    return [...settings.categories].sort((a, b) => a.localeCompare(b));
-  }, [settings]);
+  // Categories in the order Settings keeps them (drag to reorder there or in a
+  // series' Category picker). Hub twin: LibraryScreen.kt `categories`.
+  const categories = useMemo(() => settings?.categories ?? [], [settings]);
 
   // Sorting logic for ListSeries - memoized for performance
   const sortFn = useCallback((a: SeriesInfo, b: SeriesInfo) => {
@@ -368,8 +368,8 @@ export default function RootPage() {
             </div>
           )}
 
-          {/* Favourites — user-defined tabs and sub-lists; hidden until the
-              first list is created (from a series page's Favourite button) */}
+          {/* Collections — user-defined collections and sub-collections; hidden
+              until the first one is created (from a series page's Collect button) */}
           {favoriteOptions.length > 0 && (
             <div className="w-32 sm:w-44 shrink-0">
               <Select
@@ -377,10 +377,10 @@ export default function RootPage() {
                 onValueChange={(value) => setSelectedFavList(value === "__ALL__" ? null : value)}
               >
                 <SelectTrigger className="w-full !pr-2 caret-transparent h-8 text-xs sm:text-sm">
-                  <SelectValue placeholder="Favourites" />
+                  <SelectValue placeholder="Collections" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__ALL__">Favourites: All</SelectItem>
+                  <SelectItem value="__ALL__">Collections: All</SelectItem>
                   {favoriteOptions.map((opt) => (
                     <SelectItem key={opt.id} value={opt.id}>
                       <span className="flex items-center gap-2">
