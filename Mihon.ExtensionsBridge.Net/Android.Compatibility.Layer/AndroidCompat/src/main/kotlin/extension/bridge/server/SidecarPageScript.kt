@@ -52,6 +52,11 @@ object SidecarPageScript {
             try {
                 val app = uy.kohesive.injekt.Injekt.getInstance<android.app.Application>(android.app.Application::class.java)
                 val w = android.webkit.WebView(app)
+                // A real window. Without a size Chromium lays the page out 1×1 px,
+                // and a box sized from the window (Violet's SweetAlert "Are you
+                // sure?") comes out 0 px wide, so the scripts never see it.
+                w.minimumWidth = 1280
+                w.minimumHeight = 900
                 w.settings.javaScriptEnabled = true
                 w.settings.domStorageEnabled = true
                 if (!ua.isNullOrBlank()) w.settings.userAgentString = ua

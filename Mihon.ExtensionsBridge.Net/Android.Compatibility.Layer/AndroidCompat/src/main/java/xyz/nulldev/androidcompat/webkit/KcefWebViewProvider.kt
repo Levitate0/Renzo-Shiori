@@ -229,8 +229,22 @@ class KcefWebViewProvider(
             }
         }
 
-        fun wasResized(browser: CefBrowser, width: Int, height: Int) =
+        /**
+         * JCEF's off-screen browser answers getViewRect with `browser_rect_`,
+         * which only its GL canvas's reshape ever changes. That canvas is never
+         * shown here, so the rect stays at its initial 1×1 whatever size is
+         * asked for. Set it first, as reshape does. Views that never get a size
+         * still ask for 1×1, as before.
+         */
+        private val viewRectField = runCatching {
+            Class.forName("org.cef.browser.CefBrowserOsr").getDeclaredField("browser_rect_").apply { isAccessible = true }
+        }.getOrNull()
+
+        fun wasResized(browser: CefBrowser, width: Int, height: Int) {
+            val rect = viewRectField?.takeIf { it.declaringClass.isInstance(browser) }?.get(browser) as? Rectangle
+            rect?.setBounds(0, 0, width, height)
             invoke(wasResizedMethod, browser, width, height)
+        }
 
         fun sendMouseEvent(browser: CefBrowser, event: AwtMouseEvent) =
             invoke(sendMouseEventMethod, browser, event)

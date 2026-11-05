@@ -224,6 +224,9 @@ public class ChapterAutoBuyService
                                     (string.IsNullOrEmpty(run.SiteText) ? "" : $" {site} said: \"{run.SiteText}\""), site, i.Price, i.Balance);
         if (run.SignedOutAfter)
             return Fail("signed-out", $"{site} asked to sign in when the chapter was bought, so the login Renzo Shiori holds isn't accepted there any more.", site);
+        // What the page did after the click, so a site's confirm box can be diagnosed from the log.
+        _logger.LogInformation("Auto-buy on {Site} not confirmed: pressed \"{Button}\", confirm step: {Confirm}, outcome step: {Outcome}",
+            site, i.Buttons.FirstOrDefault(), run.ConfirmStep ?? "no confirm box answered", run.OutcomeStep ?? "the button was still there");
         return Fail("not-confirmed", i.Clicked
             ? $"Pressed \"{i.Buttons.FirstOrDefault()}\" on {site}, but the chapter still doesn't open. {site} may need a step only a person can do."
             : $"The chapter page on {site} opened without a buy button, yet the chapter still doesn't load here.", site, i.Price, i.Balance);
@@ -239,7 +242,8 @@ public class ChapterAutoBuyService
         [JsonPropertyName("clicked")] public bool Clicked { get; set; }
     }
 
-    private sealed record PageRun(PageInspect? Inspect, bool NoCoins, string? SiteText, bool SignedOutAfter, string? LoginOutcome);
+    private sealed record PageRun(PageInspect? Inspect, bool NoCoins, string? SiteText, bool SignedOutAfter, string? LoginOutcome,
+        string? ConfirmStep, string? OutcomeStep);
 
     private static string Call(string fn, params object?[] args) =>
         Script.Value + "\n;window." + fn + "(" + string.Join(",", args.Select(a => JsonSerializer.Serialize(a))) + ")";
@@ -305,7 +309,8 @@ public class ChapterAutoBuyService
             }
         }
         string? loginOutcome = login != null ? Result(4) : null;
-        return new PageRun(inspect, noCoins, siteText?.Length > 200 ? siteText[..200] : siteText, signedOutAfter, loginOutcome);
+        return new PageRun(inspect, noCoins, siteText?.Length > 200 ? siteText[..200] : siteText, signedOutAfter, loginOutcome,
+            Result(inspectAt + 1), Result(inspectAt + 2));
     }
 
     /// <summary>evaluateJavascript hands back JSON: a returned string arrives quoted.</summary>
