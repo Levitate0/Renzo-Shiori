@@ -204,4 +204,18 @@ public class SourceIdChangesTests
         var s = SourceIdChanges.Next(null, Change, SourceIdChanges.Superseded, Now);
         Assert.Equal((SourceIdChanges.Superseded, Now.AddDays(7)), (s.Status, s.NextTry));
     }
+
+    [Fact]
+    public void A_reinstalls_reconnect_leaves_rows_on_a_dropped_id_to_the_follower()
+    {
+        string installed = Pkg + "|" + NewId;
+        // On the dropped id: the follower's, on firm evidence, never a fuzzy search.
+        Assert.True(ProviderManagerService.OnAnotherIdOfPackage(Pkg + "|" + OldId, installed));
+        // Never connected, on this very id, or another package's: the reconnect's, as before.
+        Assert.False(ProviderManagerService.OnAnotherIdOfPackage(null, installed));
+        Assert.False(ProviderManagerService.OnAnotherIdOfPackage("", installed));
+        Assert.False(ProviderManagerService.OnAnotherIdOfPackage(installed, installed));
+        Assert.False(ProviderManagerService.OnAnotherIdOfPackage(Pkg + ".v2|" + OldId, installed));
+        Assert.False(ProviderManagerService.OnAnotherIdOfPackage("eu.kanade.tachiyomi.extension.en.mangafire|" + OldId, installed));
+    }
 }

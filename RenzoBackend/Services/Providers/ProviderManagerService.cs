@@ -314,7 +314,8 @@ namespace RenzoBackend.Services.Providers
         /// which SourceMoveService follows to the new id. Reviving it left those
         /// rows "installed" on a source that no longer exists, and they stayed so:
         /// the cache refresh marks the id dead again but only re-uninstalls its rows
-        /// while its catalogue job is on, and a dead id's job is off.
+        /// while its catalogue job is on, and a dead id's job is off. The reconnect
+        /// leaves them alone too (<see cref="OnAnotherIdOfPackage"/>).
         /// </summary>
         private async Task ReEnableProvidersForPackageAsync(RepositoryGroup group, CancellationToken token)
         {
@@ -440,6 +441,12 @@ namespace RenzoBackend.Services.Providers
         /// Attempts to reconnect local SeriesProviders that have the exact same Provider name and Language
         /// as a newly installed source extension. Uses BridgeItemInfo first (GetDetailsAsync), then falls
         /// back to SearchAsync with the series title.
+        ///
+        /// Never a row on another id of the same package (<see cref="OnAnotherIdOfPackage"/>): that id
+        /// was dropped, its source having moved to this one (SourceIdChanges), and SourceMoveService
+        /// follows such rows only on firm evidence (one series with the row's title, its group, nine in
+        /// ten of its chapters) and in place. Taken here, it would go to whichever search result's
+        /// title came closest.
         /// </summary>
         /// <param name="mihonProviderId">The Mihon provider ID of the installed source</param>
         /// <param name="sourceName">The source provider name</param>
@@ -453,11 +460,16 @@ namespace RenzoBackend.Services.Providers
                 // Matches both:
                 //   1. Fresh local providers (no MihonProviderId) — never connected
                 //   2. Uninstalled providers (IsLocal=true, IsUninstalled=true) with preserved Mihon fields
-                var localProviders = await _db.SeriesProviders
+                // but never one on a dropped id of this package: those are the id follower's.
+                var named = await _db.SeriesProviders
                     .Where(sp => sp.IsLocal && !sp.IsUnknown &&
                                  sp.Provider == sourceName &&
                                  sp.Language == language)
                     .ToListAsync(token).ConfigureAwait(false);
+                var localProviders = named.Where(sp => !OnAnotherIdOfPackage(sp.MihonProviderId, mihonProviderId)).ToList();
+                if (localProviders.Count < named.Count)
+                    _logger.LogInformation("Leaving {Count} local provider(s) of '{Source}' on another id of its package to the source id follower",
+                        named.Count - localProviders.Count, sourceName);
 
                 if (localProviders.Count == 0)
                     return;
@@ -582,6 +594,19 @@ namespace RenzoBackend.Services.Providers
             {
                 _logger.LogError(ex, "Error reconnecting local providers for source {Source} ({Lang})", sourceName, language);
             }
+        }
+
+        /// <summary>
+        /// Whether a row points at another source id of the installed source's own
+        /// package: an id the extension dropped (SourceIdChanges). A row with no id,
+        /// on this very id, or on another package's id is not.
+        /// </summary>
+        internal static bool OnAnotherIdOfPackage(string? rowProviderId, string installedProviderId)
+        {
+            if (string.IsNullOrEmpty(rowProviderId) || rowProviderId == installedProviderId)
+                return false;
+            int bar = installedProviderId.LastIndexOf('|');
+            return bar > 0 && rowProviderId.StartsWith(installedProviderId[..(bar + 1)], StringComparison.Ordinal);
         }
 
         /// <summary>

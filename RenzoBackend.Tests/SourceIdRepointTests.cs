@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Services.Downloads;
@@ -73,7 +74,7 @@ public class SourceIdRepointTests
     private static string Kept(Chapter c) => JsonSerializer.Serialize(new
     {
         c.Number, c.Filename, c.DownloadDate, c.PageCount, c.Pages, c.ShouldDownload, c.DownloadDeleted, c.IsDeleted, c.Name,
-        c.ProviderUploadDate, c.DateFetched,
+        c.ProviderUploadDate, c.DateFetched, c.IsLocked, c.LockedCheckedAt,
     });
 
     [Fact]
@@ -118,10 +119,12 @@ public class SourceIdRepointTests
             Chapter c = row.Chapters.First(x => x.Number == n);
             Chapter nc = listing.Chapters.First(x => x.Number == n);
             Assert.Equal((nc.Url, nc.ProviderIndex), (c.Url, c.ProviderIndex));
-            Assert.Equal((null, null, 0), (c.LockedCheckedAt, c.GaveUpAt, c.GiveUpCount));
+            Assert.Equal((null, 0), (c.GaveUpAt, c.GiveUpCount));
         }
-        Assert.True(row.Chapters.First(c => c.Number == 1m).IsLocked);   // has its file: left as it is
-        Assert.False(row.Chapters.First(c => c.Number == 2m).IsLocked);  // the new site's scan decides
+        // Paid stays paid, file or not: the scan only ever unlocks, so a lock
+        // cleared here would never come back and the chapter would queue as free.
+        Assert.Equal((true, Now.AddDays(-80)), (row.Chapters.First(c => c.Number == 1m).IsLocked, row.Chapters.First(c => c.Number == 1m).LockedCheckedAt));
+        Assert.Equal((true, Now.AddDays(-80)), (row.Chapters.First(c => c.Number == 2m).IsLocked, row.Chapters.First(c => c.Number == 2m).LockedCheckedAt));
         // Unmatched: kept, with the old link.
         Assert.Equal("https://valirscans.org/series/comic/the-reason-why/chapter/22.2", row.Chapters.First(c => c.Number == 22.2m).Url);
         Assert.Equal("https://valirscans.org/series/comic/the-reason-why/chapter/99", row.Chapters.First(c => c.Number == 99m).Url);
@@ -228,5 +231,98 @@ public class SourceIdRepointTests
         // Still uninstalled (never followed): not a candidate at all.
         valir.IsUninstalled = true;
         Assert.Equal(0, SourceMigrationService.UpgradeExposure(series, valir, NoLogins));
+    }
+
+    // ----- a row already on the new id -----
+
+    private static SeriesProviderEntity OnNewId(string provider, string scanlator) => new()
+    {
+        Id = Guid.NewGuid(), Provider = provider, Scanlator = scanlator, Language = "en", MihonProviderId = NewId,
+        MihonId = NewId + "|added-by-hand",
+    };
+
+    [Fact]
+    public void Rows_of_two_groups_on_the_old_id_are_both_followed()
+    {
+        SeriesProviderEntity teamX = DeadRow(chapters: Listed(1m));
+        teamX.Scanlator = "Team X";
+        SeriesProviderEntity teamY = DeadRow(chapters: Listed(1m));
+        teamY.Scanlator = "Team Y";
+        var series = new SeriesEntity { Title = "X", Sources = [teamX, teamY] };
+        Assert.False(SourceMigrationService.Superseded(series, teamX, NewId, "Valir Scans"));
+        Assert.False(SourceMigrationService.Superseded(series, teamY, NewId, "Valir Scans"));
+
+        // Team X is followed first: Team Y's row is still followed after it.
+        ProviderSeriesDetails x = NewListing(1m);
+        x.Scanlator = "Team X";
+        SourceMigrationService.ApplyRepoint(teamX, x, null, Now);
+        Assert.Equal(NewId, teamX.MihonProviderId);
+        Assert.False(SourceMigrationService.Superseded(series, teamY, NewId, "Valir Scans"));
+
+        // A second Team X row on the old id is not: its group is on the new id already.
+        SeriesProviderEntity teamXAgain = DeadRow(chapters: Listed(1m));
+        teamXAgain.Scanlator = "Team X";
+        series.Sources.Add(teamXAgain);
+        Assert.True(SourceMigrationService.Superseded(series, teamXAgain, NewId, "Valir Scans"));
+    }
+
+    [Fact]
+    public void Only_a_row_for_the_same_group_on_the_new_id_supersedes()
+    {
+        SeriesProviderEntity old = DeadRow(chapters: Listed(1m));
+        var series = new SeriesEntity { Title = "X", Sources = [old] };
+
+        // Added by hand under the source's own name, recased by the new version.
+        SeriesProviderEntity added = OnNewId("Valir scans", "Valir scans");
+        series.Sources.Add(added);
+        Assert.True(SourceMigrationService.Superseded(series, old, NewId, "Valir scans"));
+        added.Scanlator = "";
+        Assert.True(SourceMigrationService.Superseded(series, old, NewId, "Valir scans"));
+
+        // Another group's row on the new id leaves the source's own row to be followed.
+        added.Scanlator = "Team X";
+        Assert.False(SourceMigrationService.Superseded(series, old, NewId, "Valir scans"));
+        // A row on another id entirely never counts.
+        added.Scanlator = "Valir Scans";
+        added.MihonProviderId = "eu.kanade.tachiyomi.extension.en.mangafire|1";
+        Assert.False(SourceMigrationService.Superseded(series, old, NewId, "Valir Scans"));
+    }
+
+    // ----- after the save -----
+
+    private sealed class Warnings : ILogger
+    {
+        public readonly List<string> Logged = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+                Logged.Add(formatter(state, exception));
+        }
+    }
+
+    [Fact]
+    public async Task Every_step_after_the_save_runs_whatever_the_others_do()
+    {
+        var ran = new List<string>();
+        var tokens = new List<CancellationToken>();
+        var log = new Warnings();
+        await SourceMigrationService.AfterCommitAsync(log, "Re-pointing row 1",
+            ("rescheduling its scan", c => { ran.Add("scan"); tokens.Add(c); throw new InvalidOperationException("job store down"); }),
+            ("updating the catalogue's in-library flags", async c =>
+            {
+                ran.Add("flags");
+                tokens.Add(c);
+                await Task.Yield();
+                throw new TimeoutException();
+            }),
+            ("writing renzo.json", c => { ran.Add("json"); tokens.Add(c); return Task.CompletedTask; }));
+
+        Assert.Equal(["scan", "flags", "json"], ran);
+        // No caller's token: a shutdown mid-way cannot stop one either.
+        Assert.All(tokens, t => Assert.False(t.CanBeCanceled));
+        Assert.Equal(2, log.Logged.Count);
+        Assert.Contains("rescheduling its scan failed", log.Logged[0]);
     }
 }

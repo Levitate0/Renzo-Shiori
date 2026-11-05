@@ -868,7 +868,7 @@ public sealed class SourceMigrationService
         var sameTitle = new HashSet<string>(StringComparer.Ordinal);
         var groups = new List<ReplacementCandidate>();
         bool unreachable = false;
-        ReplacementResult Verdict() => JudgeReplacement(row, wanted.Count, sameTitle, groups, unreachable);
+        ReplacementResult Verdict() => JudgeReplacement(row, target.Name, wanted.Count, sameTitle, groups, unreachable);
         if (wanted.Count == 0 || titleKey.Length == 0)
             return Verdict();
 
@@ -989,7 +989,7 @@ public sealed class SourceMigrationService
                 .FirstOrDefaultAsync(s => s.Id == seriesId, token).ConfigureAwait(false);
             SeriesProviderEntity? found = series?.Sources.FirstOrDefault(p => p.Id == rowId);
             if (series == null || found == null || found.MihonProviderId != oldProviderId
-                || series.Sources.Any(p => p.MihonProviderId == chosen.MihonProviderId))
+                || Superseded(series, found, chosen.MihonProviderId, chosen.Provider))
                 return null;
             row = found;
             oldMihonId = row.MihonId ?? "";
@@ -1000,14 +1000,49 @@ public sealed class SourceMigrationService
             db.Touch(row, r => r.Chapters);
             await db.SaveChangesAsync(token).ConfigureAwait(false);
         }
-        // The new id's catalogue row shows as in the library, the old one's no longer.
-        await providers.CheckIfTheStorageFlagsChangedTheInLibraryStatusOfLastSeriesAsync([row], [oldMihonId], token).ConfigureAwait(false);
-        // Its own scheduled scan back on (left off while switched off or paused).
-        await providers.RescheduleIfNeededAsync([row], true, paused, token).ConfigureAwait(false);
-        await state.SyncToRenzoJsonAsync(seriesId, token).ConfigureAwait(false);
+        // Saved on the new id: nothing after this may strand it. Its own scan
+        // first (left off while switched off or paused), since without one the
+        // row never updates; then the new id's catalogue row shows as in the
+        // library and the old one's no longer, and renzo.json follows.
+        await AfterCommitAsync(_logger, $"Re-pointing row {rowId} of series {seriesId}",
+            ("rescheduling its scan", c => providers.RescheduleIfNeededAsync([row], true, paused, c)),
+            ("updating the catalogue's in-library flags", c => providers.CheckIfTheStorageFlagsChangedTheInLibraryStatusOfLastSeriesAsync([row], [oldMihonId], c)),
+            ("writing renzo.json", c => state.SyncToRenzoJsonAsync(seriesId, c))).ConfigureAwait(false);
         AppDbContext.BumpLibraryVersion();
         return counts;
     }
+
+    /// <summary>
+    /// The steps after a committed change, in order, each on its own: one that
+    /// throws is logged and the rest still run, and none gets the caller's
+    /// token, so neither a shutdown nor one failure leaves the change half
+    /// followed up.
+    /// </summary>
+    internal static async Task AfterCommitAsync(ILogger logger, string what, params (string Step, Func<CancellationToken, Task> Run)[] steps)
+    {
+        foreach ((string step, Func<CancellationToken, Task> run) in steps)
+        {
+            try
+            {
+                await run(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                logger.LogWarning(e, "{What}: {Step} failed; the change itself is saved.", what, step);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="series"/> already has a row on the new id for
+    /// <paramref name="row"/>'s scanlator group (added by hand, or another row
+    /// followed first): two rows are never merged automatically. Only the same
+    /// group counts, so rows of two groups on the old id are both followed.
+    /// </summary>
+    /// <param name="targetProvider">The new id's source name (<see cref="SameScanlator"/>).</param>
+    internal static bool Superseded(SeriesEntity series, SeriesProviderEntity row, string? newProviderId, string? targetProvider) =>
+        series.Sources.Any(p => p.Id != row.Id && p.MihonProviderId == newProviderId
+            && (p.Scanlator == row.Scanlator || SameScanlator(row, p.Scanlator, targetProvider)));
 
     /// <summary>The row's pointer and per-chapter link state before a re-point, as one JSON line.</summary>
     private static string UndoLine(SeriesProviderEntity row, string? to) => System.Text.Json.JsonSerializer.Serialize(new
@@ -1081,18 +1116,26 @@ public sealed class SourceMigrationService
     /// a row named after its source takes the chapters with no group or the
     /// source's name, any other row only its own group. A replacement group must
     /// pass it, or the row's scans would find nothing after the re-point.
+    ///
+    /// For a row named after its source, the new id's own name counts too, in
+    /// any case: a versionId bump can come with a recased name, and a chapter
+    /// with no group is listed under the new name (AugmentSeriesAsync) while the
+    /// scan files it under the row's.
     /// </summary>
-    internal static bool SameScanlator(SeriesProviderEntity row, string? group) =>
+    /// <param name="targetProvider">The new id's source name.</param>
+    internal static bool SameScanlator(SeriesProviderEntity row, string? group, string? targetProvider) =>
         string.IsNullOrEmpty(row.Scanlator) || row.Scanlator == row.Provider
             ? string.IsNullOrEmpty(group) || group == row.Provider
+                || (!string.IsNullOrEmpty(targetProvider) && string.Equals(group, targetProvider, StringComparison.OrdinalIgnoreCase))
             : group == row.Scanlator;
 
     /// <summary>The accept rule of <see cref="FindReplacementAsync"/>, on what it found.</summary>
+    /// <param name="targetProvider">The new id's source name (<see cref="SameScanlator"/>).</param>
     /// <param name="wanted">The row's own whole chapter numbers (<see cref="RowWholes"/>).</param>
     /// <param name="sameTitle">Series ids on the new id whose title has the row title's key, measured or not.</param>
     /// <param name="groups">The scanlator groups measured, of any of them.</param>
     /// <param name="unreachable">A search or a read of the new id failed.</param>
-    internal static ReplacementResult JudgeReplacement(SeriesProviderEntity row, int wanted, IReadOnlyCollection<string> sameTitle,
+    internal static ReplacementResult JudgeReplacement(SeriesProviderEntity row, string? targetProvider, int wanted, IReadOnlyCollection<string> sameTitle,
         IReadOnlyList<ReplacementCandidate> groups, bool unreachable)
     {
         ReplacementResult Fail(string status, string message, ReplacementCandidate? c = null) =>
@@ -1111,7 +1154,7 @@ public sealed class SourceMigrationService
             return unreachable
                 ? Fail(SourceIdChanges.Unreachable, "Its chapters could not be read.")
                 : Fail(SourceIdChanges.NoMatch, "It lists no chapters.");
-        ReplacementCandidate? pick = mine.Where(g => SameScanlator(row, g.Scanlator))
+        ReplacementCandidate? pick = mine.Where(g => SameScanlator(row, g.Scanlator, targetProvider))
             .OrderByDescending(g => g.Coverage)
             .FirstOrDefault();
         if (pick == null)
@@ -1126,10 +1169,11 @@ public sealed class SourceMigrationService
     /// <summary>
     /// Points <paramref name="row"/> at <paramref name="chosen"/> and merges its
     /// chapter list by exact (decimal) number. A chapter on both takes the new
-    /// link and index and its paywall and give-up state starts over (a lock only
-    /// where there is no file: the new site's scan sets it again). Its file,
-    /// download state, deletion marks and name stay. A number only the new id
-    /// lists is added as a scan adds it; one only the row has stays as it is.
+    /// link and index and its give-up state starts over. Its paywall state
+    /// (IsLocked, LockedCheckedAt) stays: the scan only ever unlocks, so a lock
+    /// cleared here would never come back. Its file, download state, deletion
+    /// marks and name stay too. A number only the new id lists is added as a
+    /// scan adds it; one only the row has stays as it is.
     /// Title, provider, scanlator, priority, flags, cutoff and switched-off state
     /// are not touched. Works on a detached copy too, for the dry run.
     /// </summary>
@@ -1166,11 +1210,8 @@ public sealed class SourceMigrationService
             have.Add(n);
             c.Url = nc.Url;
             c.ProviderIndex = nc.ProviderIndex;
-            c.LockedCheckedAt = null;
             c.GaveUpAt = null;
             c.GiveUpCount = 0;
-            if (string.IsNullOrEmpty(c.Filename))
-                c.IsLocked = false;
             matched++;
         }
         bool established = row.Chapters.Count > 0;

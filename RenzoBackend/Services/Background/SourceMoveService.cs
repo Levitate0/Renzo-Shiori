@@ -217,11 +217,12 @@ public class SourceMoveService : BackgroundService
 
     /// <summary>
     /// Follows sources an extension update gave a new id (SourceIdChanges). The
-    /// users who had the old id enabled get the new one, and each library row on
-    /// the old id is re-pointed in place at its series on the new id once that is
-    /// found with confidence (SourceMigrationService.FindReplacementAsync and
-    /// RepointAsync). "SourceIdFollow" in appsettings: "log" (the default) reads
-    /// and measures everything and changes nothing; "apply" does it.
+    /// users who had the old id enabled are moved to the new one, once, and each
+    /// library row on the old id is re-pointed in place at its series on the new
+    /// id once that is found with confidence (SourceMigrationService's
+    /// FindReplacementAsync and RepointAsync). "SourceIdFollow" in appsettings:
+    /// "log" (the default) reads and measures everything and changes nothing;
+    /// "apply" does it.
     ///
     /// A re-pointed row is no longer on the old id, so success needs no record.
     /// Failures are kept in source-id-follow.local.json so a row is not searched
@@ -321,11 +322,12 @@ public class SourceMoveService : BackgroundService
         SeriesProviderEntity? row = series?.Sources.FirstOrDefault(p => p.Id == rowId);
         if (series == null || row == null || row.MihonProviderId != change.OldProviderId)
             return Gone;
-        // Already on the new id too (added by hand): two rows are never merged automatically.
-        if (series.Sources.Any(p => p.MihonProviderId == change.NewProviderId))
+        // Already on the new id for this row's group too (added by hand, or
+        // another row followed first): two rows are never merged automatically.
+        if (SourceMigrationService.Superseded(series, row, change.NewProviderId, target.Name))
         {
-            _logger.LogWarning("{Provider}: '{Series}' already has a row on the new id; its row on the old id is left as it is.",
-                change.Name, series.Title);
+            _logger.LogWarning("{Provider}: '{Series}' already has a row on the new id for {Group}; its row on the old id is left as it is.",
+                change.Name, series.Title, string.IsNullOrEmpty(row.Scanlator) ? row.Provider : row.Scanlator);
             return SourceIdChanges.Superseded;
         }
 
@@ -372,11 +374,10 @@ public class SourceMoveService : BackgroundService
         return SourceIdChanges.Matched;
     }
 
-    /// <summary>The users who have the old id enabled and not the new one.</summary>
-    private static Task<List<Guid>> UsersToCarryAsync(AppDbContext db, SourceIdChange change, CancellationToken token) =>
+    /// <summary>The users who still have the old id enabled.</summary>
+    internal static Task<List<Guid>> UsersToCarryAsync(AppDbContext db, SourceIdChange change, CancellationToken token) =>
         db.UserProviders.AsNoTracking()
-            .Where(u => u.MihonProviderId == change.OldProviderId
-                && !db.UserProviders.Any(n => n.UserId == u.UserId && n.MihonProviderId == change.NewProviderId))
+            .Where(u => u.MihonProviderId == change.OldProviderId)
             .Select(u => u.UserId).Distinct()
             .ToListAsync(token);
 
@@ -386,13 +387,27 @@ public class SourceMoveService : BackgroundService
         if (users.Count == 0)
             return;
         if (apply)
-        {
-            foreach (Guid user in users)
-                db.UserProviders.Add(new UserProviderEntity { Id = Guid.NewGuid(), UserId = user, MihonProviderId = change.NewProviderId });
-            await db.SaveChangesAsync(token).ConfigureAwait(false);
-        }
-        _logger.LogInformation("{Provider}: {Done} the new id for {Count} user(s): {Users}.",
-            change.Name, apply ? "enabled" : "would enable", users.Count, string.Join(", ", users));
+            await CarryUsersAsync(db, change, users, token).ConfigureAwait(false);
+        _logger.LogInformation("{Provider}: {Done} {Count} user(s) from the old id to the new one: {Users}.",
+            change.Name, apply ? "moved" : "would move", users.Count, string.Join(", ", users));
+    }
+
+    /// <summary>
+    /// Moves <paramref name="users"/> from the old id to the new one, once: in
+    /// one save their old-id rows go and a new-id row comes (unless they have
+    /// one). Without the old-id row a user is not carried again, so one who
+    /// switches the new id off later is not switched back on by the next pass.
+    /// </summary>
+    internal static async Task CarryUsersAsync(AppDbContext db, SourceIdChange change, IReadOnlyCollection<Guid> users, CancellationToken token)
+    {
+        List<UserProviderEntity> rows = await db.UserProviders
+            .Where(u => users.Contains(u.UserId) && (u.MihonProviderId == change.OldProviderId || u.MihonProviderId == change.NewProviderId))
+            .ToListAsync(token).ConfigureAwait(false);
+        HashSet<Guid> haveNew = rows.Where(u => u.MihonProviderId == change.NewProviderId).Select(u => u.UserId).ToHashSet();
+        db.UserProviders.RemoveRange(rows.Where(u => u.MihonProviderId == change.OldProviderId));
+        foreach (Guid user in users.Distinct().Where(u => !haveNew.Contains(u)))
+            db.UserProviders.Add(new UserProviderEntity { Id = Guid.NewGuid(), UserId = user, MihonProviderId = change.NewProviderId });
+        await db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 
     /// <summary>"versionId 1→2" when the ids are the usual hash of small versionIds; evidence for the log only.</summary>

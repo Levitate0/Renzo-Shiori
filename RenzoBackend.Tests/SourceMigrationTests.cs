@@ -81,6 +81,9 @@ public class SourceMigrationTests
 
     // ----- following a source to its new id: the accept rule -----
 
+    /// <summary>The new id's source name, as the extension reports it.</summary>
+    private const string Target = "Valir Scans";
+
     private static SeriesProviderEntity Row(string scanlator = "Valir Scans") => new()
     {
         Id = Guid.NewGuid(),
@@ -96,7 +99,7 @@ public class SourceMigrationTests
     [Fact]
     public void One_exact_title_listing_the_rows_chapters_is_accepted()
     {
-        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 1.0)], unreachable: false);
+        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat"], [Group("cat", 1.0)], unreachable: false);
         Assert.Equal("matched", r.Status);
         Assert.Equal("cat", r.Chosen!.MihonId);
     }
@@ -104,27 +107,27 @@ public class SourceMigrationTests
     [Fact]
     public void Two_series_with_the_rows_title_are_never_picked_from()
     {
-        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), 35, ["cat", "cat2"], [Group("cat", 1.0)], unreachable: false);
+        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat", "cat2"], [Group("cat", 1.0)], unreachable: false);
         Assert.Equal(("ambiguous", null), (r.Status, r.Chosen));
     }
 
     [Fact]
     public void Coverage_below_nine_in_ten_is_not_enough()
     {
-        Assert.Equal("low-coverage", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 0.85)], false).Status);
-        Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 0.9)], false).Status);
+        Assert.Equal("low-coverage", SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat"], [Group("cat", 0.85)], false).Status);
+        Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat"], [Group("cat", 0.9)], false).Status);
     }
 
     [Fact]
     public void A_suspect_match_is_rejected()
     {
-        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 1.0, suspect: true)], false).Status);
+        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat"], [Group("cat", 1.0, suspect: true)], false).Status);
     }
 
     [Fact]
     public void A_row_with_nothing_to_compare_is_never_matched()
     {
-        Assert.Equal("low-coverage", SourceMigrationService.JudgeReplacement(Row(), 0, ["cat"], [Group("cat", 1.0)], false).Status);
+        Assert.Equal("low-coverage", SourceMigrationService.JudgeReplacement(Row(), Target, 0, ["cat"], [Group("cat", 1.0)], false).Status);
         Assert.Empty(SourceMigrationService.RowWholes(Row()));
     }
 
@@ -132,30 +135,44 @@ public class SourceMigrationTests
     public void Another_scanlator_group_is_rejected()
     {
         // The row's scans keep only its own group, so they would find nothing.
-        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [Group("cat", 1.0, "Other Group")], false).Status);
+        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat"], [Group("cat", 1.0, "Other Group")], false).Status);
         // Of several groups, the row's own is the one measured.
-        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"],
+        ReplacementResult r = SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat"],
             [Group("cat", 1.0, "Other Group"), Group("cat", 0.95, "Valir Scans")], false);
         Assert.Equal(("matched", 0.95), (r.Status, r.Coverage));
-        Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row("Team X"), 35, ["cat"], [Group("cat", 1.0, "Team X")], false).Status);
+        Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row("Team X"), Target, 35, ["cat"], [Group("cat", 1.0, "Team X")], false).Status);
     }
 
     [Fact]
     public void The_scanlator_rule_is_the_scans_own()
     {
-        Assert.True(SourceMigrationService.SameScanlator(Row(), "Valir Scans"));
-        Assert.True(SourceMigrationService.SameScanlator(Row(""), ""));
-        Assert.True(SourceMigrationService.SameScanlator(Row(""), "Valir Scans"));
-        Assert.False(SourceMigrationService.SameScanlator(Row(), "Team X"));
-        Assert.False(SourceMigrationService.SameScanlator(Row("Team X"), "Valir Scans"));
+        Assert.True(SourceMigrationService.SameScanlator(Row(), "Valir Scans", Target));
+        Assert.True(SourceMigrationService.SameScanlator(Row(""), "", Target));
+        Assert.True(SourceMigrationService.SameScanlator(Row(""), "Valir Scans", Target));
+        Assert.False(SourceMigrationService.SameScanlator(Row(), "Team X", Target));
+        Assert.False(SourceMigrationService.SameScanlator(Row("Team X"), "Valir Scans", Target));
+    }
+
+    [Fact]
+    public void A_recased_source_name_is_still_the_rows_group()
+    {
+        // A versionId bump can come with a new casing of the name; a chapter with
+        // no group is listed under it, and the scan files it under the row's name.
+        Assert.True(SourceMigrationService.SameScanlator(Row(), "Valir scans", "Valir scans"));
+        Assert.True(SourceMigrationService.SameScanlator(Row(""), "VALIR SCANS", "Valir scans"));
+        Assert.Equal("matched", SourceMigrationService.JudgeReplacement(Row(), "Valir scans", 35, ["cat"], [Group("cat", 1.0, "Valir scans")], false).Status);
+        // Only the source's own name, and only for a row named after the source.
+        Assert.False(SourceMigrationService.SameScanlator(Row(), "Valir scans", null));
+        Assert.False(SourceMigrationService.SameScanlator(Row(), "Valir scans", "Valir Scans Team"));
+        Assert.False(SourceMigrationService.SameScanlator(Row("Team X"), "Valir scans", "Valir scans"));
     }
 
     [Fact]
     public void A_site_that_could_not_be_searched_is_unreachable_not_a_miss()
     {
-        Assert.Equal("unreachable", SourceMigrationService.JudgeReplacement(Row(), 35, [], [], unreachable: true).Status);
-        Assert.Equal("unreachable", SourceMigrationService.JudgeReplacement(Row(), 35, ["cat"], [], unreachable: true).Status);
-        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), 35, [], [], unreachable: false).Status);
+        Assert.Equal("unreachable", SourceMigrationService.JudgeReplacement(Row(), Target, 35, [], [], unreachable: true).Status);
+        Assert.Equal("unreachable", SourceMigrationService.JudgeReplacement(Row(), Target, 35, ["cat"], [], unreachable: true).Status);
+        Assert.Equal("no-match", SourceMigrationService.JudgeReplacement(Row(), Target, 35, [], [], unreachable: false).Status);
     }
 
     [Fact]
