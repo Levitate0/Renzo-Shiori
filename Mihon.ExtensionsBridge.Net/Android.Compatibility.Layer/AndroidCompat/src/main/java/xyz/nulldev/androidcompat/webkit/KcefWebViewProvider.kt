@@ -70,6 +70,7 @@ import org.cef.callback.CefQueryCallback
 import org.cef.handler.CefDisplayHandlerAdapter
 import org.cef.handler.CefFocusHandler
 import org.cef.handler.CefLoadHandler
+import org.cef.handler.CefLifeSpanHandlerAdapter
 import org.cef.handler.CefLoadHandlerAdapter
 import org.cef.handler.CefMessageRouterHandlerAdapter
 import org.cef.handler.CefRequestHandler
@@ -179,8 +180,8 @@ class KcefWebViewProvider(
 
     /**
      * Shiori's own Cloudflare browsers (one solve at a time, at most two
-     * transport pages) must not be reaped mid-request by the MAX_LIVE
-     * overflow; they still count toward it, and the idle sweep still applies.
+     * transport pages): neither counted toward MAX_LIVE nor reaped by its
+     * overflow. The idle sweep still applies.
      */
     @Volatile
     var exemptFromOverflow: Boolean = false
@@ -188,23 +189,11 @@ class KcefWebViewProvider(
     private var cefClient: CefClient? = null
     private var browser: CefBrowser? = null
 
-    /**
-     * Chromium child processes this provider caused to exist.
-     *
-     * CEF does not reliably reap them. `CefBrowser.close(true)` is asynchronous
-     * and returns long before the renderer exits — and under the off-screen
-     * (windowless) rendering this provider uses, with no window to drive the
-     * close, it frequently never exits at all. The processes stay alive,
-     * sleeping, holding ~31 threads each, and the container reaches its pid
-     * ceiling while memory is still half free.
-     *
-     * Nothing upstream can be changed here: the leak is inside JCEF, and the
-     * WebViews come from precompiled extension JARs. So ownership is recorded
-     * on this side — the helper PIDs that appeared while THIS provider was
-     * creating its browser — and [destroy] kills whatever is still alive after
-     * CEF has had its chance.
-     */
-    private val ownedHelperPids = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+    /** Closes this WebView's browser for real (see [BrowserCloser]); null until init(). */
+    private var browserCloser: BrowserCloser? = null
+
+    /** Guards the swap of the native handles in [destroy]. */
+    private val lifecycleLock = Any()
 
     /** When this WebView was created, for the live renderer sweep. */
     internal val createdAt: Long = System.currentTimeMillis()
@@ -379,19 +368,30 @@ class KcefWebViewProvider(
         }
 
         /**
-         * Browser creation is serialised so a provider can attribute the helper
-         * processes that appear to ITSELF. Creation is milliseconds; page loads
-         * (the slow part) stay fully concurrent.
+         * Browser creation is serialised, as it has been since October.
+         * Creation is milliseconds; page loads (the slow part) stay fully
+         * concurrent.
          */
         private val browserCreationLock = Any()
 
-        /** How long CEF gets to exit a closed browser's processes before we do. */
-        private const val HELPER_KILL_GRACE_MS = 5_000L
-
-        private val helperKiller: java.util.concurrent.ScheduledExecutorService =
+        /**
+         * Where browser closes are issued: never inline on whatever thread
+         * destroy() runs on, which can be a CEF callback, where destroying the
+         * WebContents during observer dispatch trips a Chromium CHECK.
+         */
+        private val kcefCloser: java.util.concurrent.ScheduledExecutorService =
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
-                Thread(r, "kcef-helper-killer").apply { isDaemon = true }
+                Thread(r, "kcef-closer").apply { isDaemon = true }
             }
+
+        /**
+         * Renderers allowed before the valve force-exits the oldest idle ones
+         * (RENZO_KCEF_RENDERER_CEILING, 0 = off). A backstop only: browsers now
+         * close properly. 40 keeps the helper total under the .NET watchdog's 60.
+         */
+        private val RENDERER_CEILING: Int =
+            System.getenv("RENZO_KCEF_RENDERER_CEILING")?.toIntOrNull()?.coerceAtLeast(0) ?: 40
+        private var sweepTicks = 0
 
         /**
          * PIDs of the live Chromium child processes, read straight from /proc.
@@ -438,11 +438,18 @@ class KcefWebViewProvider(
             return pids
         }
 
-        /** True when the process was launched with `--type=renderer`. */
+        /**
+         * True when the process was launched with `--type=renderer`. Chromium
+         * rewrites a child's argv into ONE space-joined string (setproctitle),
+         * so /proc/PID/cmdline holds a single NUL: splitting on NUL alone never
+         * found the flag, and every renderer sweep was a no-op from 2026-10-08
+         * to 2026-11-05. The exact token keeps the GPU and utility processes,
+         * whose death aborts the JVM, out of reach.
+         */
         private fun isRenderer(procDir: java.io.File): Boolean = try {
             java.io.File(procDir, "cmdline").readBytes()
                 .toString(Charsets.UTF_8)
-                .split('\u0000')
+                .split('\u0000', ' ')
                 .any { it == "--type=renderer" }
         } catch (t: Throwable) {
             false // unreadable or gone: never a kill candidate
@@ -487,77 +494,75 @@ class KcefWebViewProvider(
         }
 
         /**
-         * Force-exits helper processes that no WebView can possibly still own.
+         * Backstop sweeps, now that browsers really close (see [BrowserCloser]).
          *
-         * The per-provider bookkeeping cannot do this job. [createBrowserTracked]
-         * diffs the helper PIDs across the create call, but Chromium spawns its
-         * children ASYNCHRONOUSLY — most appear after createImmediately() has
-         * already returned, so `ownedHelperPids` ends up near-empty and
-         * [destroy] force-exits almost nothing. That is why ~12 helpers survive
-         * every teardown while the live-provider cap is never exceeded, and why
-         * the "Force-exited" line above never appears in practice.
-         *
-         * Attribution being unreliable is exactly why this sweep refuses to
-         * guess: it only runs when NOTHING is live, where every remaining
-         * jcef_helper is leftover by definition and killing it cannot disturb a
-         * browser in use. [reapStale] runs first on the same tick, so a provider
-         * abandoned mid-fetch is destroyed and this then reclaims its children on
-         * a later pass rather than waiting for the watchdog to kill the JVM.
+         * With no WebView live, any renderer older than 30 s is left over
+         * (Chromium may keep one spare). With WebViews live, attribution is
+         * impossible (every renderer is a child of this JVM, forked
+         * asynchronously), so the valve goes by count: past [RENDERER_CEILING],
+         * the oldest renderers idle longer than the TTL are force-exited down to
+         * ten under it. Renderers only: see [helperPids].
          */
         private fun sweepLeftoverHelpers() {
-            if (liveProviders.isNotEmpty()) {
-                sweepRenderersOlderThanLiveViews()
+            val renderers = helperPids(renderersOnly = true)
+            val now = System.currentTimeMillis()
+            KcefStats.renderers.set(renderers.size.toLong())
+            KcefStats.helpers.set(helperPids().size.toLong())
+            KcefStats.lastScanAt.set(now)
+            if (++sweepTicks % 10 == 0) {
+                Log.i(TAG, "Browsers: ${liveProviders.size} live WebView(s), ${renderers.size} renderer(s); ${KcefStats.snapshot()}")
+            }
+            trackCpu(renderers, now)
+            if (liveProviders.isEmpty()) {
+                // Closes asked for in the last 30 s may still be finishing.
+                if (now - lastCloseRequestedAt < 30_000) return
+                val leftover = renderers.filter { pid -> processStartMillis(pid)?.let { now - it > 30_000 } == true }
+                if (leftover.isEmpty() || liveProviders.isNotEmpty()) return
+                Log.w(TAG, "No live WebViews; force-exiting ${leftover.size} leftover renderer process(es)")
+                killHelpers(leftover)
+                KcefStats.leftoverKills.addAndGet(leftover.size.toLong())
                 return
             }
-            val leftover = helperPids(renderersOnly = true)
-            if (leftover.isEmpty()) return
-            Log.w(TAG, "No live WebViews; force-exiting ${leftover.size} leftover renderer process(es)")
-            killHelpers(leftover)
+            if (RENDERER_CEILING <= 0 || renderers.size <= RENDERER_CEILING) return
+            val floor = (RENDERER_CEILING - 10).coerceIn(0, RENDERER_CEILING)
+            // Idle by CPU, not by age: a long-lived page in steady use (a
+            // transport page, an extension's reader) is the oldest renderer and
+            // must not be the first one killed.
+            val victims = renderers
+                .mapNotNull { pid -> cpuIdleSince[pid]?.let { pid to it.second } }
+                .filter { (_, idleSince) -> now - idleSince > IDLE_TTL_MS }
+                .sortedBy { it.second } // idle longest first
+                .take((renderers.size - floor).coerceAtLeast(0))
+                .map { it.first }
+            if (victims.isEmpty()) return
+            val msg = "${renderers.size} renderers with ${liveProviders.size} live WebView(s), over the ceiling of $RENDERER_CEILING; force-exiting the ${victims.size} oldest"
+            Log.w(TAG, msg)
+            System.err.println("[kcef] $msg")
+            killHelpers(victims)
+            KcefStats.valveKills.addAndGet(victims.size.toLong())
         }
 
-        /**
-         * Renderers to tolerate before sweeping while WebViews are live. Under a
-         * steady download load some WebView is nearly always live, so the
-         * nothing-live sweep above almost never ran: renderers climbed from 5 to
-         * 14 in ten minutes (the --renderer-process-limit flag does not hold)
-         * until the watchdog recycled the whole JVM at 60 helpers, ~9 times a
-         * day, killing every in-flight read and download with it.
-         */
-        private const val LIVE_SWEEP_THRESHOLD = 12
-        
-        /**
-         * With WebViews live, attribution is impossible (every renderer is a
-         * child of this JVM, and Chromium forks them asynchronously), so this
-         * goes by age instead: past [LIVE_SWEEP_THRESHOLD], renderers older
-         * than the idle TTL are force-exited, always sparing the youngest few.
-         *
-         * Measured 2026-10-16: 31 WebViews in 33 minutes (mostly one source
-         * navigating every ~90 s), each leaving a ~225 MB renderer that never
-         * exited, plus two from startup at 700-860 MB still spinning. An
-         * earlier version spared everything younger than the oldest LIVE
-         * WebView, which never fired: one WebView lives, in use, as long as
-         * the JVM does.
-         *
-         * A renderer still serving a page loses it; the page load fails and
-         * the caller retries, and the next navigation forks a fresh renderer.
-         * That is far cheaper than the whole-JVM recycle this prevents.
-         */
-        private fun sweepRenderersOlderThanLiveViews() {
-            val renderers = helperPids(renderersOnly = true)
-            if (renderers.size <= LIVE_SWEEP_THRESHOLD) return
-            val now = System.currentTimeMillis()
-            val byAge = renderers
-                .mapNotNull { pid -> processStartMillis(pid)?.let { pid to it } }
-                .sortedByDescending { it.second } // youngest first
-            val keep = maxOf(MAX_LIVE * 2, 4)
-            val stale = byAge.drop(keep)
-                .filter { (_, started) -> now - started > IDLE_TTL_MS }
-                .map { it.first }
-            if (stale.isEmpty()) return
-            val oldestLiveAgeS = liveProviders.keys.minOfOrNull { it.createdAt }?.let { (now - it) / 1000 }
-            Log.w(TAG, "${renderers.size} renderers with ${liveProviders.size} live WebView(s) (oldest ${oldestLiveAgeS}s); force-exiting ${stale.size} older than ${IDLE_TTL_MS / 60000} min")
-            killHelpers(stale)
+        /** Renderer pid -> (CPU ticks at the last change, when they last changed). */
+        private val cpuIdleSince = ConcurrentHashMap<Long, Pair<Long, Long>>()
+
+        @Volatile
+        private var lastCloseRequestedAt = 0L
+
+        private fun trackCpu(renderers: Set<Long>, now: Long) {
+            cpuIdleSince.keys.retainAll(renderers)
+            for (pid in renderers) {
+                val ticks = cpuTicks(pid) ?: continue
+                val prev = cpuIdleSince[pid]
+                if (prev == null || prev.first != ticks) cpuIdleSince[pid] = ticks to now
+            }
         }
+
+        /** utime + stime of a process, from /proc/PID/stat fields 14 and 15. */
+        private fun cpuTicks(pid: Long): Long? = runCatching {
+            val stat = java.io.File("/proc/$pid/stat").readText()
+            val fields = stat.substring(stat.lastIndexOf(')') + 2).split(' ')
+            fields[11].toLong() + fields[12].toLong()
+        }.getOrNull()
 
         private val bootMillis: Long? by lazy {
             runCatching {
@@ -580,12 +585,13 @@ class KcefWebViewProvider(
             val stale = liveProviders.entries
                 .filter { now - it.value > IDLE_TTL_MS }
                 .map { it.key }
-            // Shiori's own Cloudflare browsers count toward the budget (each is
-            // a renderer like any other) but are never the ones reaped for it.
-            val counted = liveProviders.entries.filterNot { stale.contains(it.key) }
+            // Shiori's own Cloudflare browsers bound themselves (one solve, two
+            // transport pages) and are neither counted nor reaped here: a reap
+            // now really closes a page, so counting them would push extensions'
+            // in-use WebViews out.
+            val counted = liveProviders.entries.filterNot { stale.contains(it.key) || it.key.exemptFromOverflow }
             val overflow = if (counted.size > MAX_LIVE) {
                 counted
-                    .filterNot { it.key.exemptFromOverflow }
                     .sortedBy { it.value }
                     .take(counted.size - MAX_LIVE)
                     .map { it.key }
@@ -729,47 +735,24 @@ class KcefWebViewProvider(
         return cefClient ?: throw IllegalStateException("JCEF client is not initialized")
     }
 
-    /**
-     * Creates a browser and records the Chromium child processes it spawned, so
-     * [destroy] can force-exit any CEF fails to reap. Serialised on
-     * [browserCreationLock] purely so the before/after PID diff belongs to this
-     * provider and not to one racing alongside it.
-     */
-    private fun createBrowserTracked(block: CefClient.() -> CefBrowser): CefBrowser =
-        synchronized(browserCreationLock) {
-            val before = helperPids(renderersOnly = true)
-            val created = requireClient().block()
-            // Renderers only, for the same reason as the sweep: the first browser
-            // created also spawns the app-wide GPU and utility processes, and
-            // recording those here would let destroy() kill them.
-            ownedHelperPids.addAll(helperPids(renderersOnly = true) - before)
-            created
+    /** Creates this WebView's browser, registered with its [BrowserCloser]. */
+    private fun newBrowser(url: String): CefBrowser {
+        val client = requireClient()
+        val closer = browserCloser ?: throw IllegalStateException("JCEF client is not initialized")
+        val created = synchronized(browserCreationLock) {
+            closer.create { client.createBrowser(url, true, false).apply { createImmediately() } }
         }
+        created.ensureInitialSize()
+        return created
+    }
 
-    private fun createBrowserForUrl(url: String): CefBrowser =
-        createBrowserTracked {
-            createBrowser(url, true, false).apply {
-                createImmediately()
-                ensureInitialSize()
-            }
-        }
+    private fun createBrowserForUrl(url: String): CefBrowser = newBrowser(url)
 
     private fun createBrowserWithHtml(html: String): CefBrowser =
-        createBrowserTracked {
-            createBrowser(BLANK_URI, true, false).apply {
-                createImmediately()
-                ensureInitialSize()
-                val encoded = Base64.getEncoder().encodeToString(html.toByteArray(StandardCharsets.UTF_8))
-                loadURL("data:text/html;base64,$encoded")
-            }
+        newBrowser(BLANK_URI).apply {
+            val encoded = Base64.getEncoder().encodeToString(html.toByteArray(StandardCharsets.UTF_8))
+            loadURL("data:text/html;base64,$encoded")
         }
-
-    private fun shutdownBrowser() {
-        browser?.let {
-            it.close(true)
-        }
-        browser = null
-    }
 
     /**
      * Point the EXISTING browser at [url], creating one only on first use.
@@ -1345,6 +1328,94 @@ class KcefWebViewProvider(
             Rectangle(0, 0, currentViewWidth(), currentViewHeight())
     }
 
+    /**
+     * Closes this WebView's browser for real.
+     *
+     * A windowless JCEF browser asks its client's doClose whether it may close.
+     * With no life-span handler that falls to CefBrowser_N.doClose(), which
+     * vetoes the close unless setCloseAllowed() was called (it posts a
+     * WINDOW_CLOSING to a window an off-screen browser does not have). Nothing
+     * here ever allowed it, so NO browser ever closed: every "destroyed"
+     * WebView kept its page and renderer running for the life of the JVM, about
+     * one leftover renderer per WebView created, until the .NET watchdog
+     * recycled the whole sidecar at 60 helpers (14-90 times a day, Nov 2026).
+     *
+     * The close is allowed only when Shiori asked for it, so a page's own
+     * window.close() is still refused as before. It is issued from
+     * [kcefCloser], and waits for onAfterCreated when destroy() comes first.
+     */
+    private class BrowserCloser(private val client: CefClient) : CefLifeSpanHandlerAdapter() {
+        private var browser: CefBrowser? = null
+        private var created = false
+        private var closing = false
+        private val issued = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        fun create(make: () -> CefBrowser): CefBrowser = synchronized(this) {
+            // destroy() got here first: never make a browser nothing will close.
+            check(!closing) { "WebView destroyed" }
+            make().also { browser = it }
+        }
+
+        override fun onAfterCreated(b: CefBrowser) {
+            val closeNow = synchronized(this) {
+                created = true
+                closing
+            }
+            if (closeNow) kcefCloser.execute { closeNow(b) }
+        }
+
+        override fun doClose(b: CefBrowser): Boolean = synchronized(this) { !closing }
+
+        override fun onBeforeClose(b: CefBrowser) {
+            val (asked, main) = synchronized(this) { closing to (b === browser) }
+            if (!main) return // a popup the page opened: not ours to count
+            KcefStats.closed.incrementAndGet()
+            if (asked) {
+                KcefStats.pendingCloses.decrementAndGet()
+            } else {
+                Log.w(TAG, "A browser closed without destroy() (the page closed itself)")
+            }
+        }
+
+        /** Asks CEF to close the browser and then disposes the client. Idempotent. */
+        fun close() {
+            val (b, ready) = synchronized(this) {
+                if (closing) return
+                closing = true
+                browser to created
+            }
+            if (b == null) {
+                kcefCloser.execute { runCatching { client.dispose() } }
+                return
+            }
+            KcefStats.pendingCloses.incrementAndGet()
+            lastCloseRequestedAt = System.currentTimeMillis()
+            if (ready) {
+                kcefCloser.execute { closeNow(b) }
+            } else {
+                // onAfterCreated normally gets there first; this only covers a
+                // creation that never completes (a wedged UI thread).
+                kcefCloser.schedule({ closeNow(b) }, 5, java.util.concurrent.TimeUnit.MINUTES)
+            }
+        }
+
+        private fun closeNow(b: CefBrowser) {
+            // Never closed before onAfterCreated: close(true) would only set
+            // isClosing_ on a browser with no native side yet, and then no later
+            // close could work. The fallback just waits for onAfterCreated.
+            if (!synchronized(this) { created }) {
+                Log.w(TAG, "A destroyed WebView's browser still hasn't finished creating after 5 min")
+                return
+            }
+            if (!issued.compareAndSet(false, true)) return
+            KcefStats.closesRequested.incrementAndGet()
+            runCatching { b.setCloseAllowed() }
+            runCatching { b.close(true) }.onFailure { Log.w(TAG, "Browser close failed", it) }
+            // Completes once onBeforeClose has removed the browser from the client.
+            runCatching { client.dispose() }
+        }
+    }
+
     private data class RenderFrame(
         val width: Int,
         val height: Int,
@@ -1759,6 +1830,7 @@ class KcefWebViewProvider(
         // the life of the JVM. Publish-or-dispose, so that window is closed.
         val client = cefApp.createClient()
         val router: CefMessageRouter
+        val closer: BrowserCloser
         try {
             client.addDisplayHandler(DisplayHandler())
             client.addLoadHandler(LoadHandler())
@@ -1771,6 +1843,8 @@ class KcefWebViewProvider(
             }
             router = CefMessageRouter.create(routerConfig, MessageRouterHandler())
             client.addMessageRouter(router)
+            closer = BrowserCloser(client)
+            client.addLifeSpanHandler(closer)
         } catch (t: Throwable) {
             runCatching { client.dispose() }
             throw t
@@ -1778,6 +1852,8 @@ class KcefWebViewProvider(
 
         cefClient = client
         messageRouter = router
+        browserCloser = closer
+        KcefStats.created.incrementAndGet()
         // Register AFTER the native resources exist, so the reaper only ever sees
         // providers that actually own something worth releasing. Touching the
         // reaper lazy-starts the single daemon sweep thread on first WebView.
@@ -1825,25 +1901,25 @@ class KcefWebViewProvider(
 
     override fun destroy() {
         liveProviders.remove(this)
-        shutdownBrowser()
-        messageRouter?.let { router ->
-            cefClient?.removeMessageRouter(router)
-            router.dispose()
+        // Take the native handles under the lock, and make the native calls
+        // outside it, so a callback re-entering this provider can't deadlock.
+        val (router, client, closer) = synchronized(lifecycleLock) {
+            val handles = Triple(messageRouter, cefClient, browserCloser)
+            messageRouter = null
+            cefClient = null
+            browserCloser = null
+            browser = null
+            handles
         }
-        messageRouter = null
-        cefClient?.dispose()
-        cefClient = null
+        router?.let { r ->
+            runCatching { client?.removeMessageRouter(r) }
+            runCatching { r.dispose() }
+        }
+        // Closes the browser for real and then disposes the client; without
+        // a closer (init failed half-way) the client is disposed directly.
+        if (closer != null) closer.close() else client?.let { c -> runCatching { c.dispose() } }
         evalCallbacks.clear()
         renderHandler.clear()
-
-        // CEF gets a grace period to do this itself; whatever is still alive
-        // after it is a leak, and is force-exited. Off the calling thread so a
-        // destroy() from inside an extension never blocks on it.
-        val owned = ownedHelperPids.toList()
-        ownedHelperPids.clear()
-        if (owned.isNotEmpty()) {
-            helperKiller.schedule({ killHelpers(owned) }, HELPER_KILL_GRACE_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
-        }
     }
 
     override fun setNetworkAvailable(networkUp: Boolean): Unit = throw RuntimeException("Stub!")

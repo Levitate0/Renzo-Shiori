@@ -304,6 +304,10 @@ public sealed class SourceHealthService
         // Our own overlapping calls into one extension instance, not the site.
         if (m.Contains("must not be called concurrently", StringComparison.OrdinalIgnoreCase))
             return SourceFailureKind.Transport;
+        // The extension runner turned the call away because that site already
+        // holds its share of workers (SidecarServer's per-site cap).
+        if (m.Contains("sidecar site slots full", StringComparison.Ordinal))
+            return SourceFailureKind.Transport;
         return SourceFailureKind.Error;
     }
 }

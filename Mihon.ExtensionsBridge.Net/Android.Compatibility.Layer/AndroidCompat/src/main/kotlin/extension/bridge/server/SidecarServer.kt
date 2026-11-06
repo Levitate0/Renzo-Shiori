@@ -68,10 +68,48 @@ object SidecarServer {
      * any suspended wait; blocking I/O is bounded separately by OkHttp's own
      * call timeout.
      */
-    private val callTimeoutMs = ((System.getenv("RENZO_SIDECAR_CALL_TIMEOUT_S")?.toLongOrNull() ?: 150L) * 1000)
+    //
+    // 110 s, under the app's own 120 s: the app retries a call it gave up on,
+    // and with 150 s here the abandoned call still held its worker when the
+    // retry arrived, so a slow site took two workers per request.
+    private val callTimeoutMs = ((System.getenv("RENZO_SIDECAR_CALL_TIMEOUT_S")?.toLongOrNull() ?: 110L) * 1000)
 
     private fun <T> bounded(block: suspend kotlinx.coroutines.CoroutineScope.() -> T): T =
         runBlocking { withTimeout(callTimeoutMs) { block() } }
+
+    /**
+     * A source call that also holds one of its site's slots: at most
+     * [perSiteCap] calls per site at once. One site that hangs used to take
+     * every worker. On 2026-11-05 18:11, all 48 were parked in page calls
+     * (WebView sources stuck behind a captcha, and the app's retries on top),
+     * nothing completed, and the watchdog killed the JVM. The "wedged" dumps of
+     * Nov 2 and Nov 4 are the same. A call past the cap waits briefly, then
+     * fails as busy, so the other sites keep their workers.
+     */
+    private fun <T> bounded(s: CatalogueSource, block: suspend kotlinx.coroutines.CoroutineScope.() -> T): T {
+        val site = siteKeys.computeIfAbsent(s.id) {
+            (s as? HttpSource)?.let { h -> runCatching { h.baseUrl.toHttpUrlOrNull()?.host }.getOrNull() }
+                ?.removePrefix("www.") ?: "source-${s.id}"
+        }
+        val slot = siteSlots.computeIfAbsent(site) { java.util.concurrent.Semaphore(perSiteCap) }
+        if (!slot.tryAcquire(3, java.util.concurrent.TimeUnit.SECONDS)) {
+            // "site slots full" is matched by SourceHealthService.Classify as our
+            // own plumbing, not the site failing.
+            throw IllegalStateException("$site: sidecar site slots full ($perSiteCap calls to it already running)")
+        }
+        try {
+            return bounded(block)
+        } finally {
+            slot.release()
+        }
+    }
+
+    /** Calls per site at once: a sixth of the workers (8 of 48), at least 4. */
+    private val perSiteCap by lazy {
+        System.getenv("RENZO_SIDECAR_PER_SITE")?.toIntOrNull()?.coerceAtLeast(1) ?: maxOf(4, workers / 6)
+    }
+    private val siteKeys = ConcurrentHashMap<Long, String>()
+    private val siteSlots = ConcurrentHashMap<String, java.util.concurrent.Semaphore>()
 
     // Work accounting for the status probe below.
     private val inflight = java.util.concurrent.atomic.AtomicInteger()
@@ -308,12 +346,12 @@ object SidecarServer {
 
     private fun popular(req: JsonObject): String {
         val s = src(req); val page = req["page"]!!.jsonPrimitive.content.toInt()
-        return bounded { s.getPopularManga(page) }.let(::mangasPage)
+        return bounded(s) { s.getPopularManga(page) }.let(::mangasPage)
     }
 
     private fun latest(req: JsonObject): String {
         val s = src(req); val page = req["page"]!!.jsonPrimitive.content.toInt()
-        return bounded { s.getLatestUpdates(page) }.let(::mangasPage)
+        return bounded(s) { s.getLatestUpdates(page) }.let(::mangasPage)
     }
 
     private fun search(req: JsonObject): String {
@@ -321,7 +359,7 @@ object SidecarServer {
         val page = req["page"]!!.jsonPrimitive.content.toInt()
         val query = req["query"]?.jsonPrimitive?.content ?: ""
         val filters: FilterList = try { s.getFilterList() } catch (_: Throwable) { FilterList() }
-        return bounded { s.getSearchManga(page, query, filters) }.let(::mangasPage)
+        return bounded(s) { s.getSearchManga(page, query, filters) }.let(::mangasPage)
     }
 
     // Sources build requests as GET(baseUrl + entry.url), i.e. they expect a source-RELATIVE url.
@@ -376,8 +414,8 @@ object SidecarServer {
         val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relManga(s, it) }
         // Go through the 1.6 combined call: newer sources implement getMangaUpdate and leave
         // getMangaDetails throwing; the compat default delegates to getMangaDetails for old sources.
-        val out = if (s is HttpSource) bounded { s.getMangaUpdate(manga, emptyList(), true, false).manga }
-                  else bounded { s.getMangaDetails(manga) }
+        val out = if (s is HttpSource) bounded(s) { s.getMangaUpdate(manga, emptyList(), true, false).manga }
+                  else bounded(s) { s.getMangaDetails(manga) }
         // The 1.6 combined getMangaUpdate returns a manga carrying only CHANGED fields, expecting the
         // caller to merge it onto the existing entry — so SManga's lateinit `url`/`title` are often left
         // unset and throw when we serialize them or call getMangaUrl. Backfill both from the request.
@@ -393,8 +431,8 @@ object SidecarServer {
     private fun chapters(req: JsonObject): String {
         val s = src(req)
         val manga = mangaFrom(req["manga"]!! as JsonObject).also { it.url = relManga(s, it) }
-        val list = if (s is HttpSource) bounded { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
-                   else bounded { s.getChapterList(manga) }
+        val list = if (s is HttpSource) bounded(s) { s.getMangaUpdate(manga, emptyList(), false, true).chapters }
+                   else bounded(s) { s.getChapterList(manga) }
         return buildJsonArray {
             for (c in list) {
                 // The absolute browser URL, exactly like the IKVM path's parsed.RealUrl =
@@ -410,10 +448,10 @@ object SidecarServer {
         val s = src(req)
         val chapter = chapterFrom(req["chapter"]!! as JsonObject).also { it.url = relChapter(s, it) }
         val list = try {
-            bounded { s.getPageList(chapter) }
+            bounded(s) { s.getPageList(chapter) }
         } catch (t: Throwable) {
             if (!isWebViewTimeout(t) || !warmCloudflare(s, chapter)) throw t
-            bounded { s.getPageList(chapter) }
+            bounded(s) { s.getPageList(chapter) }
         }
         return buildJsonArray { for (p in list) add(pageJson(p)) }.toString()
     }
@@ -470,6 +508,8 @@ object SidecarServer {
                 // one call later as a meaningless "no scheme was found for null".
                 p.imageUrl = bounded { s.getImageUrl(p) }
             }
+            // Not under the per-site cap: the app already queues images per
+            // image host, and a chapter's pages would otherwise wait on 8 slots.
             val resp = bounded { s.getImage(p) }
             try {
                 if (resp.code != 200) throw RuntimeException("Request error! ${resp.code}")
@@ -624,6 +664,11 @@ object SidecarServer {
             put("lastCompletedAgoMs", System.currentTimeMillis() - lastCompleted.get())
             put("heapUsedMb", (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024))
             put("heapMaxMb", rt.maxMemory() / (1024 * 1024))
+            // Browser lifecycle counters; KcefStats has no dependencies, so this
+            // can't fail even before /setup.
+            runCatching {
+                put("kcef", buildJsonObject { xyz.nulldev.androidcompat.webkit.KcefStats.snapshot().forEach { (k, v) -> put(k, v) } })
+            }
         }.toString()
     }
 
