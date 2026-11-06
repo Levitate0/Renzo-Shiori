@@ -156,9 +156,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
                     int.TryParse(originalPort, out port);
                     if (prefs.SocksProxy.Port != port)
                     {
-                        string set = originalPort.ToString();
-                        if (set == "0")
-                            set = "";
+                        // The NEW port: this wrote the old one back, so a proxy set
+                        // here was applied as "host:" with no port at all.
+                        string set = prefs.SocksProxy.Port == 0 ? "" : prefs.SocksProxy.Port.ToString();
                         config.setSocksProxyPort(set);
                         update = true;
                     }
