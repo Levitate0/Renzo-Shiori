@@ -340,10 +340,14 @@ public class CoinSiteRegistry
     }
 
     /// <summary>
-    /// Sites the user can add a login for: every auto-detected coin site, plus any
-    /// source they actually have series from (so gated chapters on Keyoapp/Madara/
-    /// WordPress-style sites like Violet Scans can be unlocked even though those
-    /// don't advertise a coin gate). Each entry is flagged as coin-detected or not.
+    /// Sites the user can add a login for: every auto-detected coin site, every
+    /// enabled installed source, and any source they have series from (so gated
+    /// chapters on Keyoapp/Madara/WordPress-style sites like Violet Scans can be
+    /// unlocked even though those don't advertise a coin gate). Installed sources
+    /// count on their own because coin detection reads preferences.json, which
+    /// the sidecar never writes: Manta (2026-11-07, sign-in by Google, so pasted
+    /// cookie only) was installed after the cutover and could not be chosen.
+    /// Each entry is flagged as coin-detected or not.
     /// </summary>
     public async Task<List<(CoinSiteDefinition def, bool coin)>> GetLoginableSitesAsync(CancellationToken token = default)
     {
@@ -357,8 +361,11 @@ public class CoinSiteRegistry
             .Select(a => a.Provider)
             .Distinct()
             .ToListAsync(token).ConfigureAwait(false);
+        IEnumerable<string> installed = (await _providerCache.GetCachedProvidersAsync(token).ConfigureAwait(false))
+            .Where(p => p.IsActive)
+            .Select(p => p.Name);
 
-        foreach (string name in providersWithSeries)
+        foreach (string name in providersWithSeries.Concat(installed).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (byName.ContainsKey(name))
                 continue;
