@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Models.Enums;
@@ -487,7 +487,8 @@ namespace RenzoBackend.Services.Providers
             else if (type== ValueType.StringCollection && obj is string strc)
             {
                 string[] strm=new string[0];
-                if (strc.StartsWith("[\""))
+                // An empty set is "[]"; the bracket-split below would make it one empty value.
+                if (strc.StartsWith("[\"") || strc.Trim() == "[]")
                 {
                     strm = JsonSerializer.Deserialize<string[]>(strc);
                 } else if (strc.StartsWith("[") && strc.EndsWith("]"))

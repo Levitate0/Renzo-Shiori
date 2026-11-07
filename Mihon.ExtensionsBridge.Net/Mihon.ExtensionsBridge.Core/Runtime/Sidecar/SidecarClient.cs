@@ -148,6 +148,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public Task UnloadAsync(string jarPath, CancellationToken token = default) =>
             PostAsync("/source/unload", new { jarPath }, token);
 
+        /// <summary>The source's settings, live from its own preference screen (field names match <see cref="KeyPreference"/>).</summary>
+        public async Task<List<KeyPreference>> PreferencesAsync(long id, CancellationToken token = default)
+        {
+            using var doc = await PostJsonAsync("/source/preferences", new { id }, token).ConfigureAwait(false);
+            return doc.RootElement.Deserialize<List<KeyPreference>>() ?? new();
+        }
+
+        /// <summary>Sets setting <paramref name="index"/>; a Set&lt;String&gt; value is a JSON array of strings.</summary>
+        public Task SetPreferenceAsync(long id, int index, string value, CancellationToken token = default) =>
+            PostAsync("/source/preference", new { id, index, value }, token);
+
         // ---- source operations ----
 
         public Task<MangaList> PopularAsync(long id, int page, CancellationToken token = default) =>

@@ -529,15 +529,10 @@ object SidecarServer {
 
     // Preferences: full PreferenceScreen collection/set is implemented in a follow-up
     // (SidecarPreferences). Stubbed here so the first end-to-end slice compiles and runs.
-    private fun preferences(req: JsonObject): String {
-        src(req)
-        return "[]"
-    }
+    private fun preferences(req: JsonObject): String = SidecarPreferences.list(src(req))
 
-    private fun setPreference(req: JsonObject): String {
-        src(req)
-        return """{"ok":true}"""
-    }
+    private fun setPreference(req: JsonObject): String =
+        SidecarPreferences.set(src(req), req["index"]!!.jsonPrimitive.content.toInt(), req["value"]?.jsonPrimitive?.contentOrNull ?: "")
 
     private fun unload(req: JsonObject): String {
         val jarPath = req["jarPath"]!!.jsonPrimitive.content

@@ -152,6 +152,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 var dataRoot = string.IsNullOrEmpty(_opts.DataRoot) ? Path.Combine(_folder.AndroidFolder, "sidecar") : _opts.DataRoot;
                 var tempRoot = string.IsNullOrEmpty(_opts.TempRoot) ? _folder.TempFolder : _opts.TempRoot;
                 Directory.CreateDirectory(dataRoot);
+                SidecarSettingsMigration.Run(_folder.AndroidFolder, dataRoot, _logger);
                 await StartProcessAsync(token).ConfigureAwait(false);
                 await WaitHealthyAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false);
                 await Client.SetupAsync(dataRoot, tempRoot, token).ConfigureAwait(false);

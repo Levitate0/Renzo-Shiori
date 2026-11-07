@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Mihon.ExtensionsBridge.Models;
 using Mihon.ExtensionsBridge.Models.Abstractions;
 using Mihon.ExtensionsBridge.Models.Extensions;
@@ -127,11 +127,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             return ThrottledImageAsync(new Page { Index = 0, Url = url, ImageUrl = url }, token);
         }
 
-        // Preferences: the sidecar's preference endpoints are being completed; until then these are
-        // safe no-ops (sources still function; only source-specific settings are unavailable).
-        public List<KeyPreference> GetPreferences() => new();
-        public void SetPreference(int position, string value) { }
-        public void SetPreference(KeyPreference preference) { }
-        public void SetPreferences(IEnumerable<KeyPreference> preferences) { }
+        // Settings, live from the extension's own preference screen in the sidecar.
+        // Synchronous because ISourceInterop is; each is one local call.
+        public List<KeyPreference> GetPreferences() =>
+            _meta.IsConfigurable ? _client.PreferencesAsync(_meta.Id).GetAwaiter().GetResult() : new();
+        public void SetPreference(int position, string value) =>
+            _client.SetPreferenceAsync(_meta.Id, position, value).GetAwaiter().GetResult();
+        public void SetPreference(KeyPreference preference) => SetPreference(preference.Index, preference.CurrentValue);
+        public void SetPreferences(IEnumerable<KeyPreference> preferences)
+        {
+            foreach (KeyPreference p in preferences)
+                SetPreference(p.Index, p.CurrentValue);
+        }
     }
 }

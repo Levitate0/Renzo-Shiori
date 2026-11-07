@@ -156,37 +156,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
         public async Task<List<UniquePreference>> LoadPreferencesAsync(CancellationToken token)
         {
             var sourcePrefs = await SyncSourcePreferencesAsync(token).ConfigureAwait(false);
-            sourcePrefs = SortPreferencesByLanguageFallback(sourcePrefs);
-            Dictionary<string, UniquePreference> uniquePrefs = new Dictionary<string, UniquePreference>();
-            foreach (var sp in sourcePrefs)
-            {
-                foreach (var p in sp.Preferences)
-                {
-                    string uniqueKey = p.Key;
-                    int lastUnderscore = p.Key.LastIndexOf('_');
-                    string possibleEnd = "_" + sp.Language;
-                    if (uniqueKey.EndsWith(possibleEnd))
-                    {
-                        uniqueKey = uniqueKey.Substring(0, uniqueKey.Length - possibleEnd.Length);
-                    }
-                    else if (lastUnderscore > 1)
-                    {
-                        uniqueKey = uniqueKey.Substring(0, lastUnderscore);
-                    }
-                    if (uniquePrefs.ContainsKey(uniqueKey))
-                    {
-                        uniquePrefs[uniqueKey].Languages.Add(new KeyLanguage { Key = p.Key, Language = sp.Language });
-                        continue;
-                    }
-                    UniquePreference up = new UniquePreference
-                    {
-                        Languages = new List<KeyLanguage> { new KeyLanguage { Key = p.Key, Language = sp.Language } },
-                        Preference = p,
-                    };
-                    uniquePrefs.Add(uniqueKey, up);
-                }
-            }
-            return uniquePrefs.Values.ToList();
+            return PreferenceGrouping.Group(sourcePrefs);
         }
 
         public async Task SavePreferencesAsync(List<UniquePreference> press, CancellationToken token)
@@ -365,16 +335,6 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
                 await System.IO.File.WriteAllTextAsync(prefs, updatedJson, token).ConfigureAwait(false);
             }
             return existing;
-        }
-
-        private static List<SourcePreference> SortPreferencesByLanguageFallback(List<SourcePreference> prefs)
-        {
-            string[] languageFallbackOrder = new[] { "en", "es", "fr", "de", "it", "pt", "ru", "ja", "zh" };
-            return prefs.OrderBy(p =>
-            {
-                int index = Array.IndexOf(languageFallbackOrder, p.Language);
-                return index >= 0 ? index : int.MaxValue;
-            }).ThenBy(p => p.Language).ToList();
         }
     }
 }
