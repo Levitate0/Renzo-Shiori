@@ -50,6 +50,8 @@ export function SearchSeriesStep({
   const LOCAL_STORAGE_KEY = existingSources && existingSources.length > 0
     ? 'renzo.selectedSources.addSources'
     : 'renzo.selectedSources.addSeries';
+  // Every source id seen when the selection was last restored.
+  const KNOWN_KEY = `${LOCAL_STORAGE_KEY}.known`;
 
   // Refs to track state and prevent race conditions
   const initializationState = React.useRef<{
@@ -87,6 +89,17 @@ export function SearchSeriesStep({
         console.warn('[SearchSeriesStep] Failed to parse stored sources:', error);
       }
 
+      // A source installed since the selection was saved starts selected, or a
+      // new source (a sideloaded extension) never shows up in results. The
+      // first visit after this was added records the list without adding any.
+      try {
+        const known = JSON.parse(localStorage.getItem(KNOWN_KEY) ?? "null");
+        if (Array.isArray(known) && restoredSources.length > 0) {
+          restoredSources.push(...currentSourceIds.filter(id => !known.includes(id) && !restoredSources.includes(id)));
+        }
+        localStorage.setItem(KNOWN_KEY, JSON.stringify(currentSourceIds));
+      } catch { /* storage unavailable: keep the restored choice */ }
+
       // Determine what sources to select
       const sourcesToSelect = restoredSources.length > 0 ? restoredSources : currentSourceIds;// Update state
       setSelectedSources(sourcesToSelect);
@@ -102,6 +115,7 @@ export function SearchSeriesStep({
 
     if (sourcesChanged) {// When sources change, reset to all sources
       setSelectedSources(currentSourceIds);
+      try { localStorage.setItem(KNOWN_KEY, JSON.stringify(currentSourceIds)); } catch { /* ignore */ }
       state.lastAvailableSourceIds = currentSourceIds;
       state.hasRestoredFromStorage = false;
     }

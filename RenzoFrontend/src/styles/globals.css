@@ -874,6 +874,29 @@
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
+.src-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.sel-all {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--as-fg-muted, var(--muted-foreground)));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.sel-all:hover {
+  color: hsl(var(--as-fg, var(--foreground)));
+  border-color: hsla(var(--primary-h) var(--primary-s) var(--primary-l) / 0.5);
+}
 .sel-count .dot {
   width: 5px;
   height: 5px;

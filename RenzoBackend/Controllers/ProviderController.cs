@@ -110,19 +110,20 @@ namespace RenzoBackend.Controllers
         }
 
         /// <summary>Auto-enables every MihonProviderId belonging to a just-installed package for the acting user, so they see it immediately without a second opt-in step.</summary>
-        private Task EnableForInstallerAsync(string pkgName, CancellationToken token) => EnablePackageForUserAsync(pkgName, CurrentUserId, token);
+        private Task EnableForInstallerAsync(string pkgName, CancellationToken token) => EnablePackageForUserAsync(_db, pkgName, CurrentUserId, token);
 
-        private async Task EnablePackageForUserAsync(string pkgName, Guid userId, CancellationToken token)
+        /// <summary>Enables every source of an installed package for one user. Shared with the sideload in ExtensionsController.</summary>
+        internal static async Task EnablePackageForUserAsync(AppDbContext db, string pkgName, Guid userId, CancellationToken token)
         {
             if (userId == Guid.Empty)
                 return;
-            List<string> providerIds = await _db.Providers
+            List<string> providerIds = await db.Providers
                 .Where(p => p.SourcePackageName == pkgName)
                 .Select(p => p.MihonProviderId)
                 .ToListAsync(token).ConfigureAwait(false);
             if (providerIds.Count == 0)
                 return;
-            List<string> already = await _db.UserProviders
+            List<string> already = await db.UserProviders
                 .Where(p => p.UserId == userId && providerIds.Contains(p.MihonProviderId))
                 .Select(p => p.MihonProviderId)
                 .ToListAsync(token).ConfigureAwait(false);
@@ -130,9 +131,9 @@ namespace RenzoBackend.Controllers
             foreach (string id in providerIds)
             {
                 if (alreadySet.Add(id))
-                    _db.UserProviders.Add(new UserProviderEntity { Id = Guid.NewGuid(), UserId = userId, MihonProviderId = id });
+                    db.UserProviders.Add(new UserProviderEntity { Id = Guid.NewGuid(), UserId = userId, MihonProviderId = id });
             }
-            await _db.SaveChangesAsync(token).ConfigureAwait(false);
+            await db.SaveChangesAsync(token).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -146,7 +147,7 @@ namespace RenzoBackend.Controllers
         [ProducesResponseType(200)]
         public async Task<ActionResult> EnablePackageForMeAsync([FromRoute] string pkgName, CancellationToken token = default)
         {
-            await EnablePackageForUserAsync(pkgName, CurrentUserId, token).ConfigureAwait(false);
+            await EnablePackageForUserAsync(_db, pkgName, CurrentUserId, token).ConfigureAwait(false);
             return Ok(new { success = true });
         }
 

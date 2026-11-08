@@ -219,6 +219,19 @@ export function ConfirmSeriesStep({
     [setFormState],
   );
 
+  // Select all / Deselect all in one go; unselectable rows stay as they are.
+  const handleSelectAll = React.useCallback(
+    (selected: boolean) => {
+      setFormState((prev: AddSeriesState) => ({
+        ...prev,
+        fullSeries: prev.fullSeries.map((series: FullSeries) =>
+          series.isUnselectable ? series : { ...series, isSelected: selected },
+        ),
+      }));
+    },
+    [setFormState],
+  );
+
   const handleStorageChange = React.useCallback(
     (seriesKey: string, checked: boolean): void => {
       setFormState((prev: AddSeriesState): AddSeriesState => {
@@ -400,6 +413,7 @@ export function ConfirmSeriesStep({
   const selectedCount = validFullSeries.filter(
     (s) => s.isSelected && !s.isUnselectable,
   ).length;
+  const selectableCount = validFullSeries.filter((s) => !s.isUnselectable).length;
 
   return (
     <div className="confirm-scroll">
@@ -468,12 +482,23 @@ export function ConfirmSeriesStep({
             <h3>
               Track from <em>these sources</em>
             </h3>
-            {selectedCount > 0 && (
-              <span className="sel-count">
-                <span className="dot" />
-                {selectedCount} OF {validFullSeries.filter((s) => !s.isUnselectable).length}
-              </span>
-            )}
+            <div className="src-head-actions">
+              {selectedCount > 0 && (
+                <span className="sel-count">
+                  <span className="dot" />
+                  {selectedCount} OF {selectableCount}
+                </span>
+              )}
+              {selectableCount > 1 && (
+                <button
+                  type="button"
+                  className="sel-all"
+                  onClick={() => handleSelectAll(selectedCount < selectableCount)}
+                >
+                  {selectedCount < selectableCount ? "Select all" : "Deselect all"}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Desktop table */}

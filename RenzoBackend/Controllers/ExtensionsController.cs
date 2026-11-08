@@ -4,6 +4,8 @@ using RenzoBackend.Services.Bridge;
 using RenzoBackend.Services.Providers;
 using Microsoft.AspNetCore.Mvc;
 using Mihon.ExtensionsBridge.Models;
+using RenzoBackend.Data;
+using RenzoBackend.Models.Database;
 
 namespace RenzoBackend.Controllers;
 
@@ -18,12 +20,14 @@ public class ExtensionsController : ControllerBase
 {
     private readonly MihonBridgeService _mihon;
     private readonly ProviderCacheService _providerCache;
+    private readonly AppDbContext _db;
     private readonly ILogger _logger;
 
-    public ExtensionsController(MihonBridgeService mihon, ProviderCacheService providerCache, ILogger<ExtensionsController> logger)
+    public ExtensionsController(MihonBridgeService mihon, ProviderCacheService providerCache, AppDbContext db, ILogger<ExtensionsController> logger)
     {
         _mihon = mihon;
         _providerCache = providerCache;
+        _db = db;
         _logger = logger;
     }
 
@@ -124,6 +128,12 @@ public class ExtensionsController : ControllerBase
                 return StatusCode(422, new { error = "The APK failed to compile — the previous version remains active." });
             // A newly sideloaded extension may introduce new sources.
             await _providerCache.RefreshCacheAsync(false, token).ConfigureAwait(false);
+            // Like an install: the person who sideloaded it sees its sources
+            // straight away. Without this a sideloaded source was installed but
+            // in nobody's enabled list, so search and Add Series never showed it.
+            string? package = g.Entries[g.ActiveEntry].Extension.Package;
+            if (!string.IsNullOrEmpty(package) && HttpContext.Items["User"] is UserEntity user)
+                await ProviderController.EnablePackageForUserAsync(_db, package, user.Id, token).ConfigureAwait(false);
             _logger.LogInformation("Sideloaded extension {Name}, active version {Version} (pinned)", g.Name,
                 g.Entries[g.ActiveEntry].Extension.Version);
             return Ok(ToDto(g));
