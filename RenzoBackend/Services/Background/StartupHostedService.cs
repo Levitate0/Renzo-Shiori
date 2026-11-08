@@ -246,6 +246,35 @@ namespace RenzoBackend.Services.Background
                     _logger.LogError(ex, "Per-user source visibility backfill failed");
                 }
 
+                // A sideloaded source no one has enabled: sideloads before the
+                // sideload enabled its sources for the person doing it (Baiheverse,
+                // 2026-11-07) left the source installed but in nobody's list, so
+                // search and Add Series never showed it. Enable it for everyone
+                // who can sideload. Cheap and idempotent: once each one is in
+                // someone's list this finds nothing.
+                try
+                {
+                    List<string> orphaned = await db.Providers
+                        .Where(p => p.SourceRepositoryId == "Local" && !p.IsDead &&
+                                    !db.UserProviders.Any(u => u.MihonProviderId == p.MihonProviderId))
+                        .Select(p => p.MihonProviderId).ToListAsync(cancellationToken).ConfigureAwait(false);
+                    if (orphaned.Count > 0)
+                    {
+                        List<Guid> managers = await db.Users.Where(u => u.Level >= Models.Enums.UserLevel.Manager)
+                            .Select(u => u.Id).ToListAsync(cancellationToken).ConfigureAwait(false);
+                        foreach (Guid uid in managers)
+                            foreach (string pid in orphaned)
+                                db.UserProviders.Add(new Models.Database.UserProviderEntity { Id = Guid.NewGuid(), UserId = uid, MihonProviderId = pid });
+                        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                        _logger.LogInformation("Enabled {Count} sideloaded source(s) that no one had enabled, for {Users} manager(s).",
+                            orphaned.Count, managers.Count);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Sideloaded source visibility repair failed");
+                }
+
                 // One-time (self-limiting) sweep: file every un-categorized series
                 // into its category subfolder ({owner}/{Category}/{leaf}). Series
                 // added before categorization — or title-only imports whose source
