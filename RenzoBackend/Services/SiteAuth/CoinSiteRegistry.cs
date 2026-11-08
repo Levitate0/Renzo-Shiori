@@ -39,6 +39,12 @@ public class CoinSiteDefinition
     /// then works from the session cookie they paste.
     /// </summary>
     public bool CaptchaRequired { get; set; }
+    /// <summary>
+    /// No endpoint takes a sign-in POST (the site signs in from its own script,
+    /// e.g. a Next.js server action), so the extensions' browser fills the
+    /// site's own form instead (BrowserSignIn).
+    /// </summary>
+    public bool BrowserForm { get; set; }
 }
 
 /// <summary>
@@ -430,6 +436,7 @@ public class CoinSiteRegistry
                 def.SubmitField = saved.SubmitField;
                 def.SubmitValue = saved.SubmitValue;
                 def.CaptchaRequired = saved.CaptchaRequired;
+                def.BrowserForm = saved.BrowserForm;
                 // Already moved to the live host by FreshLocal.
                 if (!string.IsNullOrEmpty(saved.Domain)) def.Domain = saved.Domain;
                 if (saved.ApiBase != null) def.ApiBase = saved.ApiBase;

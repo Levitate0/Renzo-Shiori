@@ -4,6 +4,7 @@ using RenzoBackend.Models.Dto;
 using RenzoBackend.Services.Providers;
 using RenzoBackend.Services.Settings;
 using Microsoft.EntityFrameworkCore;
+using Mihon.ExtensionsBridge.Core.Runtime.Sidecar;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -36,10 +37,12 @@ public class SiteAuthService
     private readonly CoinSiteRegistry _registry;
     private readonly SettingsService _settings;
     private readonly IHttpClientFactory _httpFactory;
+    private readonly IServiceProvider _services;
     private readonly ILogger _logger;
 
     public SiteAuthService(AppDbContext db, CookieJarBridge jar, SiteCredentialProtector protector,
-        CoinSiteRegistry registry, SettingsService settings, IHttpClientFactory httpFactory, ILogger<SiteAuthService> logger)
+        CoinSiteRegistry registry, SettingsService settings, IHttpClientFactory httpFactory, IServiceProvider services,
+        ILogger<SiteAuthService> logger)
     {
         _db = db;
         _jar = jar;
@@ -47,8 +50,11 @@ public class SiteAuthService
         _registry = registry;
         _settings = settings;
         _httpFactory = httpFactory;
+        _services = services;
         _logger = logger;
     }
+
+    private SidecarProcessManager? Sidecar => _services.GetService(typeof(SidecarProcessManager)) as SidecarProcessManager;
 
     private async Task<string?> DomainForAsync(string provider, CancellationToken token)
     {
@@ -290,6 +296,16 @@ public class SiteAuthService
         // survive the redirect (it arrives as a GET, without the credentials).
         await FollowSiteMoveAsync(cred.Provider, def, token).ConfigureAwait(false);
 
+        // A site that signed in through its own form before takes no POST.
+        if (def.BrowserForm)
+        {
+            SiteLoginResult? viaForm = await TryBrowserSignInAsync(cred, def, password, token).ConfigureAwait(false);
+            if (viaForm != null)
+                return viaForm;
+            // The form isn't there any more: search again.
+            def.BrowserForm = false;
+        }
+
         foreach (string loginUrl in _registry.CandidateLoginUrls(def))
         {
             if (loginAttempts >= MaxLoginAttempts) break;
@@ -382,9 +398,83 @@ public class SiteAuthService
                 def.Confirmed = false;
         }
 
+        // No endpoint takes a POST: the site may sign in from its own script.
+        SiteLoginResult? viaBrowser = await TryBrowserSignInAsync(cred, def, password, token).ConfigureAwait(false);
+        if (viaBrowser != null)
+            return viaBrowser;
+
         cred.Status = "failed";
         cred.StatusDetail = lastDetail + " If it keeps failing, paste a session cookie instead.";
         return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
+    }
+
+    /// <summary>
+    /// The last way in, with no site code: the site's own sign-in form in the
+    /// extensions' browser (<see cref="BrowserSignIn"/>), for sites whose
+    /// sign-in no POST reaches (Baiheverse signs in through a Next.js server
+    /// action). The session is whatever cookies the sign-in changed. Returns
+    /// null when there was no form to use, so the caller reports what the POST
+    /// search found instead.
+    /// </summary>
+    private async Task<SiteLoginResult?> TryBrowserSignInAsync(SiteCredentialEntity cred, CoinSiteDefinition def, string password,
+        CancellationToken token)
+    {
+        if (Sidecar is not { } sidecar || string.IsNullOrEmpty(def.Domain))
+            return null;
+        string host = def.Domain.TrimStart('.');
+        static string Sig(HarvestedCookie c) => c.Name + "=" + c.Value;
+        HashSet<string> before = _jar.Snapshot(host).Select(Sig).ToHashSet();
+        string outcome;
+        try
+        {
+            outcome = await BrowserSignIn.RunAsync(sidecar, "https://" + host + "/", cred.Username, password, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogInformation("Site login {Provider}: the browser sign-in couldn't run: {Msg}", cred.Provider, ex.Message);
+            return null;
+        }
+        _logger.LogInformation("Site login {Provider}: browser sign-in on the site's form: {Outcome}", cred.Provider, outcome);
+
+        SiteLoginResult Failed(string detail)
+        {
+            cred.Status = "failed";
+            cred.StatusDetail = detail;
+            return new SiteLoginResult(false, cred.Status, cred.StatusDetail, 0);
+        }
+        switch (outcome)
+        {
+            case "captcha":
+                def.CaptchaRequired = true;
+                def.BrowserForm = false;
+                _registry.SaveLocal(def);
+                return NeedsPerson(cred, ended: false);
+            case "rejected":
+                return Failed($"{cred.Provider}'s sign-in form didn't accept the username/password.");
+            case "done":
+                break;
+            default:
+                return null;
+        }
+
+        List<HarvestedCookie> session = _jar.Snapshot(host).Where(c => !IsVisitorCookie(c.Name)).ToList();
+        if (!session.Any(c => !before.Contains(Sig(c))))
+            return Failed($"Signed in on {cred.Provider}'s own form, but the site keeps that sign-in inside the page rather than in a cookie, " +
+                "so chapters can't use it. " + SignInAdvice);
+        if ((await VerifySessionAsync(def, session, token).ConfigureAwait(false)).Verdict == SessionVerdict.Unauthenticated)
+            return Failed($"Signed in on {cred.Provider}'s own form, but the site still sees a signed-out visitor.");
+
+        cred.EncryptedCookies = _protector.Encrypt(SerializeCookies(session));
+        cred.LastLoginAt = DateTime.UtcNow;
+        cred.Status = "ok";
+        cred.StatusDetail = $"Logged in on the site's own sign-in form, {session.Count} cookies active.";
+        def.BrowserForm = true;
+        def.Confirmed = true;
+        def.CaptchaRequired = false;
+        _registry.SaveLocal(def);
+        _logger.LogInformation("Site login {Provider}: ok via its sign-in form in the browser", cred.Provider);
+        return new SiteLoginResult(true, cred.Status, cred.StatusDetail, session.Count);
     }
 
     private const string SignInAdvice =
@@ -593,7 +683,7 @@ public class SiteAuthService
 
             bool endpointExists = resp.StatusCode != HttpStatusCode.NotFound && resp.StatusCode != HttpStatusCode.MethodNotAllowed;
             List<HarvestedCookie> harvested = FromContainer(jar, def.Domain);
-            bool gotSession = harvested.Count > 0 && resp.IsSuccessStatusCode &&
+            bool gotSession = harvested.Any(c => !IsVisitorCookie(c.Name)) && resp.IsSuccessStatusCode &&
                 (string.IsNullOrEmpty(def.SessionCookieName) ||
                  harvested.Any(c => IsSessionCookie(def, c.Name)));
 
@@ -894,6 +984,13 @@ public class SiteAuthService
             _logger.LogInformation("Restored {Count} site-login cookies into the shared jar", total);
     }
 
+    /// <summary>
+    /// Puts a saved login's cookies back where the jar lacks them. A cookie the
+    /// jar still holds is left alone: sites rotate session cookies while they
+    /// are used (Supabase refresh tokens are single-use), so the jar's copy is
+    /// the newer one, and the copy saved at sign-in would hand the site a spent
+    /// token that can end the whole session.
+    /// </summary>
     private int ReinjectCached(SiteCredentialEntity cred)
     {
         string? json = _protector.TryDecrypt(cred.EncryptedCookies);
@@ -902,7 +999,18 @@ public class SiteAuthService
         try
         {
             var cookies = JsonSerializer.Deserialize<List<HarvestedCookie>>(json);
-            return cookies == null ? 0 : _jar.Inject(cookies);
+            if (cookies == null || cookies.Count == 0)
+                return 0;
+            var held = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string host in cookies.Select(c => c.Domain.TrimStart('.').ToLowerInvariant()).Distinct())
+                foreach (HarvestedCookie c in _jar.Snapshot(host))
+                    if (!string.IsNullOrEmpty(c.Value))
+                        held.Add(host + "|" + c.Name);
+            List<HarvestedCookie> missing = cookies
+                .Where(c => !held.Contains(c.Domain.TrimStart('.').ToLowerInvariant() + "|" + c.Name)).ToList();
+            int restored = missing.Count == 0 ? 0 : _jar.Inject(missing);
+            // Cookies already in place count as restored: the session is there.
+            return restored + (cookies.Count - missing.Count);
         }
         catch { return 0; }
     }
@@ -979,6 +1087,21 @@ public class SiteAuthService
         name.StartsWith("__cf", StringComparison.OrdinalIgnoreCase) ||
         name.Equals("_cfuvid", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Cookies a site gives every visitor: language, consent, analytics and
+    /// Cloudflare's. A login that set only these set no session; Baiheverse's
+    /// NEXT_LOCALE made its sign-in page, which ignores a POST, look like a
+    /// successful login.
+    /// </summary>
+    private static bool IsVisitorCookie(string name) => IsCloudflareCookie(name) || VisitorCookie.IsMatch(name);
+
+    private static readonly Regex VisitorCookie = new(
+        @"^(NEXT_LOCALE|locale|lang|language|i18n\w*|_ga\w*|_gid|_gat\w*|_fbp|_gcl_\w+|_hj\w+|cookie_?consent\w*|cookieyes\w*|cc_cookie)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>Supabase's sign-in cookie, sb-&lt;project&gt;-auth-token, split into .0, .1 … when long.</summary>
+    private static readonly Regex SupabaseSession = new(@"^sb-[a-z0-9]+-auth-token(\.\d+)?$", RegexOptions.Compiled);
+
     private async Task<SessionVerdict> VerifyWithJarAsync(
         CoinSiteDefinition def, List<HarvestedCookie> cookies, CookieContainer jar, CancellationToken token)
     {
@@ -986,6 +1109,9 @@ public class SiteAuthService
         {
             // WordPress: the logged-in cookie is definitive and needs no request.
             if (cookies.Any(c => c.Name.StartsWith("wordpress_logged_in_", StringComparison.OrdinalIgnoreCase)))
+                return SessionVerdict.Authenticated;
+            // So is Supabase's: its client only writes it for a signed-in user.
+            if (cookies.Any(c => SupabaseSession.IsMatch(c.Name) && !string.IsNullOrEmpty(c.Value)))
                 return SessionVerdict.Authenticated;
 
             string? domain = def.Domain?.TrimStart('.');

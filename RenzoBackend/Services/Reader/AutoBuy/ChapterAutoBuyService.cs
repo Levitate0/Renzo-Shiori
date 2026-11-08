@@ -44,13 +44,6 @@ public sealed class AutoBuyResultDto
 /// </summary>
 public class ChapterAutoBuyService
 {
-    private static readonly Lazy<string> Script = new(() =>
-    {
-        using Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("autobuy.js")!;
-        using var r = new StreamReader(s);
-        return r.ReadToEnd();
-    });
-
     // One purchase at a time across the server, and a failed chapter isn't
     // retried for a while: reopening it shows the same answer instead of
     // another browser run.
@@ -245,11 +238,9 @@ public class ChapterAutoBuyService
     private sealed record PageRun(PageInspect? Inspect, bool NoCoins, string? SiteText, bool SignedOutAfter, string? LoginOutcome,
         string? ConfirmStep, string? OutcomeStep);
 
-    private static string Call(string fn, params object?[] args) =>
-        Script.Value + "\n;window." + fn + "(" + string.Join(",", args.Select(a => JsonSerializer.Serialize(a))) + ")";
+    private static string Call(string fn, params object?[] args) => BrowserSignIn.Call(fn, args);
 
-    private static SidecarClient.PageScriptStep Ready() =>
-        new("document.readyState=='complete'&&!!document.body&&document.body.innerText.length>200", 30_000);
+    private static SidecarClient.PageScriptStep Ready() => BrowserSignIn.Ready();
 
     private static async Task<PageRun> RunAsync(SidecarProcessManager sidecar, string url, (string User, string Pass)? login, bool dryRun, CancellationToken token)
     {
@@ -257,13 +248,7 @@ public class ChapterAutoBuyService
         int inspectAt;
         if (login is { } l)
         {
-            steps.Add(Ready());
-            steps.Add(new("", 3_000));
-            steps.Add(new(Call("__rzLogin", "open"), 2_000));
-            steps.Add(new(Call("__rzLogin", "form"), 20_000));
-            steps.Add(new(Call("__rzLogin", "submit", l.User, l.Pass), 2_000));
-            steps.Add(new(Call("__rzLogin", "done"), 15_000));
-            steps.Add(new("", 3_000));
+            steps.AddRange(BrowserSignIn.Steps(l.User, l.Pass));
             steps.Add(new("location.href=" + JsonSerializer.Serialize(url) + ";true", 2_000));
             steps.Add(new("", 2_000));
         }
@@ -308,22 +293,12 @@ public class ChapterAutoBuyService
                 catch (JsonException) { }
             }
         }
-        string? loginOutcome = login != null ? Result(4) : null;
+        string? loginOutcome = login != null ? Result(BrowserSignIn.SubmitStep) : null;
         return new PageRun(inspect, noCoins, siteText?.Length > 200 ? siteText[..200] : siteText, signedOutAfter, loginOutcome,
             Result(inspectAt + 1), Result(inspectAt + 2));
     }
 
-    /// <summary>evaluateJavascript hands back JSON: a returned string arrives quoted.</summary>
-    private static string? Unwrap(string? raw)
-    {
-        if (string.IsNullOrEmpty(raw) || raw == "null") return null;
-        if (raw.StartsWith('"'))
-        {
-            try { return JsonSerializer.Deserialize<string>(raw); }
-            catch (JsonException) { return raw; }
-        }
-        return raw;
-    }
+    private static string? Unwrap(string? raw) => BrowserSignIn.Unwrap(raw);
 
     private static AutoBuyResultDto Fail(string reason, string message, string? site = null, decimal? price = null, decimal? balance = null) =>
         new() { Status = "failed", Reason = reason, Message = message, Provider = site, Price = price, Balance = balance };
