@@ -35,8 +35,11 @@ cp "$OUT/Baiheverse.kt.orig" "$SRC"
 { "$BT/d8" --release --min-api 26 --lib "$PLATFORM" \
   --classpath ../../RenzoBackend/sidecar/AndroidCompat-1.0-all.jar \
   --output "$OUT/gen" build/libs/baiheverse.jar; } 2>&1 | { grep -vE 'kotlin metadata|Kotlin metadata|^\s+at |^com\.android\.tools\.r8' || true; }
+# A real resource table (the icon) is required: Shiori's APK reader fails on
+# the empty one aapt2 writes for an APK with no resources.
+"$BT/aapt2" compile --dir res -o "$OUT/res.zip"
 "$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest AndroidManifest.xml -I "$PLATFORM" \
-  --min-sdk-version 26 --target-sdk-version 34
+  --min-sdk-version 26 --target-sdk-version 34 "$OUT/res.zip"
 (cd "$OUT/gen" && zip -qj ../unsigned.apk classes.dex)
 "$BT/zipalign" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 KS=build/debug.keystore

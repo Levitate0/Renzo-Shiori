@@ -4,7 +4,7 @@
     android:versionCode="1"
     android:versionName="1.4.1">
     <uses-feature android:name="tachiyomi.extension" />
-    <application android:label="Tachiyomi: Baiheverse" android:allowBackup="false">
+    <application android:label="Tachiyomi: Baiheverse" android:icon="@mipmap/ic_launcher" android:allowBackup="false">
         <meta-data android:name="tachiyomi.extension.class" android:value=".Baiheverse" />
         <meta-data android:name="tachiyomi.extension.nsfw" android:value="0" />
     </application>
