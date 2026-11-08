@@ -310,6 +310,12 @@ namespace RenzoBackend.Extensions
                 Providers = new List<ProviderExtendedDto>(),
                 Category = CategoryFromPath(s.StoragePath, settings),
                 Nsfw = s.Nsfw,
+                // The series page reads these back to show and flip its toggles:
+                // left out, every switch read as off, so a click could only ever
+                // turn it on, and any other save turned it off again.
+                HideDecimalChapters = s.HideDecimalChapters,
+                PrioritizeFreeChapters = s.PrioritizeFreeChapters,
+                AutoBuyPaidChapters = s.AutoBuyPaidChapters,
                 IsNsfw = s.Nsfw
                          || AdultContentClassifier.IsAdult(s.Genre)
                          || s.Sources.Any(src => AdultContentClassifier.IsAdult(src.Genre))
