@@ -900,8 +900,16 @@ public class ReaderPreviewService
         // pages are what the reader and the image cache are numbered by, and a
         // health re-ranking switching sources in the middle of a read mixed two
         // sources' pages (another split, other page counts) in one chapter.
+        //
+        // But only within the tier it ranks in. A source the user has switched
+        // off, or one that is failing, kept jumping ahead of the enabled, healthy
+        // ones for a day after it won once as a fallback; every reopen went back
+        // to it, timed out on its images and never asked the source the user
+        // actually chose (2026-11-09: Comic Asura disabled, MangaFire first).
         int previous = cachedFrom == Guid.Empty ? -1 : providers.FindIndex(p => p.Id == cachedFrom);
-        if (previous > 0)
+        if (previous > 0
+            && providers[previous].IsDisabled == providers[0].IsDisabled
+            && _health.IsUnhealthy(providers[previous]) == _health.IsUnhealthy(providers[0]))
         {
             SeriesProviderEntity kept = providers[previous];
             providers.RemoveAt(previous);
@@ -938,6 +946,8 @@ public class ReaderPreviewService
         // What each source tried before the winner did, for the log line below:
         // the log never said which source a streamed chapter came from.
         List<string> passedOver = [];
+        // Page 0 of the winner is in the image cache, fetched from it just now.
+        bool winnerProbedLive = false;
 
         foreach (SeriesProviderEntity provider in providers)
         {
@@ -986,7 +996,10 @@ public class ReaderPreviewService
                 winner = provider.Id;
                 // Only an image actually fetched from it now is evidence it works.
                 if (probe == Probe.Live)
+                {
                     _health.ReportSuccess(provider, provider.Title);
+                    winnerProbedLive = true;
+                }
                 _logger.LogInformation("Stream: ch {Chapter} of series {SeriesId} served by {Provider}{PassedOver}.",
                     chapterNumber, seriesId, provider.Provider,
                     passedOver.Count == 0 ? "" : " after " + string.Join(", ", passedOver));
@@ -1071,6 +1084,17 @@ public class ReaderPreviewService
                     "Stream: chapter {Chapter} of series {SeriesId} changed on refresh ({Old} pages -> {New}); dropped its cached images.",
                     chapterNumber, seriesId, stale.Count, pages.Count);
             }
+        }
+        else if (winner != null && cachedFrom != Guid.Empty && winner.Value != cachedFrom)
+        {
+            // No previous list to compare (it expired before the winner did), but
+            // the cached images are another source's: index N there is a different
+            // page here, which put two sources' pages into one chapter.
+            for (int i = winnerProbedLive ? 1 : 0; i < Math.Max(pages.Count, 400); i++)
+                _imageCache.Remove($"lib:img:{seriesId}:{chapterNumber}:{i}");
+            _logger.LogInformation(
+                "Stream: chapter {Chapter} of series {SeriesId} switched source; dropped the previous source's cached images.",
+                chapterNumber, seriesId);
         }
 
         // Cache real results; never poison the cache with an empty list during a
