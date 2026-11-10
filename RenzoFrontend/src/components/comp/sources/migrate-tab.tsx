@@ -109,7 +109,8 @@ function errorText(err: unknown, fallback: string): string {
 // Tab
 // ---------------------------------------------------------------------------
 
-export function MigrateTab() {
+/** `initialFrom`: a provider to pre-pick as the source to move off (Sources › Health, the dead-source alert). */
+export function MigrateTab({ initialFrom = null }: { initialFrom?: string | null } = {}) {
   const queryClient = useQueryClient();
   // undefined = still asking the server for the current run; null = none.
   const [run, setRun] = React.useState<MigrationRun | null | undefined>(undefined);
@@ -182,7 +183,7 @@ export function MigrateTab() {
     );
   }
 
-  if (run === null) return <StartView onStarted={setRun} />;
+  if (run === null) return <StartView onStarted={setRun} initialFrom={initialFrom} />;
 
   switch (run.phase) {
     case "searching":
@@ -223,7 +224,7 @@ export function MigrateTab() {
 // Start view
 // ---------------------------------------------------------------------------
 
-function StartView({ onStarted }: { onStarted: (run: MigrationRun) => void }) {
+function StartView({ onStarted, initialFrom = null }: { onStarted: (run: MigrationRun) => void; initialFrom?: string | null }) {
   const { data, isLoading, error } = useQuery({
     queryKey: SOURCES_KEY,
     queryFn: () => migrateService.sources(),
@@ -251,6 +252,14 @@ function StartView({ onStarted }: { onStarted: (run: MigrationRun) => void }) {
       return next;
     });
   }, [data]);
+
+  // Pre-pick the source handed in, once, when it is one the series use.
+  React.useEffect(() => {
+    if (!data || !initialFrom || selectedFrom != null) return;
+    const match = data.from.find((f) => f.provider === initialFrom);
+    if (match) setSelectedFrom(fromKey(match));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, initialFrom]);
 
   const from = data?.from.find((f) => fromKey(f) === selectedFrom) ?? null;
 

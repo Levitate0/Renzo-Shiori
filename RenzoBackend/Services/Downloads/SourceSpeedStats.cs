@@ -98,6 +98,21 @@ public sealed class SourceSpeedStats
         return dto;
     }
 
+    /// <summary>When this source last completed a download in the past week; null when it has not.</summary>
+    public DateTime? LastDelivered(string provider)
+    {
+        _seeded.Wait(TimeSpan.FromSeconds(30));
+        if (!_byProvider.TryGetValue(provider, out List<Outcome>? list))
+            return null;
+        lock (list)
+        {
+            for (int i = list.Count - 1; i >= 0; i--)
+                if (list[i].Seconds != null)
+                    return list[i].At;
+        }
+        return null;
+    }
+
     private static readonly Regex StartLine = new(
         @"^\[\w+ (\d\d):(\d\d):(\d\d) INF DownloCommandService\] Starting download for chapter (\S+) of series (.*) from provider (.*)\.\.\.$",
         RegexOptions.CultureInvariant);
@@ -117,7 +132,8 @@ public sealed class SourceSpeedStats
         {
             if (!seed.TryGetValue(provider, out List<Outcome>? l))
                 seed[provider] = l = [];
-            l.Add(new Outcome(at, took?.TotalSeconds));
+            // Log times are the server's local time; live outcomes are UTC.
+            l.Add(new Outcome(at.ToUniversalTime(), took?.TotalSeconds));
         }
         try
         {

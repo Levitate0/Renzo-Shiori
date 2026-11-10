@@ -81,6 +81,10 @@ public sealed class SourceHealthService
     private readonly ConcurrentDictionary<string, State> _states = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTime> _delivered = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Queue<DateTime>> _deliveries = new(StringComparer.Ordinal);
+    /// <summary>Per source (provider name): failures in the last day, and its last success of any kind, for Sources › Health.</summary>
+    private readonly ConcurrentDictionary<string, Queue<DateTime>> _failures = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTime> _succeeded = new(StringComparer.Ordinal);
+    private static readonly TimeSpan FailureWindow = TimeSpan.FromDays(1);
     private readonly ILogger<SourceHealthService> _logger;
     private readonly Func<DateTime> _now;
     private readonly DateTime _startedAt;
@@ -197,6 +201,9 @@ public sealed class SourceHealthService
             return IsSteppedDown(seriesProviderId, mihonProviderId);
         if (kind == SourceFailureKind.Timeout && _now() - _startedAt < StartupGrace)
             kind = SourceFailureKind.Error;
+        // A stalled queue is not the source failing.
+        if (kind != SourceFailureKind.Backlog)
+            NoteFailure(provider);
 
         string? key = kind switch
         {
@@ -267,6 +274,8 @@ public sealed class SourceHealthService
 
     public void ReportSuccess(Guid seriesProviderId, string? mihonProviderId, string? provider, string? seriesTitle, bool downloaded = false)
     {
+        if (!string.IsNullOrEmpty(provider))
+            _succeeded[provider] = _now();
         foreach (string? key in new[] { SeriesKey(seriesProviderId), SiteKey(mihonProviderId), downloaded ? BacklogKey(seriesProviderId) : null })
         {
             if (key == null || !_states.TryRemove(key, out State? s))
@@ -274,6 +283,44 @@ public sealed class SourceHealthService
             if (s.Strikes > 0)
                 _logger.LogInformation("{Provider} works again ('{Series}' got pages from it); it is back in its normal place.", provider, seriesTitle);
         }
+    }
+
+    private void NoteFailure(string? provider)
+    {
+        if (string.IsNullOrEmpty(provider))
+            return;
+        DateTime now = _now();
+        Queue<DateTime> q = _failures.GetOrAdd(provider, _ => new Queue<DateTime>());
+        lock (q)
+        {
+            q.Enqueue(now);
+            while (q.Count > 0 && now - q.Peek() > FailureWindow)
+                q.Dequeue();
+        }
+    }
+
+    /// <summary>Failures reported against this source, on any series, in the last day (since the service started).</summary>
+    public int FailuresLastDay(string provider)
+    {
+        if (!_failures.TryGetValue(provider, out Queue<DateTime>? q))
+            return 0;
+        DateTime since = _now() - FailureWindow;
+        lock (q)
+            return q.Count(t => t > since);
+    }
+
+    /// <summary>When this source last served pages or a download, since the service started; null when it has not.</summary>
+    public DateTime? LastSuccess(string provider) =>
+        _succeeded.TryGetValue(provider, out DateTime at) ? at : null;
+
+    /// <summary>Why this series' source is stepped down right now; null when it is not.</summary>
+    public string? StepDownReason(Guid seriesProviderId, string? mihonProviderId)
+    {
+        DateTime now = _now();
+        foreach (string? key in new[] { SiteKey(mihonProviderId), SeriesKey(seriesProviderId), BacklogKey(seriesProviderId) })
+            if (Active(key, now) != null && _states.TryGetValue(key!, out State? st))
+                return st.Reason;
+        return null;
     }
 
     /// <summary>How a swallowed source exception counts.</summary>

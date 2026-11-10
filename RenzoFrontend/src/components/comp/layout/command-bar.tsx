@@ -12,6 +12,7 @@ import { RenzoBanner } from "@/components/comp/layout/renzo-banner";
 import { SectionList, SectionPills } from "@/components/comp/layout/section-pills";
 import { UserAvatarDropdown } from "@/components/comp/layout/user-menu";
 import { DownloadStatus } from "@/components/comp/layout/download-status";
+import { SourceAlert } from "@/components/comp/layout/source-alert";
 import { OnlineOfflinePill } from "@/components/comp/layout/online-offline-pill";
 import { ExternalLinks } from "@/components/comp/layout/external-links";
 import { Button } from "@/components/ui/button";
@@ -297,6 +298,13 @@ export function CommandBar() {
 
           {/* Online/Offline view-mode pill — native shells only, hidden on web */}
           <OnlineOfflinePill className="hidden sm:inline-flex" />
+
+          {/* Dead-source alert — only while a source has failed all day. */}
+          {!mobileSearchOpen && (
+            <div className="flex items-center shrink-0">
+              <SourceAlert />
+            </div>
+          )}
 
           {/* Download status — active / queued / failed counts (desktop) or one
               compact button while something downloads (mobile); either opens
