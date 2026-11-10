@@ -100,6 +100,31 @@ namespace RenzoBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// Queue page → "Clear completed": drops every finished download row in the
+        /// requester's library (or every library for an Owner with ?viewAll=true).
+        /// Only the history goes; the chapter files stay, and release cadence falls
+        /// back to the providers' chapter dates, as it does after the daily cleanup.
+        /// </summary>
+        [HttpDelete("completed")]
+        public async Task<ActionResult> ClearCompletedAsync([FromQuery] bool viewAll = false, CancellationToken token = default)
+        {
+            try
+            {
+                HashSet<string>? owned = await _downloadQuery.GetOwnedSeriesKeysAsync(CurrentUserId, viewAll && IsOwnerLevel, token).ConfigureAwait(false);
+                IQueryable<EnqueueEntity> rows = _db.Queues.Where(q => q.JobType == JobType.Download && q.Status == QueueStatus.Completed);
+                if (owned != null)
+                    rows = rows.Where(q => q.ExtraKey != null && owned.Contains(q.ExtraKey));
+                int removed = await rows.ExecuteDeleteAsync(token).ConfigureAwait(false);
+                return Ok(new { removed });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error clearing completed downloads: {Message}", ex.Message);
+                return StatusCode(500, new { error = "An error occurred while clearing completed downloads." });
+            }
+        }
+
         [HttpPatch]
         public async Task<ActionResult> ManageErrorDownloadAsync([FromQuery]Guid id, [FromQuery]ErrorDownloadAction action, CancellationToken token = default)
         {

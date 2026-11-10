@@ -126,4 +126,12 @@ export const downloadsService = {
     
     return apiClient.patch<void>(`/api/downloads?${params.toString()}`);
   },
+
+  /**
+   * Remove every completed row from the queue history (the chapter files stay).
+   * @param viewAll - Owner only: clear every user's history, not just your own
+   */
+  async clearCompletedDownloads(viewAll = false): Promise<{ removed: number }> {
+    return apiClient.delete<{ removed: number }>(`/api/downloads/completed${viewAll ? '?viewAll=true' : ''}`);
+  },
 };

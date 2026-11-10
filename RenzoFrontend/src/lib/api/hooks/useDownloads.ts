@@ -288,3 +288,17 @@ export const useManageErrorDownload = () => {
     },
   });
 };
+
+/**
+ * Queue page → "Clear completed": drops the finished rows from the history.
+ */
+export const useClearCompletedDownloads = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (viewAll: boolean) => downloadsService.clearCompletedDownloads(viewAll),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['downloads'] });
+    },
+  });
+};

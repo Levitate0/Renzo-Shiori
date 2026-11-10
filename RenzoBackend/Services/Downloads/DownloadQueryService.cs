@@ -1,4 +1,4 @@
-using RenzoBackend.Data;
+﻿using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Extensions;
 using RenzoBackend.Services.Jobs.Settings;
@@ -53,7 +53,7 @@ namespace RenzoBackend.Services.Downloads
         /// as everyone's, consistent with the rest of the per-user library model.
         /// Null means "no filter" (Owner-level viewAll).
         /// </summary>
-        private async Task<HashSet<string>?> GetOwnedSeriesKeysAsync(Guid ownerId, bool allowAll, CancellationToken token)
+        internal async Task<HashSet<string>?> GetOwnedSeriesKeysAsync(Guid ownerId, bool allowAll, CancellationToken token)
         {
             if (allowAll)
                 return null;

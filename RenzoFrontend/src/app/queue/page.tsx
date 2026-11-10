@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useMemo, memo, useCallback, useState } from 'react';
+import React, { useMemo, memo, useCallback, useEffect, useState } from 'react';
 import { useDownloadProgress } from '@/lib/api/hooks/useQueue';
 import {
   useCompletedDownloadsWithCount,
   useWaitingDownloadsWithCount,
   useFailedDownloadsWithCount,
   useManageErrorDownload,
+  useClearCompletedDownloads,
 } from '@/lib/api/hooks/useDownloads';
 import { useSearch } from '@/contexts/search-context';
 import { useAuth } from '@/contexts/auth-context';
@@ -156,6 +157,22 @@ export default function QueuePage() {
 
   // --- Mutations ---
   const manageErrorDownload = useManageErrorDownload();
+  const clearCompleted = useClearCompletedDownloads();
+
+  // "Clear completed" asks once: the first click arms it, a second within
+  // four seconds clears. Only the history goes; the chapters stay downloaded.
+  const [clearArmed, setClearArmed] = useState(false);
+  useEffect(() => {
+    if (!clearArmed) return;
+    const t = setTimeout(() => setClearArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [clearArmed]);
+  const completedTotal = completedData?.totalCount ?? 0;
+  const handleClearCompleted = useCallback(() => {
+    if (!clearArmed) { setClearArmed(true); return; }
+    setClearArmed(false);
+    clearCompleted.mutate(effectiveViewAll);
+  }, [clearArmed, clearCompleted, effectiveViewAll]);
 
   // --- Dialog state ---
   const [jobsOpen, setJobsOpen] = useState(false);
@@ -394,6 +411,26 @@ export default function QueuePage() {
                   }`}
                 >
                   {viewAllLibraries ? "All libraries" : "My library"}
+                </button>
+              )}
+              {completedTotal > 0 && (
+                <button
+                  type="button"
+                  disabled={clearCompleted.isPending}
+                  onClick={handleClearCompleted}
+                  title="Remove finished downloads from this list. The chapters stay downloaded."
+                  className={`px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50 ${
+                    clearArmed
+                      ? 'text-red-400 bg-red-500/10 hover:bg-red-500/15'
+                      : 'hover:text-foreground hover:bg-white/[0.03]'
+                  }`}
+                >
+                  {clearCompleted.isPending
+                    ? 'Clearing…'
+                    : clearArmed
+                      // The count follows the search box, but the clear doesn't.
+                      ? (search ? 'Clear all completed?' : `Clear ${completedTotal} completed?`)
+                      : 'Clear completed'}
                 </button>
               )}
               <button
