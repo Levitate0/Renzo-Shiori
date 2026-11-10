@@ -290,13 +290,28 @@ export const useManageErrorDownload = () => {
 };
 
 /**
- * Queue page → "Clear completed": drops the finished rows from the history.
+ * Queue page → "Clear completed" / "Clear failed": drops those rows from the history.
  */
-export const useClearCompletedDownloads = () => {
+export const useClearDownloads = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (viewAll: boolean) => downloadsService.clearCompletedDownloads(viewAll),
+    mutationFn: ({ status, viewAll }: { status: 'completed' | 'failed'; viewAll: boolean }) =>
+      downloadsService.clearDownloads(status, viewAll),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['downloads'] });
+    },
+  });
+};
+
+/**
+ * Queue page → "Retry all": every failed download back in the queue.
+ */
+export const useRetryAllFailedDownloads = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (viewAll: boolean) => downloadsService.retryAllFailedDownloads(viewAll),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['downloads'] });
     },

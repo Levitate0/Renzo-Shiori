@@ -176,6 +176,14 @@ public class PreviewPagesDto
     /// </summary>
     [JsonPropertyName("locked")]
     public bool Locked { get; set; }
+
+    /// <summary>The source that served a streamed chapter (library reader only).</summary>
+    [JsonPropertyName("source")]
+    public string? Source { get; set; }
+
+    /// <summary>How many of the series' sources list this chapter; "Switch source" shows when more than one.</summary>
+    [JsonPropertyName("sourceCount")]
+    public int SourceCount { get; set; }
 }
 
 public class BackupImportResultDto

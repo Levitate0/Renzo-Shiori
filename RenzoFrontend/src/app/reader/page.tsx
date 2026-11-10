@@ -23,7 +23,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowLeft, Bookmark, Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsDown, Download, ExternalLink, List, Loader2, Lock, Search, Settings2, Trash2, X,
+  ArrowLeft, Bookmark, Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsDown, Download, ExternalLink, List, Loader2, Lock, Search, Settings2, Shuffle, Trash2, X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -349,6 +349,12 @@ function ReaderInner() {
   // True when the opening library chapter isn't downloaded and is being streamed
   // live from the source (read-without-downloading / in-progress downloads).
   const [streaming, setStreaming] = useState(false);
+  // A streamed chapter's source, and how many sources have it ("Switch source").
+  const [streamSource, setStreamSource] = useState<string | null>(null);
+  const [streamSourceCount, setStreamSourceCount] = useState(0);
+  // Bumped by "Switch source" so the page images get new URLs (see streamPageUrl).
+  const [streamVersion, setStreamVersion] = useState(0);
+  const [switchingSource, setSwitchingSource] = useState(false);
   // Set when a stream attempt reveals the chapter is paid/locked (the source
   // withheld the pages) even though the title carried no lock marker.
   const [streamLocked, setStreamLocked] = useState(false);
@@ -653,11 +659,14 @@ function ReaderInner() {
             // from the browser's own cache, so a reopen doesn't re-download pages
             // that genuinely didn't change.
             setStreaming(true);
+            setStreamVersion(0);
             const streamKey = `${seriesId}:${chapterNumber}`;
             const alreadyFresh = freshStreamRef.current === streamKey;
             freshStreamRef.current = null;
             const sp = await readerService.streamPages(seriesId, chapterNumber, !alreadyFresh);
             if (cancelled) return;
+            setStreamSource(sp.source ?? null);
+            setStreamSourceCount(sp.sourceCount ?? 0);
             if (sp.locked) {
               // A source actually SAID "requires purchase". Show the buy screen
               // (and the 3s poll picks it up once purchased / turned free).
@@ -972,10 +981,11 @@ function ReaderInner() {
   // ── Page URLs / aspect ────────────────────────────────────────────────
   const segPageUrl = useCallback((seg: Segment, i: number): string => {
     if (isPreview && mihonId && seg.previewIndex != null) return readerService.previewPageUrl(mihonId, seg.previewIndex, i);
-    if (seg.streaming && seriesId && seg.chapterNumber != null) return readerService.streamPageUrl(seriesId, seg.chapterNumber, i);
+    if (seg.streaming && seriesId && seg.chapterNumber != null)
+      return readerService.streamPageUrl(seriesId, seg.chapterNumber, i, seg.key === "primary" ? streamVersion : 0);
     if (seriesId && seg.filename) return readerService.pageUrl(seriesId, seg.filename, i);
     return "";
-  }, [isPreview, mihonId, seriesId]);
+  }, [isPreview, mihonId, seriesId, streamVersion]);
 
   /** Reserve a page box's real height up front so scroll tracking is correct before images load. */
   const segPageAspect = useCallback((seg: Segment, gi: number, i: number): React.CSSProperties => {
@@ -992,10 +1002,37 @@ function ReaderInner() {
   // Paged mode reads only the primary chapter.
   const pageUrl = useCallback((i: number): string => {
     if (isPreview && mihonId) return readerService.previewPageUrl(mihonId, previewChapterIndex, i);
-    if (streaming && seriesId && chapterNumber != null) return readerService.streamPageUrl(seriesId, chapterNumber, i);
+    if (streaming && seriesId && chapterNumber != null) return readerService.streamPageUrl(seriesId, chapterNumber, i, streamVersion);
     if (seriesId && chapter?.filename) return readerService.pageUrl(seriesId, chapter.filename, i);
     return "";
-  }, [isPreview, mihonId, previewChapterIndex, streaming, seriesId, chapterNumber, chapter]);
+  }, [isPreview, mihonId, previewChapterIndex, streaming, seriesId, chapterNumber, chapter, streamVersion]);
+
+  // "Switch source": reload the chapter being read from the next source that
+  // has it (each press moves one further down the list), for a broken or poor
+  // upload. Streamed chapters only; a downloaded one reads from its file.
+  const switchSource = useCallback(async () => {
+    if (!seriesId || chapterNumber == null || switchingSource) return;
+    setSwitchingSource(true);
+    try {
+      const sp = await readerService.streamPages(seriesId, chapterNumber, false, false, true);
+      if (sp.pageCount <= 0) {
+        toast.error("No other source could load this chapter right now.");
+        return;
+      }
+      loadedDimsRef.current.clear();
+      setPageCount(sp.pageCount);
+      setCurrentPage((p) => Math.min(p, sp.pageCount - 1));
+      setStreamSourceCount(sp.sourceCount ?? 0);
+      setStreamVersion((v) => v + 1);
+      if (sp.source && sp.source !== streamSource) toast.success(`Now reading from ${sp.source}`);
+      else toast.info("No other source could load it; still on the same one.");
+      setStreamSource(sp.source ?? null);
+    } catch {
+      toast.error("Couldn't switch source.");
+    } finally {
+      setSwitchingSource(false);
+    }
+  }, [seriesId, chapterNumber, switchingSource, streamSource]);
 
   // ── Progress reporting (library only) ─────────────────────────────────
   const reportProgressFor = useCallback((chapNum: number | null, filename: string | null, page0: number, total: number) => {
@@ -2265,6 +2302,7 @@ function ReaderInner() {
             <div className="truncate text-sm font-medium">{chapters?.title ?? previewTitle}</div>
             <div className="truncate text-xs text-white/60">
               {activeLabel}
+              {streaming && streamSource && activeChapterNumber === chapterNumber && <span className="text-white/40"> · {streamSource}</span>}
               {nextChapterName && <span className="text-white/40"> · next: {nextChapterName}</span>}
               {isPreview ? " · Preview" : ""}
             </div>
@@ -2277,6 +2315,16 @@ function ReaderInner() {
           {!isPreview && activeChapterObj && (
             <button onClick={() => void toggleBookmark()} className="rounded p-1.5 hover:bg-white/10" title={activeChapterObj.bookmarked ? "Remove bookmark" : "Bookmark chapter"}>
               <Bookmark className={`h-5 w-5 ${activeChapterObj.bookmarked ? "fill-current text-pink-400" : ""}`} />
+            </button>
+          )}
+          {!isPreview && streaming && streamSourceCount > 1 && activeChapterNumber === chapterNumber && (
+            <button
+              onClick={() => void switchSource()}
+              disabled={switchingSource}
+              className="rounded p-1.5 hover:bg-white/10 disabled:opacity-50"
+              title={`Reading from ${streamSource ?? "a source"}. Load this chapter from another source`}
+            >
+              {switchingSource ? <Loader2 className="h-5 w-5 animate-spin" /> : <Shuffle className="h-5 w-5" />}
             </button>
           )}
           <button onClick={() => setChaptersOpen((v) => !v)} className="rounded p-1.5 hover:bg-white/10" title="Chapters">

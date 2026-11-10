@@ -330,8 +330,29 @@ public class ReaderPreviewService
         return false;
     }
 
-    public async Task<PreviewPagesDto?> GetLibraryStreamPagesAsync(Guid seriesId, decimal chapterNumber, Guid? userId = null, bool forceRefresh = false, bool refreshChapterList = false, CancellationToken token = default)
+    /// <param name="nextSource">
+    /// The reader's "Switch source": reload the chapter from the next source down
+    /// the list instead of the one that served it. Each press passes over one
+    /// more; once every source has been passed over, it starts again from the top.
+    /// </param>
+    public async Task<PreviewPagesDto?> GetLibraryStreamPagesAsync(Guid seriesId, decimal chapterNumber, Guid? userId = null, bool forceRefresh = false, bool refreshChapterList = false, CancellationToken token = default,
+        bool nextSource = false)
     {
+        if (nextSource)
+        {
+            forceRefresh = true;
+            string skipKey = SkipKey(seriesId, chapterNumber);
+            HashSet<Guid> skip = _cache.Get<HashSet<Guid>>(skipKey) ?? [];
+            if (_cache.TryGetValue($"lib:win:{seriesId}:{chapterNumber}", out Guid current))
+            {
+                int sources = (await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false)).Count;
+                skip.Add(current);
+                // All passed over: back to the top, still moving off this one.
+                if (skip.Count >= sources)
+                    skip = [current];
+            }
+            _cache.Set(skipKey, skip, CacheTtl);
+        }
         List<Page>? pages = await GetLibraryPageListAsync(seriesId, chapterNumber, userId, forceRefresh, refreshChapterList, token).ConfigureAwait(false);
         if (pages == null)
             return null;
@@ -342,8 +363,21 @@ public class ReaderPreviewService
         bool locked = pages.Count == 0
             && _cache.TryGetValue(LockedKey(seriesId, chapterNumber), out bool l)
             && l;
-        return new PreviewPagesDto { PageCount = pages.Count, Locked = locked };
+        // Which source served it, and how many could, for the reader's "Switch source".
+        string? source = null;
+        int sourceCount = 0;
+        if (pages.Count > 0)
+        {
+            List<SeriesProviderEntity> capable = await GetCapableProvidersAsync(seriesId, chapterNumber, token).ConfigureAwait(false);
+            sourceCount = capable.Count;
+            if (_cache.TryGetValue($"lib:win:{seriesId}:{chapterNumber}", out Guid w))
+                source = capable.FirstOrDefault(p => p.Id == w)?.Provider;
+        }
+        return new PreviewPagesDto { PageCount = pages.Count, Locked = locked, Source = source, SourceCount = sourceCount };
     }
+
+    /// <summary>Sources the reader's "Switch source" has passed over for this chapter.</summary>
+    private static string SkipKey(Guid seriesId, decimal chapterNumber) => $"lib:skip:{seriesId}:{chapterNumber}";
 
     public async Task<(Stream? stream, string contentType)> GetLibraryStreamPageImageAsync(Guid seriesId, decimal chapterNumber, int pageIndex, Guid? userId = null, CancellationToken token = default)
     {
@@ -618,14 +652,7 @@ public class ReaderPreviewService
             }
         }
 
-        // Apply the same scanlator scoping the download path uses.
-        IEnumerable<ParsedChapter> pool = chapters ?? [];
-        if (target.Scanlator == target.Provider || string.IsNullOrEmpty(target.Scanlator))
-            pool = pool.Where(a => string.IsNullOrEmpty(a.Scanlator) || a.Scanlator == target.Provider);
-        else
-            pool = pool.Where(a => a.Scanlator == target.Scanlator);
-
-        ParsedChapter? match = pool.FirstOrDefault(c => c.ParsedNumber == chapterNumber);
+        ParsedChapter? match = ScopedToScanlator(chapters ?? [], target).FirstOrDefault(c => c.ParsedNumber == chapterNumber);
         if (match != null)
             return (target, src, match, false);
 
@@ -667,6 +694,28 @@ public class ReaderPreviewService
                 : DateTimeOffset.UtcNow,
         };
         return (target, src, reconstructed, true);
+    }
+
+    /// <summary>The same scanlator scoping the download path uses.</summary>
+    private static IEnumerable<ParsedChapter> ScopedToScanlator(IEnumerable<ParsedChapter> pool, SeriesProviderEntity target) =>
+        target.Scanlator == target.Provider || string.IsNullOrEmpty(target.Scanlator)
+            ? pool.Where(a => string.IsNullOrEmpty(a.Scanlator) || a.Scanlator == target.Provider)
+            : pool.Where(a => a.Scanlator == target.Scanlator);
+
+    /// <summary>
+    /// Other uploads of the same chapter in this source's cached listing, at most
+    /// two. A site can list one number twice, a re-upload beside a broken first
+    /// try (MangaFire, A Ranker's Guide ch 39/40: 11 pages next to 133).
+    /// </summary>
+    private List<ParsedChapter> OtherUploads(SeriesProviderEntity target, ParsedChapter chosen)
+    {
+        List<ParsedChapter>? chapters = _cache.Get<List<ParsedChapter>>($"lib:ch:{target.Id}");
+        if (chapters == null)
+            return [];
+        return ScopedToScanlator(chapters, target)
+            .Where(c => c.ParsedNumber == chosen.ParsedNumber && c.Url != chosen.Url)
+            .Take(2)
+            .ToList();
     }
 
     /// <summary>Strips scheme+host off an absolute URL, leaving the path (+query/fragment)
@@ -915,6 +964,10 @@ public class ReaderPreviewService
             providers.RemoveAt(previous);
             providers.Insert(0, kept);
         }
+        // "Switch source": the ones passed over go last, so they still serve if
+        // nothing else can.
+        if (_cache.Get<HashSet<Guid>>(SkipKey(seriesId, chapterNumber)) is { Count: > 0 } skipped)
+            providers = [.. providers.Where(p => !skipped.Contains(p.Id)), .. providers.Where(p => skipped.Contains(p.Id))];
         if (providers.Count == 0)
         {
             // This is one of the two ways the reader answers 404 for a chapter, and
@@ -961,10 +1014,36 @@ public class ReaderPreviewService
             anyResolved = true;
             (_, ISourceInterop src, ParsedChapter chapter, bool fromDb) = resolved.Value;
 
+            // Every upload of this chapter on this source, longest page list first,
+            // before stepping down to the next source: the first upload can be a
+            // broken one the site never removed.
+            List<ParsedChapter> uploads = [chapter, .. OtherUploads(provider, chapter)];
             SourceFailureKind failure = SourceFailureKind.Error;
-            List<Page>? attempt = await TryGetPagesFromSourceAsync(src, chapter, provider, userId, token, k => failure = k).ConfigureAwait(false);
-            if (attempt == null)
+            List<List<Page>> served = [];
+            bool failedHere = false, withheldHere = false;
+            foreach (ParsedChapter upload in uploads)
             {
+                List<Page>? attempt = await TryGetPagesFromSourceAsync(src, upload, provider, userId, token, k => failure = k).ConfigureAwait(false);
+                if (attempt == null)
+                {
+                    failedHere = true;
+                    // A timeout or captcha is the source, not this upload.
+                    if (failure is SourceFailureKind.Timeout or SourceFailureKind.Captcha)
+                        break;
+                }
+                else if (attempt.Count == 0)
+                    withheldHere = true;
+                else
+                    served.Add(attempt);
+            }
+            if (served.Count == 0)
+            {
+                if (withheldHere)
+                {
+                    anyWithheld = true;
+                    passedOver.Add($"{provider.Provider} (paid)");
+                    continue; // the source said "requires purchase" — real paywall evidence
+                }
                 anyFailed = true;
                 // A chapter rebuilt from the database (not in the live listing: a
                 // coin-gated one) fails on sources that need their own listing's
@@ -974,25 +1053,31 @@ public class ReaderPreviewService
                 passedOver.Add($"{provider.Provider} ({failure.ToString().ToLowerInvariant()})");
                 continue; // timed out or errored — says nothing about whether it is paid
             }
-            if (attempt.Count == 0)
-            {
-                anyWithheld = true;
-                passedOver.Add($"{provider.Provider} (paid)");
-                continue; // the source said "requires purchase" — real paywall evidence
-            }
+            if (uploads.Count > 1)
+                _logger.LogInformation("Stream: {Provider} lists ch {Chapter} {Count} times ({Pages} pages); trying the longest first.",
+                    provider.Provider, chapterNumber, uploads.Count, string.Join("/", served.Select(x => x.Count)));
+            served.Sort((a, b) => b.Count.CompareTo(a.Count));
 
-            if (servedPages == null) { servedPages = attempt; servedWinner = provider.Id; }
+            if (servedPages == null) { servedPages = served[0]; servedWinner = provider.Id; }
 
             // A source can return a page LIST but have a dead/timing-out image host,
             // which makes every page time out. Probe page 0's image and only commit
             // to a source that can actually serve images — otherwise fall through to
             // the next one in priority order. The probe caches page 0.
             SourceFailureKind? probeFailure = null;
-            Probe probe = await ProbeAndCacheFirstImageAsync(seriesId, chapterNumber, src, attempt, token,
-                trustCached: provider.Id == cachedFrom, k => probeFailure = k).ConfigureAwait(false);
+            Probe probe = Probe.Failed;
+            List<Page> chosen = served[0];
+            foreach (List<Page> candidate in served)
+            {
+                chosen = candidate;
+                probe = await ProbeAndCacheFirstImageAsync(seriesId, chapterNumber, src, candidate, token,
+                    trustCached: provider.Id == cachedFrom, k => probeFailure = k).ConfigureAwait(false);
+                if (probe != Probe.Failed)
+                    break;
+            }
             if (probe != Probe.Failed)
             {
-                pages = attempt;
+                pages = chosen;
                 winner = provider.Id;
                 // Only an image actually fetched from it now is evidence it works.
                 if (probe == Probe.Live)

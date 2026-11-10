@@ -101,28 +101,61 @@ namespace RenzoBackend.Controllers
         }
 
         /// <summary>
-        /// Queue page → "Clear completed": drops every finished download row in the
-        /// requester's library (or every library for an Owner with ?viewAll=true).
-        /// Only the history goes; the chapter files stay, and release cadence falls
-        /// back to the providers' chapter dates, as it does after the daily cleanup.
+        /// Queue page → "Clear completed" / "Clear failed": drops every finished
+        /// (or failed) download row in the requester's library, or every library
+        /// for an Owner with ?viewAll=true. Only the history goes; the chapter files
+        /// stay, and release cadence falls back to the providers' chapter dates, as
+        /// it does after the daily cleanup. A cleared failed chapter is queued
+        /// again by a later series refresh, once its give-up backoff has passed.
         /// </summary>
         [HttpDelete("completed")]
-        public async Task<ActionResult> ClearCompletedAsync([FromQuery] bool viewAll = false, CancellationToken token = default)
+        public Task<ActionResult> ClearCompletedAsync([FromQuery] bool viewAll = false, CancellationToken token = default) =>
+            ClearAsync(QueueStatus.Completed, viewAll, token);
+
+        [HttpDelete("failed")]
+        public Task<ActionResult> ClearFailedAsync([FromQuery] bool viewAll = false, CancellationToken token = default) =>
+            ClearAsync(QueueStatus.Failed, viewAll, token);
+
+        /// <summary>Queue page → "Retry all": every failed download back in the queue, like each row's Retry.</summary>
+        [HttpPost("failed/retry")]
+        public async Task<ActionResult> RetryAllFailedAsync([FromQuery] bool viewAll = false, CancellationToken token = default)
         {
             try
             {
-                HashSet<string>? owned = await _downloadQuery.GetOwnedSeriesKeysAsync(CurrentUserId, viewAll && IsOwnerLevel, token).ConfigureAwait(false);
-                IQueryable<EnqueueEntity> rows = _db.Queues.Where(q => q.JobType == JobType.Download && q.Status == QueueStatus.Completed);
-                if (owned != null)
-                    rows = rows.Where(q => q.ExtraKey != null && owned.Contains(q.ExtraKey));
-                int removed = await rows.ExecuteDeleteAsync(token).ConfigureAwait(false);
+                List<Guid> ids = await (await OwnedRowsAsync(QueueStatus.Failed, viewAll, token)).Select(q => q.Id).ToListAsync(token).ConfigureAwait(false);
+                foreach (Guid id in ids)
+                    await _downloadCommand.ManageErrorDownloadAsync(id, ErrorDownloadAction.Retry, token).ConfigureAwait(false);
+                return Ok(new { retried = ids.Count });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrying failed downloads: {Message}", ex.Message);
+                return StatusCode(500, new { error = "An error occurred while retrying failed downloads." });
+            }
+        }
+
+        private async Task<ActionResult> ClearAsync(QueueStatus status, bool viewAll, CancellationToken token)
+        {
+            try
+            {
+                int removed = await (await OwnedRowsAsync(status, viewAll, token)).ExecuteDeleteAsync(token).ConfigureAwait(false);
                 return Ok(new { removed });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error clearing completed downloads: {Message}", ex.Message);
-                return StatusCode(500, new { error = "An error occurred while clearing completed downloads." });
+                _logger.LogError(ex, "Error clearing {Status} downloads: {Message}", status, ex.Message);
+                return StatusCode(500, new { error = "An error occurred while clearing downloads." });
             }
+        }
+
+        /// <summary>The requester's download rows in one status; every user's for an Owner with viewAll.</summary>
+        private async Task<IQueryable<EnqueueEntity>> OwnedRowsAsync(QueueStatus status, bool viewAll, CancellationToken token)
+        {
+            HashSet<string>? owned = await _downloadQuery.GetOwnedSeriesKeysAsync(CurrentUserId, viewAll && IsOwnerLevel, token).ConfigureAwait(false);
+            IQueryable<EnqueueEntity> rows = _db.Queues.Where(q => q.JobType == JobType.Download && q.Status == status);
+            if (owned != null)
+                rows = rows.Where(q => q.ExtraKey != null && owned.Contains(q.ExtraKey));
+            return rows;
         }
 
         [HttpPatch]

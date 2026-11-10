@@ -13,6 +13,14 @@ export function encodeFilename(filename: string): string {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+/** A streamed chapter's page count, plus which source served it and how many could. */
+export interface StreamPages {
+  pageCount: number;
+  locked?: boolean;
+  source?: string | null;
+  sourceCount?: number;
+}
+
 export const readerService = {
   async getChapters(seriesId: string): Promise<ReaderChapters> {
     return apiClient.get<ReaderChapters>(`/api/reader/chapters?seriesId=${seriesId}`);
@@ -56,10 +64,13 @@ export const readerService = {
     chapterNumber: number,
     refresh = false,
     refreshChapters = false,
-  ): Promise<{ pageCount: number; locked?: boolean }> {
-    return apiClient.get<{ pageCount: number; locked?: boolean }>(
+    // "Switch source": reload from the next source instead of the one that served it.
+    nextSource = false,
+  ): Promise<StreamPages> {
+    return apiClient.get<StreamPages>(
       `/api/reader/stream/pages?seriesId=${seriesId}&chapter=${chapterNumber}`
-      + `${refresh ? "&refresh=true" : ""}${refreshChapters ? "&refreshChapters=true" : ""}`);
+      + `${refresh ? "&refresh=true" : ""}${refreshChapters ? "&refreshChapters=true" : ""}`
+      + `${nextSource ? "&nextSource=true" : ""}`);
   },
 
   // Auto-buy of a paid chapter the reader has reached (on screen, never a
@@ -74,9 +85,12 @@ export const readerService = {
       `/api/reader/auto-buy?seriesId=${seriesId}&chapter=${chapterNumber}`);
   },
 
-  streamPageUrl(seriesId: string, chapterNumber: number, page: number): string {
+  // `version` changes the URL after "Switch source", so the browser's cached
+  // images from the old source (kept a day) are not shown for the new one.
+  streamPageUrl(seriesId: string, chapterNumber: number, page: number, version = 0): string {
     return formatThumbnailUrl(
-      `/api/reader/stream/page?seriesId=${seriesId}&chapter=${chapterNumber}&page=${page}`);
+      `/api/reader/stream/page?seriesId=${seriesId}&chapter=${chapterNumber}&page=${page}`
+      + `${version ? `&v=${version}` : ""}`);
   },
 
   // ── Preview (Browse items, nothing stored) ──

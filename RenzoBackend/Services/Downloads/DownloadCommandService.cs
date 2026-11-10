@@ -124,6 +124,53 @@ namespace RenzoBackend.Services.Downloads
 
         private async Task<ParsedChapter?> RefreshChapterReferenceAsync(ISourceInterop src, ChapterDownload ch, string provider, CancellationToken token)
         {
+            List<ParsedChapter>? pool = await ScopedListingAsync(src, ch, provider, token).ConfigureAwait(false);
+            if (pool == null)
+                return null;
+
+            decimal number = ch.Chapter.ParsedNumber;
+            ParsedChapter? match = number > 0
+                ? pool.FirstOrDefault(c => c.ParsedNumber == number)
+                : null;
+            match ??= pool.FirstOrDefault(c => !string.IsNullOrEmpty(ch.Chapter.Name) && c.Name == ch.Chapter.Name);
+            if (match != null && string.IsNullOrEmpty(match.Scanlator))
+                match.Scanlator = ch.Chapter.Scanlator;
+            return match;
+        }
+
+        /// <summary>
+        /// Another upload of this chapter on the same source whose page list passes
+        /// <paramref name="good"/>. A site can list one number twice, a re-upload
+        /// beside a broken first try (MangaFire, A Ranker's Guide ch 39/40: 11 pages
+        /// next to 133), and the first one failing says nothing about the second.
+        /// </summary>
+        private async Task<(ParsedChapter Chapter, List<Page> Pages)?> TryOtherUploadsAsync(
+            ISourceInterop src, ChapterDownload ch, string provider, Func<List<Page>, bool> good, CancellationToken token)
+        {
+            if (ch.Chapter.ParsedNumber <= 0)
+                return null;
+            List<ParsedChapter>? pool = await ScopedListingAsync(src, ch, provider, token).ConfigureAwait(false);
+            if (pool == null)
+                return null;
+            foreach (ParsedChapter other in pool.Where(c => c.ParsedNumber == ch.Chapter.ParsedNumber && c.Url != ch.Chapter.Url).Take(2))
+            {
+                List<Page>? pages = await _mihon.MihonErrorWrapperAsync(
+                    () => SourceTimeout.RunAsync(ct => src.GetPagesAsync(other, ct), token),
+                    "Unable to get Pages from another upload of Chapter {ParsedNumber}, Series {Title} from {provider}", ch.Chapter.ParsedNumber, ch.Title, provider).ConfigureAwait(false);
+                if (pages == null || !good(pages))
+                    continue;
+                if (string.IsNullOrEmpty(other.Scanlator))
+                    other.Scanlator = ch.Chapter.Scanlator;
+                _logger.LogInformation("{Provider} lists chapter {Chapter} of '{Title}' more than once; using its other upload ({Pages} pages).",
+                    provider, ch.Chapter.ParsedNumber, ch.Title, pages.Count);
+                return (other, pages);
+            }
+            return null;
+        }
+
+        /// <summary>The source's live chapter listing (shared for 10 minutes per source entry), scoped to this series' scanlator.</summary>
+        private async Task<List<ParsedChapter>?> ScopedListingAsync(ISourceInterop src, ChapterDownload ch, string provider, CancellationToken token)
+        {
             List<ParsedChapter>? listing = null;
             if (FreshListings.TryGetValue(ch.SeriesProviderId, out var hit) && DateTime.UtcNow - hit.At < TimeSpan.FromMinutes(10))
                 listing = hit.Chapters;
@@ -150,15 +197,7 @@ namespace RenzoBackend.Services.Downloads
                 pool = pool.Where(c => string.IsNullOrEmpty(c.Scanlator) || c.Scanlator == sp.Provider);
             else
                 pool = pool.Where(c => c.Scanlator == sp.Scanlator);
-
-            decimal number = ch.Chapter.ParsedNumber;
-            ParsedChapter? match = number > 0
-                ? pool.FirstOrDefault(c => c.ParsedNumber == number)
-                : null;
-            match ??= pool.FirstOrDefault(c => !string.IsNullOrEmpty(ch.Chapter.Name) && c.Name == ch.Chapter.Name);
-            if (match != null && string.IsNullOrEmpty(match.Scanlator))
-                match.Scanlator = ch.Chapter.Scanlator;
-            return match;
+            return pool.ToList();
         }
 
         /// <summary>
@@ -362,6 +401,13 @@ namespace RenzoBackend.Services.Downloads
                 // so it still arrives once the source recovers.
                 if (pages == null && staleUnresolved)
                     return await RescheduleDownloadAsync(ch, token).ConfigureAwait(false);
+                // A plain error may be this upload, not the source: try its others.
+                if (pages == null && SourceHealthService.Classify(pageFailure) == SourceFailureKind.Error
+                    && await TryOtherUploadsAsync(src, ch, provider, p => p.Count > 0, token).ConfigureAwait(false) is { } other)
+                {
+                    ch.Chapter = other.Chapter;
+                    pages = other.Pages;
+                }
                 if (pages==null)
                     return await FailOnSourceAsync(ch, SourceHealthService.Classify(pageFailure), token).ConfigureAwait(false);
                 ch.Pages = pages;
@@ -372,6 +418,14 @@ namespace RenzoBackend.Services.Downloads
                     if (ModelExtensions.IsLockedChapterName(ch.Chapter?.Name) ||
                         ModelExtensions.IsLockedChapterName(ch.Chapter?.ParsedName))
                         return await LockedHereAsync(ch, provider, token).ConfigureAwait(false);
+                    if (await TryOtherUploadsAsync(src, ch, provider, p => p.Count > 0, token).ConfigureAwait(false) is { } nonEmpty)
+                    {
+                        ch.Chapter = nonEmpty.Chapter;
+                        ch.Pages = nonEmpty.Pages;
+                    }
+                }
+                if (ch.Pages.Count == 0)
+                {
                     _logger.LogError("No pages found from source for provider {provider} when downloading chapter {ParsedNumber} of series {SeriesTitle}",
                         provider, ch.Chapter.ParsedNumber, ch.Title);
                     return await FailOnSourceAsync(ch, SourceFailureKind.Error, token).ConfigureAwait(false);
@@ -399,7 +453,15 @@ namespace RenzoBackend.Services.Downloads
             // Genuinely short extras survive — six pages against a median of
             // twenty is above the threshold.
             int typical = await TypicalPageCountAsync(ch.SeriesId, token).ConfigureAwait(false);
-            if (typical >= ShortChapterReferenceFloor && ch.Pages.Count <= Math.Max(2, typical / 4))
+            int shortAt = Math.Max(2, typical / 4);
+            // Another upload of it on this same source comes first.
+            if (typical >= ShortChapterReferenceFloor && ch.Pages.Count <= shortAt
+                && await TryOtherUploadsAsync(src, ch, provider, p => p.Count > shortAt, token).ConfigureAwait(false) is { } fuller)
+            {
+                ch.Chapter = fuller.Chapter;
+                ch.Pages = fuller.Pages;
+            }
+            if (typical >= ShortChapterReferenceFloor && ch.Pages.Count <= shortAt)
             {
                 _logger.LogWarning(
                     "Provider {Provider} listed only {Pages} page(s) for chapter {Chapter} of '{Title}', against a series typical of {Typical} — treating as an incomplete listing and trying the next source.",

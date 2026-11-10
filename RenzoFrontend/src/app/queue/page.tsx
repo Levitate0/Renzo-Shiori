@@ -7,7 +7,8 @@ import {
   useWaitingDownloadsWithCount,
   useFailedDownloadsWithCount,
   useManageErrorDownload,
-  useClearCompletedDownloads,
+  useClearDownloads,
+  useRetryAllFailedDownloads,
 } from '@/lib/api/hooks/useDownloads';
 import { useSearch } from '@/contexts/search-context';
 import { useAuth } from '@/contexts/auth-context';
@@ -89,6 +90,51 @@ const FilterPills = memo(function FilterPills({ value, onChange }: FilterPillsPr
 });
 
 // ---------------------------------------------------------------------------
+// Two-step header action
+// ---------------------------------------------------------------------------
+
+interface ConfirmButtonProps {
+  label: string;
+  confirmLabel: string;
+  busy: boolean;
+  busyLabel: string;
+  title: string;
+  onConfirm: () => void;
+}
+
+/**
+ * A whole-list action that asks once: the first click arms it (red, with the
+ * count), a second within four seconds runs it.
+ */
+const ConfirmButton = memo(function ConfirmButton({ label, confirmLabel, busy, busyLabel, title, onConfirm }: ConfirmButtonProps) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={() => {
+        if (!armed) { setArmed(true); return; }
+        setArmed(false);
+        onConfirm();
+      }}
+      title={title}
+      className={`px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50 ${
+        armed
+          ? 'text-red-400 bg-red-500/10 hover:bg-red-500/15'
+          : 'hover:text-foreground hover:bg-white/[0.03]'
+      }`}
+    >
+      {busy ? busyLabel : armed ? confirmLabel : label}
+    </button>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Section group renderer
 // ---------------------------------------------------------------------------
 
@@ -157,22 +203,10 @@ export default function QueuePage() {
 
   // --- Mutations ---
   const manageErrorDownload = useManageErrorDownload();
-  const clearCompleted = useClearCompletedDownloads();
-
-  // "Clear completed" asks once: the first click arms it, a second within
-  // four seconds clears. Only the history goes; the chapters stay downloaded.
-  const [clearArmed, setClearArmed] = useState(false);
-  useEffect(() => {
-    if (!clearArmed) return;
-    const t = setTimeout(() => setClearArmed(false), 4000);
-    return () => clearTimeout(t);
-  }, [clearArmed]);
+  const clearDownloads = useClearDownloads();
+  const retryAllFailed = useRetryAllFailedDownloads();
   const completedTotal = completedData?.totalCount ?? 0;
-  const handleClearCompleted = useCallback(() => {
-    if (!clearArmed) { setClearArmed(true); return; }
-    setClearArmed(false);
-    clearCompleted.mutate(effectiveViewAll);
-  }, [clearArmed, clearCompleted, effectiveViewAll]);
+  const failedTotal = failedData?.totalCount ?? 0;
 
   // --- Dialog state ---
   const [jobsOpen, setJobsOpen] = useState(false);
@@ -413,25 +447,36 @@ export default function QueuePage() {
                   {viewAllLibraries ? "All libraries" : "My library"}
                 </button>
               )}
-              {completedTotal > 0 && (
-                <button
-                  type="button"
-                  disabled={clearCompleted.isPending}
-                  onClick={handleClearCompleted}
+              {/* The counts follow the search box, but these act on the whole list. */}
+              {filter !== 'failed' && completedTotal > 0 && (
+                <ConfirmButton
+                  label="Clear completed"
+                  confirmLabel={search ? 'Clear all completed?' : `Clear ${completedTotal} completed?`}
+                  busy={clearDownloads.isPending && clearDownloads.variables?.status === 'completed'}
+                  busyLabel="Clearing…"
                   title="Remove finished downloads from this list. The chapters stay downloaded."
-                  className={`px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50 ${
-                    clearArmed
-                      ? 'text-red-400 bg-red-500/10 hover:bg-red-500/15'
-                      : 'hover:text-foreground hover:bg-white/[0.03]'
-                  }`}
-                >
-                  {clearCompleted.isPending
-                    ? 'Clearing…'
-                    : clearArmed
-                      // The count follows the search box, but the clear doesn't.
-                      ? (search ? 'Clear all completed?' : `Clear ${completedTotal} completed?`)
-                      : 'Clear completed'}
-                </button>
+                  onConfirm={() => clearDownloads.mutate({ status: 'completed', viewAll: effectiveViewAll })}
+                />
+              )}
+              {filter === 'failed' && failedTotal > 0 && (
+                <>
+                  <ConfirmButton
+                    label="Retry all"
+                    confirmLabel={search ? 'Retry all failed?' : `Retry ${failedTotal} failed?`}
+                    busy={retryAllFailed.isPending}
+                    busyLabel="Retrying…"
+                    title="Put every failed download back in the queue."
+                    onConfirm={() => retryAllFailed.mutate(effectiveViewAll)}
+                  />
+                  <ConfirmButton
+                    label="Clear failed"
+                    confirmLabel={search ? 'Clear all failed?' : `Clear ${failedTotal} failed?`}
+                    busy={clearDownloads.isPending && clearDownloads.variables?.status === 'failed'}
+                    busyLabel="Clearing…"
+                    title="Remove failed downloads from this list. A later series refresh queues them again."
+                    onConfirm={() => clearDownloads.mutate({ status: 'failed', viewAll: effectiveViewAll })}
+                  />
+                </>
               )}
               <button
                 type="button"

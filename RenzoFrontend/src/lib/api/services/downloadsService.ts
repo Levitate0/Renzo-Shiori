@@ -128,10 +128,18 @@ export const downloadsService = {
   },
 
   /**
-   * Remove every completed row from the queue history (the chapter files stay).
+   * Remove every completed or failed row from the queue history (the chapter files stay).
    * @param viewAll - Owner only: clear every user's history, not just your own
    */
-  async clearCompletedDownloads(viewAll = false): Promise<{ removed: number }> {
-    return apiClient.delete<{ removed: number }>(`/api/downloads/completed${viewAll ? '?viewAll=true' : ''}`);
+  async clearDownloads(status: 'completed' | 'failed', viewAll = false): Promise<{ removed: number }> {
+    return apiClient.delete<{ removed: number }>(`/api/downloads/${status}${viewAll ? '?viewAll=true' : ''}`);
+  },
+
+  /**
+   * Put every failed download back in the queue, like each row's Retry.
+   * @param viewAll - Owner only: every user's failed downloads
+   */
+  async retryAllFailedDownloads(viewAll = false): Promise<{ retried: number }> {
+    return apiClient.post<{ retried: number }>(`/api/downloads/failed/retry${viewAll ? '?viewAll=true' : ''}`);
   },
 };

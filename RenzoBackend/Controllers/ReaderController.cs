@@ -220,12 +220,13 @@ public class ReaderController : ControllerBase
     /// Much more expensive — one 20s-bounded source call per candidate source — and only
     /// meaningful when the question is whether a chapter has appeared in the listing at all
     /// (a coin-gated chapter after purchase). A plain reopen must not set this.</param>
-    public async Task<ActionResult<PreviewPagesDto>> GetStreamPagesAsync([FromQuery] Guid seriesId, [FromQuery] decimal chapter, [FromQuery] bool refresh = false, [FromQuery] bool refreshChapters = false, CancellationToken token = default)
+    /// <param name="nextSource">"Switch source": reload from the next source instead of the one that served it.</param>
+    public async Task<ActionResult<PreviewPagesDto>> GetStreamPagesAsync([FromQuery] Guid seriesId, [FromQuery] decimal chapter, [FromQuery] bool refresh = false, [FromQuery] bool refreshChapters = false, [FromQuery] bool nextSource = false, CancellationToken token = default)
     {
         try
         {
             if (await DenyAccessAsync(seriesId, token).ConfigureAwait(false) is { } deny) return deny;
-            var result = await _preview.GetLibraryStreamPagesAsync(seriesId, chapter, CurrentUser?.Id, refresh, refreshChapters, token).ConfigureAwait(false);
+            var result = await _preview.GetLibraryStreamPagesAsync(seriesId, chapter, CurrentUser?.Id, refresh, refreshChapters, token, nextSource).ConfigureAwait(false);
             return result == null ? NotFound() : Ok(result);
         }
         catch (Exception ex)
