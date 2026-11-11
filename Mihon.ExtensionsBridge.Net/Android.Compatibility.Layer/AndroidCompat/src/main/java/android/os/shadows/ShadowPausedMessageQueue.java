@@ -23,6 +23,16 @@ public class ShadowPausedMessageQueue {
   private static NativeObjRegistry<ShadowPausedMessageQueue> nativeQueueRegistry =
       new NativeObjRegistry<ShadowPausedMessageQueue>(ShadowPausedMessageQueue.class);
   private boolean isPolling = false;
+  /**
+   * A wake that arrived while the looper was not waiting. Android's native
+   * wake writes an eventfd, so a wake sent just before the looper parks is
+   * still there when it does; a bare notifyAll() is lost. The lock-free
+   * MessageQueue only wakes a parked looper once (later posts see the stack
+   * already marked woken), so one lost wake left the main looper asleep for
+   * good: every WebView after that timed out ("WebView could not be created",
+   * auto-buy failing from 2026-11-06 on).
+   */
+  private boolean wakePending = false;
   private Exception uncaughtException = null;
 
   // shadow constructor instead of nativeInit because nativeInit signature has changed across SDK
@@ -41,10 +51,11 @@ public class ShadowPausedMessageQueue {
   }
 
   public void nativePollOnce(int timeoutMillis) {
-    if (timeoutMillis == 0) {
-      return;
-    }
     synchronized (this) {
+      if (wakePending || timeoutMillis == 0) {
+        wakePending = false;
+        return;
+      }
       isPolling = true;
       try {
         if (timeoutMillis < 0) {
@@ -56,12 +67,14 @@ public class ShadowPausedMessageQueue {
         // ignore
       }
       isPolling = false;
+      wakePending = false;
     }
   }
 
   public static void nativeWake(long ptr) {
     ShadowPausedMessageQueue obj = nativeQueueRegistry.getNativeObject(ptr);
     synchronized (obj) {
+      obj.wakePending = true;
       obj.notifyAll();
     }
   }
