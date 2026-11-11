@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+    <!-- RenzoBackend's Unofficial.Experimental.NetVips.Native comes from the repo's
+         packages/ folder, not nuget.org; restoring this project resolves it too. -->
+    <RestoreSources>$(RestoreSources);$(MSBuildThisFileDirectory)../packages;https://api.nuget.org/v3/index.json</RestoreSources>
   </PropertyGroup>
 
   <ItemGroup>
