@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
@@ -23,6 +24,8 @@ public sealed class AutoBuyResultDto
     [JsonPropertyName("provider")] public string? Provider { get; set; }
     [JsonPropertyName("price")] public decimal? Price { get; set; }
     [JsonPropertyName("balance")] public decimal? Balance { get; set; }
+    /// <summary>How the browser sign-in went, when one was needed (for the log).</summary>
+    [JsonIgnore] public string? LoginOutcome { get; set; }
 }
 
 /// <summary>
@@ -94,8 +97,9 @@ public class ChapterAutoBuyService
         {
             AutoBuyResultDto result = await BuyAsync(plan.Sidecar, seriesId, chapterNumber, plan.OwnerId, plan.Source.Provider, plan.Chapter.Url!, plan.Cred, dryRun, token)
                 .ConfigureAwait(false);
-            _logger.LogInformation("Auto-buy {Series} ch {Chapter} on {Provider}: {Status} {Reason}",
-                plan.Series.Title, chapterNumber, plan.Source.Provider, result.Status, result.Reason ?? "");
+            _logger.LogInformation("Auto-buy {Series} ch {Chapter} on {Provider}: {Status} {Reason}{Login}",
+                plan.Series.Title, chapterNumber, plan.Source.Provider, result.Status, result.Reason ?? "",
+                result.LoginOutcome == null ? "" : $" (browser sign-in: {result.LoginOutcome})");
             return result.Status == "bought" || dryRun ? result : Remember(seriesId, chapterNumber, result);
         }
         finally
@@ -157,6 +161,15 @@ public class ChapterAutoBuyService
     private async Task<AutoBuyResultDto> BuyAsync(SidecarProcessManager sidecar, Guid seriesId, decimal chapterNumber, Guid ownerId,
         string site, string url, SiteCredentialEntity cred, bool dryRun, CancellationToken token)
     {
+        var login = new StrongBox<string?>();
+        AutoBuyResultDto result = await BuyCoreAsync(sidecar, seriesId, chapterNumber, ownerId, site, url, cred, dryRun, login, token).ConfigureAwait(false);
+        result.LoginOutcome = login.Value;
+        return result;
+    }
+
+    private async Task<AutoBuyResultDto> BuyCoreAsync(SidecarProcessManager sidecar, Guid seriesId, decimal chapterNumber, Guid ownerId,
+        string site, string url, SiteCredentialEntity cred, bool dryRun, StrongBox<string?> loginOutcome, CancellationToken token)
+    {
         PageRun run = await RunAsync(sidecar, url, login: null, dryRun, token).ConfigureAwait(false);
 
         // Signed out in the browser although the server holds a session: sign
@@ -169,6 +182,7 @@ public class ChapterAutoBuyService
                 return Fail("signed-out",
                     $"Renzo Shiori's browser isn't signed in to {site}, and {site} needs a person to sign in (a pasted cookie or a captcha), so it can't buy there.", site);
             run = await RunAsync(sidecar, url, login: (cred.Username, password), dryRun, token).ConfigureAwait(false);
+            loginOutcome.Value = run.LoginOutcome ?? "no form";
             if (run.LoginOutcome is "captcha")
                 return Fail("signed-out", $"{site}'s sign-in form has a captcha, so Renzo Shiori's browser can't sign in to buy this chapter.", site);
         }
@@ -253,7 +267,8 @@ public class ChapterAutoBuyService
             steps.Add(new("", 2_000));
         }
         steps.Add(Ready());
-        steps.Add(new("", 4_000));
+        steps.Add(new("", 2_000));
+        steps.Add(new(Call("__rzStep", "settle"), 12_000, 500));
         inspectAt = steps.Count;
         steps.Add(new(Call("__rzStep", "inspect", dryRun), 1_000, 200));
         if (!dryRun)

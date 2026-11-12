@@ -132,6 +132,10 @@
       }
       return JSON.stringify(r);
     }
+    // Wait for the page to finish deciding what it shows: an app that checks
+    // the sign-in after loading renders "sign in to unlock" first and the buy
+    // button a moment later.
+    if (step === "settle") return candidates().length > 0 || readable() ? "settled" : null;
     if (!s.clicked) return "skip";
     var now = bodyText();
     if (count(NO_COINS, now) > (s.noCoins || 0)) {
@@ -163,10 +167,21 @@
     return Array.prototype.filter.call(document.querySelectorAll("input[type=password]"), vis)[0] || null;
   }
   function setVal(el, v) {
-    var d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-    d.set.call(el, v);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.focus();
+    el.select();
+    // Typed through the browser's editing command: the events are the ones a
+    // keyboard makes (trusted beforeinput/input), which some form libraries
+    // insist on. A synthetic event is the fallback.
+    var typed = false;
+    try { typed = document.execCommand("insertText", false, v) && el.value === v; } catch (e) { }
+    if (!typed) {
+      var d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      d.set.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new FocusEvent("blur"));
+    el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
   }
   window.__rzLogin = function (step, user, pass) {
     if (step === "open") {
