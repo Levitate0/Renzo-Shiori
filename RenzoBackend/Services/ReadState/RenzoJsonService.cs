@@ -120,6 +120,10 @@ public class RenzoJsonService
         }
     }
 
+    /// <summary>Is the series' folder there to keep a renzo.json in (storage mounted, folder not moved away)?</summary>
+    public bool SeriesFolderExists(string seriesFolderOrStoragePath) =>
+        Directory.Exists(System.IO.Path.GetDirectoryName(ResolveRenzoJsonPath(seriesFolderOrStoragePath)));
+
     /// <summary>
     /// Loads renzo.json for a series folder WITHOUT locking.
     /// For read-only use (cache warmup, etc.). For read-modify-write, use ModifyAsync/Modify.

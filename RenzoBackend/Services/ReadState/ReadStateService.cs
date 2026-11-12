@@ -62,8 +62,13 @@ public class ReadStateService
             .FirstOrDefault(u => u.Username == username)?
             .Chapters ?? [];
 
-        // Cache and return
-        _cacheService.SetCachedReadStates(username, seriesStoragePath, userStates);
+        // A file that couldn't be found or read is not "nothing read". This cache
+        // never expires, so remembering the miss showed every chapter of the
+        // series unread until the next restart, whenever renzo.json was out of
+        // reach for a moment (storage not up yet after a start, the folder being
+        // moved). Only a real read is cached.
+        if (snapshot != null)
+            _cacheService.SetCachedReadStates(username, seriesStoragePath, userStates);
         return userStates;
     }
 
@@ -151,31 +156,7 @@ public class ReadStateService
         }
         if (update)
         {
-            // Atomic read-modify-write under per-file lock:
-            // Reads the current on-disk snapshot (which may have been modified by
-            // SeriesStateService), applies UserReadStates, and writes back.
-            _renzoJsonService.Modify(seriesStoragePath, snapshot =>
-            {
-                var current = snapshot ?? new ImportSeriesSnapshot
-                {
-                    Version = 2,
-                    UserReadStates = []
-                };
-
-                if (current.UserReadStates == null)
-                    current.UserReadStates = [];
-
-                UserReadStateSnapshot? ushot = current.UserReadStates
-                    .FirstOrDefault(a => a.Username == username);
-                if (ushot == null)
-                {
-                    ushot = new UserReadStateSnapshot { Username = username, Chapters = [] };
-                    current.UserReadStates.Add(ushot);
-                }
-                ushot.Chapters = states;
-                current.Version = 2;
-                return current;
-            });
+            PersistStates(username, seriesStoragePath, chapterState);
 
             // Notify background scrobbler sync (debounced) - outside the lock
             _changeNotifier.Notify(userId, seriesId);
@@ -198,7 +179,7 @@ public class ReadStateService
         if (filename != null)
             chapterState.LastReadFilename = filename;
         chapterState.LastReadAt = DateTime.UtcNow;
-        PersistStates(username, seriesStoragePath, states);
+        PersistStates(username, seriesStoragePath, chapterState);
         _changeNotifier.Notify(userId, seriesId);
     }
 
@@ -211,11 +192,30 @@ public class ReadStateService
         var states = GetSeriesReadStates(username, seriesStoragePath);
         (_, ChapterReadState chapterState) = GetOrCreateChapterState(states, chapterNumber);
         chapterState.Bookmarked = bookmarked;
-        PersistStates(username, seriesStoragePath, states);
+        PersistStates(username, seriesStoragePath, chapterState);
     }
 
-    private void PersistStates(string username, string seriesStoragePath, List<ChapterReadState> states)
+    /// <summary>
+    /// Writes ONE chapter's state into what is on disk, under the file lock.
+    ///
+    /// It used to write the user's whole chapter list as held in memory. When
+    /// that copy was empty (a miss remembered by the cache, see
+    /// GetSeriesReadStates), the next page turn replaced every chapter on disk
+    /// with just the one being read: the series went all-unread for good.
+    /// Merging the changed chapter can never drop another one.
+    /// </summary>
+    private void PersistStates(string username, string seriesStoragePath, ChapterReadState changed)
     {
+        // No folder: storage isn't up, or the series has moved. Writing would
+        // create a stray renzo.json holding only this chapter (an August one
+        // still sits at the user's library root), away from the real state.
+        if (!_renzoJsonService.SeriesFolderExists(seriesStoragePath))
+        {
+            _logger.LogWarning("Not saving read state for chapter {Chapter}: the series folder {Path} isn't there.", changed.ChapterNumber, seriesStoragePath);
+            _cacheService.Invalidate(username, seriesStoragePath);
+            return;
+        }
+        List<ChapterReadState>? merged = null;
         _renzoJsonService.Modify(seriesStoragePath, snapshot =>
         {
             var current = snapshot ?? new ImportSeriesSnapshot { Version = 2, UserReadStates = [] };
@@ -226,10 +226,16 @@ public class ReadStateService
                 ushot = new UserReadStateSnapshot { Username = username, Chapters = [] };
                 current.UserReadStates.Add(ushot);
             }
-            ushot.Chapters = states;
+            ushot.Chapters ??= [];
+            ushot.Chapters.RemoveAll(c => c.ChapterNumber == changed.ChapterNumber);
+            ushot.Chapters.Add(changed);
+            merged = ushot.Chapters;
             current.Version = 2;
             return current;
         });
+        // The cache now holds exactly what was written.
+        if (merged != null)
+            _cacheService.SetCachedReadStates(username, seriesStoragePath, merged);
     }
 
     /// <summary>
