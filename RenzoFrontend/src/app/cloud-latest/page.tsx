@@ -31,6 +31,7 @@ import {
   type SpotlightItem,
 } from "@/components/comp/series/spotlight-hero";
 import { AddSeries } from "@/components/comp/series/add-series";
+import { usePermission } from "@/hooks/use-permission";
 
 const ITEMS_PER_PAGE = 40; // Increased to ensure screen fill
 const MAX_VISIBLE_GENRES = 200;
@@ -514,6 +515,9 @@ export default function CloudLatestPage() {
   // (e.g. became InLibrary mid-session), navigate to its detail page;
   // otherwise open the AddSeries modal pre-filled with the title so the
   // search step kicks off immediately.
+  // Adding needs Manager (POST /api/serie); below that the CTA is hidden, as
+  // the grid's own Add buttons already are.
+  const canAddSeries = usePermission('canAddSeries');
   const handleSpotlightAdd = useCallback(
     (item: SpotlightItem) => {
       const raw = firstPageItems.find(
@@ -869,7 +873,7 @@ export default function CloudLatestPage() {
             eyebrowIcon={Compass}
             ctaLabel="Add to library"
             ctaIcon={Plus}
-            onCtaClick={handleSpotlightAdd}
+            onCtaClick={canAddSeries ? handleSpotlightAdd : undefined}
           />
         </div>
       ) : null}

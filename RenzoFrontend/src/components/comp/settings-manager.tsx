@@ -1168,9 +1168,14 @@ function SocksSettingsSection({
                   socksProxyPassword: e.target.value,
                 }))
               }
-              placeholder="Optional"
+              placeholder={localSettings.socksProxyPasswordSet ? "Saved — leave blank to keep" : "Optional"}
               disabled={!isEnabled}
             />
+            {localSettings.socksProxyPasswordSet && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                A password is saved. Type a new one to replace it; clear the username to remove it.
+              </p>
+            )}
           </div>
         </div>
         <p className="text-muted-foreground text-sm">
@@ -1504,9 +1509,14 @@ function SecuritySection({
               onChange={(e) =>
                 setLocalSettings((prev) => ({ ...prev, smtpPassword: e.target.value }))
               }
-              placeholder="App password / API key"
+              placeholder={localSettings.smtpPasswordSet ? "Saved — leave blank to keep" : "App password / API key"}
               autoComplete="new-password"
             />
+            {localSettings.smtpPasswordSet && (
+              <p className="text-xs text-muted-foreground">
+                A password is saved. Type a new one to replace it; clear the username to remove it.
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="smtp-from">From Address</Label>

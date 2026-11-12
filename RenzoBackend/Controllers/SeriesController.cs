@@ -465,7 +465,7 @@ namespace RenzoBackend.Controllers
         /// <summary>
         /// POST /api/serie/apply-default-priority — the Sources page's "Default
         /// priority order" tab's "Apply to All" action. Re-ranks every series the
-        /// CALLER owns (plus adopts any ownerless legacy series) to match their
+        /// CALLER owns (plus, for the Owner only, adopts any ownerless legacy series) to match their
         /// configured default order, and turns on the per-user redownload-on-
         /// upgrade setting. No-ops (returns applied=false) if the caller hasn't
         /// configured a default order yet.

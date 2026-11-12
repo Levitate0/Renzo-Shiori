@@ -36,4 +36,4 @@ Get-ChildItem $enjDst -Recurse -Directory -Filter '__pycache__' | Remove-Item -R
 
 Write-Host "Sidecar assets staged to $dest :"
 Get-ChildItem $dest | ForEach-Object { Write-Host "  $($_.Name)" }
-Write-Host "Next: build_docker.ps1, then set RENZO_USE_SIDECAR=1 on the renzo-shiori service to cut over."
+Write-Host "Next: build_docker.ps1. The sidecar is the only extension engine now, so no switch is needed - the new jar is used on the next container start."

@@ -1367,7 +1367,7 @@ namespace RenzoBackend.Services.Series
         /// Bulk "Apply to All" for the Sources page's Default Priority Order tab:
         /// re-ranks every one of this user's series to match their configured
         /// default order, migrates any ownerless (legacy/setup-wizard) series to
-        /// this user so they're covered too, and turns the redownload-on-upgrade
+        /// this user so they're covered too (Owner only), and turns the redownload-on-upgrade
         /// setting on for them — the one action that takes a user from "I've
         /// arranged my default order" to "it's live everywhere." No-ops (does
         /// nothing, enables nothing) if the user hasn't configured a default order.
@@ -1386,8 +1386,13 @@ namespace RenzoBackend.Services.Series
 
             // Adopt ownerless series (pre-dates per-user ownership, e.g. a setup-
             // wizard import) so this user's default order covers them too.
-            List<Models.Database.SeriesEntity> unowned = await _db.Series.Include(s => s.Sources)
-                .Where(s => s.OwnerId == Guid.Empty).ToListAsync(token).ConfigureAwait(false);
+            // Owner only: any user can press Apply to All, and adoption hands
+            // them every ownerless series in the library. Anyone else still
+            // re-ranks the series they already own.
+            List<Models.Database.SeriesEntity> unowned = user.Level >= UserLevel.Owner
+                ? await _db.Series.Include(s => s.Sources)
+                    .Where(s => s.OwnerId == Guid.Empty).ToListAsync(token).ConfigureAwait(false)
+                : [];
             foreach (Models.Database.SeriesEntity s in unowned)
                 s.OwnerId = userId;
 

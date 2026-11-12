@@ -59,7 +59,8 @@ export type SpotlightHeroProps = {
   eyebrowIcon?: LucideIcon;
   ctaLabel: string;
   ctaIcon?: LucideIcon;
-  onCtaClick: (item: SpotlightItem) => void;
+  /** Omitted = no CTA button (e.g. Browse's "Add to library" below Manager). */
+  onCtaClick?: (item: SpotlightItem) => void;
   autoAdvanceMs?: number;
   pauseAfterManualMs?: number;
   variant?: "library" | "browse";
@@ -502,6 +503,7 @@ export function SpotlightHero({
           )}
 
           {/* CTA */}
+          {onCtaClick && (
           <div className="flex flex-wrap items-center gap-2.5 max-lg:justify-center">
             <Button
               type="button"
@@ -513,6 +515,7 @@ export function SpotlightHero({
               {ctaLabel}
             </Button>
           </div>
+          )}
         </div>
 
         {/* Dot strip: vertical right at lg+, horizontal under cover at <lg */}

@@ -15,13 +15,11 @@ import { usePermission } from "@/hooks/use-permission";
 
 export const AddSeriesButton = forwardRef<HTMLButtonElement, ButtonProps>(
   (props, ref) => {
-    const canAdd = usePermission('canAddSeries');
-    const label = canAdd ? "Add Series" : "Request Series";
     return (
       <Button size="sm" className="h-full gap-1" ref={ref} {...props}>
         <PlusCircle className="h-4 w-4" />
         <span className="sr-only sm:not-sr-only sm:whitespace-nowrap">
-          {label}
+          Add Series
         </span>
       </Button>
     );
@@ -58,6 +56,10 @@ export function AddSeries({
   onOpenChange,
 }: AddSeriesProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
+  // POST /api/serie (and the add-source flow) need Manager. Below that this
+  // used to show a "Request Series" button with no request system behind it,
+  // so the dialog ended in a 403. Hub twin: hide it below MANAGER too.
+  const canAdd = usePermission('canAddSeries');
 
   // Use controlled or internal state
   const open = controlledOpen !== undefined ? controlledOpen : internalOpen;
@@ -67,6 +69,8 @@ export function AddSeries({
   const isAddSourcesMode = !!(title && existingSources && seriesId);
 
   const triggerElement = triggerButton || <AddSeriesButton />;
+
+  if (!canAdd) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

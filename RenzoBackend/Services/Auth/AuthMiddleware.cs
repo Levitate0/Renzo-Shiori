@@ -125,8 +125,13 @@ public class AuthMiddleware
                 // keeps the powerful, long-lived token out of URLs (and
                 // therefore out of browser history / server access logs /
                 // any intermediate proxy or CDN logs) entirely.
+                //
+                // Only on the image routes (AcceptsImageToken). It used to be
+                // honoured on every route, so a leaked image URL - and these do
+                // end up in history and logs - opened the whole API to whoever
+                // held it for 15 minutes.
                 string? queryToken = context.Request.Query["token"].FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(queryToken))
+                if (!string.IsNullOrWhiteSpace(queryToken) && AcceptsImageToken(context.Request.Path, context.Request.Method))
                 {
                     principal = jwtService.ValidateImageToken(queryToken);
                 }
@@ -208,6 +213,23 @@ public class AuthMiddleware
 
     private static bool IsHubRoute(PathString path) =>
         path.StartsWithSegments("/progress");
+
+    /// <summary>
+    /// Where the `?token=` image token may stand in for a session: plain reads of
+    /// the URLs a client puts in an &lt;img src&gt; and so cannot send a header for.
+    /// Those are the cached covers and icons (/api/image/{key}) and the three
+    /// reader page images. Only the web uses this; Hub sends a header. Anything
+    /// new loaded the same way has to be added here, or it 401s with sign-in on.
+    /// </summary>
+    internal static bool AcceptsImageToken(PathString path, string method)
+    {
+        if (!HttpMethods.IsGet(method) && !HttpMethods.IsHead(method))
+            return false;
+        if (path.StartsWithSegments("/api/image", StringComparison.OrdinalIgnoreCase))
+            return true;
+        string p = (path.Value?.TrimEnd('/') ?? "").ToLowerInvariant();
+        return p is "/api/reader/page" or "/api/reader/stream/page" or "/api/reader/preview/page";
+    }
 
     internal static bool IsBypassRoute(PathString path)
     {

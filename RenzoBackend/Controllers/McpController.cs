@@ -26,15 +26,18 @@ public class McpController : ControllerBase
 {
     private readonly UserQueryService _userQuery;
     private readonly McpToolService _mcpToolService;
+    private readonly IConfiguration _config;
     private readonly ILogger<McpController> _logger;
 
     public McpController(
         UserQueryService userQuery,
         McpToolService mcpToolService,
+        IConfiguration config,
         ILogger<McpController> logger)
     {
         _userQuery = userQuery;
         _mcpToolService = mcpToolService;
+        _config = config;
         _logger = logger;
     }
     [HttpPost("/{opdsPath}/mcp")]
@@ -43,6 +46,12 @@ public class McpController : ControllerBase
     [FromBody] JsonElement body,
     CancellationToken token)
     {
+        // appsettings "Mcp:Enabled" (default on). Read per request: the file is
+        // loaded with reloadOnChange, so switching it off needs no restart. Off
+        // answers 404, the same as an unknown path, so it says nothing either way.
+        if (!_config.GetValue("Mcp:Enabled", true))
+            return NotFound();
+
         UserEntity? user = await _userQuery.GetByOpdsPathAsync(opdsPath, token);
         if (user == null || !user.IsActive)
             return NotFound();

@@ -118,6 +118,9 @@ namespace RenzoBackend.Controllers
 
         /// <summary>
         /// Gets the current application settings.
+        /// Open to every signed-in user on purpose — the web and Hub read the
+        /// categories, languages, NSFW default and more from here on non-owner
+        /// screens — so stored passwords are blanked (see SettingsDto.WithoutSecrets).
         /// </summary>
         /// <param name="token">Cancellation token.</param>
         /// <returns>The current settings.</returns>
@@ -131,7 +134,7 @@ namespace RenzoBackend.Controllers
             try
             {
                 var settings = await _settingsService.GetSettingsAsync(token).ConfigureAwait(false);
-                return Ok(settings);
+                return Ok(settings.WithoutSecrets());
             }
             catch (Exception ex)
             {
@@ -191,6 +194,9 @@ namespace RenzoBackend.Controllers
                 var currentSettings = await _settingsService.GetSettingsAsync(token).ConfigureAwait(false);
                 bool authWasEnabled = currentSettings.AuthenticationEnabled;
                 bool authNowEnabled = settings.AuthenticationEnabled;
+
+                // The client only ever saw blank passwords; blank means "unchanged".
+                settings.KeepStoredSecrets(currentSettings);
 
                 // Save the new settings first
                 await _settingsService.SaveSettingsAsync(settings, false, token).ConfigureAwait(false);

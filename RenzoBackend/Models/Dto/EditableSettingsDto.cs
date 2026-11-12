@@ -174,7 +174,11 @@ public class EditableSettingsDto
     /// and new chapters can be read by streaming, but nothing is fetched to
     /// disk unless someone asks — Download all, a re-download, or a priority
     /// re-apply. Automatic priority-upgrade re-downloads stop too.
+    /// The name is pinned: there is no naming policy, so without it this went
+    /// out as "AutoDownloadNewChapters" while the web and Hub read the camelCase
+    /// name, found nothing, and showed the switch on after every reload.
     /// </summary>
+    [JsonPropertyName("autoDownloadNewChapters")]
     public bool AutoDownloadNewChapters { get; set; } = true;
 
     /// <summary>

@@ -12,8 +12,12 @@ import { MigrateTab } from "@/components/comp/sources/migrate-tab";
 import { HealthTab } from "@/components/comp/sources/health-tab";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSearch } from "@/contexts/search-context";
+import { useAuth } from "@/contexts/auth-context";
 
 const TABS = ["sources", "default-priority", "health", "migrate"];
+// /api/sources/health, /api/migrate and /api/extensions are Manager-only on
+// the server; below that these tabs and the versions panel only ever 403'd.
+const MANAGER_TABS = ["health", "migrate"];
 
 export default function ProvidersPage() {
   return (
@@ -29,8 +33,10 @@ function ProvidersContent() {
   // command bar's dead-source alert can link straight to it.
   const params = useSearchParams();
   const router = useRouter();
+  const { canManage } = useAuth();
   const tabParam = params.get("tab");
-  const tab = tabParam && TABS.includes(tabParam) ? tabParam : "sources";
+  const tab = tabParam && TABS.includes(tabParam) && (canManage || !MANAGER_TABS.includes(tabParam))
+    ? tabParam : "sources";
   const from = params.get("from");
   const openTab = (next: string, fromProvider?: string) =>
     router.replace(
@@ -56,14 +62,18 @@ function ProvidersContent() {
         <TabsList className="h-auto flex-wrap">
           <TabsTrigger value="sources">Sources</TabsTrigger>
           <TabsTrigger value="default-priority">Default priority order</TabsTrigger>
-          {/* Hub twin: ui/sources/SourcesScreen.kt "Health" tab → HealthTab.kt */}
-          <TabsTrigger value="health">Health</TabsTrigger>
-          {/* Hub twin: ui/sources/SourcesScreen.kt "Migrate" tab → MigrateTab.kt */}
-          <TabsTrigger value="migrate">Migrate</TabsTrigger>
+          {canManage && (
+            <>
+              {/* Hub twin: ui/sources/SourcesScreen.kt "Health" tab → HealthTab.kt */}
+              <TabsTrigger value="health">Health</TabsTrigger>
+              {/* Hub twin: ui/sources/SourcesScreen.kt "Migrate" tab → MigrateTab.kt */}
+              <TabsTrigger value="migrate">Migrate</TabsTrigger>
+            </>
+          )}
         </TabsList>
 
         <TabsContent value="sources" className="space-y-6">
-          <ExtensionVersions />
+          {canManage && <ExtensionVersions />}
           <SourcesList searchTerm={searchTerm} clearSearch={clearSearch} />
         </TabsContent>
 
@@ -71,14 +81,18 @@ function ProvidersContent() {
           <DefaultPriorityOrderTab />
         </TabsContent>
 
-        <TabsContent value="health">
-          <HealthTab onMigrate={(provider) => openTab("migrate", provider)} />
-        </TabsContent>
+        {canManage && (
+          <>
+            <TabsContent value="health">
+              <HealthTab onMigrate={(provider) => openTab("migrate", provider)} />
+            </TabsContent>
 
-        <TabsContent value="migrate">
-          {/* Keyed by the source so "Migrate" from Health or the alert re-picks it. */}
-          <MigrateTab key={from ?? ""} initialFrom={from} />
-        </TabsContent>
+            <TabsContent value="migrate">
+              {/* Keyed by the source so "Migrate" from Health or the alert re-picks it. */}
+              <MigrateTab key={from ?? ""} initialFrom={from} />
+            </TabsContent>
+          </>
+        )}
       </Tabs>
     </div>
   );

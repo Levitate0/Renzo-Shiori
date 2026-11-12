@@ -27,10 +27,39 @@ else
     user_name="$existing_user"
 fi
 
-# Fix permissions
-echo "Setting permissions on/config"
-chown -R "$user_name:$group_name" /config
-chmod -R 777 /config
+# Make sure the app user can use /config.
+# This used to be `chown -R` + `chmod -R 777` on every start: it rewrote every
+# inode under /config (thumbs, extensions, logs - slow on a big install) and
+# left the database (stored SMTP/SOCKS passwords included) and the JWT secret
+# in appsettings.json readable and writable by every account on the host. All the app needs is to
+# own its files, so:
+#   - chown only what is not already PUID:PGID (a no-op on a normal restart; it
+#     repairs files restored from a backup, or left by a run with other IDs).
+#     -h changes a symlink itself rather than whatever it points at.
+#   - make sure the owner can read/write every file and enter every directory,
+#     and keep directories group-writable so other members of PGID (the host
+#     user, another container) can still drop files in.
+# Nothing is narrowed: an install that was already 777 keeps its modes, so a
+# running install starts exactly as before. Fresh files follow UMASK below.
+echo "Checking ownership and permissions on /config"
+# A file that cannot be changed (a read-only mount inside /config) is reported
+# rather than stopping the container; the app logs its own error if it matters.
+find /config \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown -h "$PUID:$PGID" {} + \
+    || echo "Warning: could not change the owner of some files in /config"
+find /config \( -type d ! -perm -u=rwx,g=rwx \) -exec chmod u+rwx,g+rwx {} + \
+    || echo "Warning: could not change the mode of some directories in /config"
+find /config \( -type f ! -perm -u=rw \) -exec chmod u+rw {} + \
+    || echo "Warning: could not change the mode of some files in /config"
+
+# UMASK (optional, e.g. 002 for group-writable files). Inherited by the app and
+# the OAuth proxy below through gosu/exec. Left alone when unset.
+if [ -n "${UMASK:-}" ]; then
+    if umask "$UMASK" 2>/dev/null; then
+        echo "Using umask $UMASK"
+    else
+        echo "Warning: ignoring invalid UMASK '$UMASK'"
+    fi
+fi
 
 # Detect architecture and add IKVM library path
 ARCH=$(uname -m)

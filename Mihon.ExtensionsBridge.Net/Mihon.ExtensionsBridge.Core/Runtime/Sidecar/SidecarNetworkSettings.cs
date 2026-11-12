@@ -60,6 +60,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             if (prefs.SocksProxy != null)
             {
                 settings["socksProxyEnabled"] = prefs.SocksProxy.Enabled.ToString().ToLowerInvariant();
+                // Java's socksProxyVersion only knows 4 and 5. It was never sent, so
+                // the sidecar sat on its Kotlin default (5) whatever was chosen.
+                settings["socksProxyVersion"] = prefs.SocksProxy.Version == 4 ? "4" : "5";
                 settings["socksProxyHost"] = prefs.SocksProxy.Host ?? "";
                 settings["socksProxyPort"] = prefs.SocksProxy.Port == 0 ? "" : prefs.SocksProxy.Port.ToString();
                 settings["socksProxyUsername"] = prefs.SocksProxy.Username;

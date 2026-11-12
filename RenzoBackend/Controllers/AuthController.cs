@@ -77,23 +77,33 @@ public class AuthController : ControllerBase
         if (!authEnabled && hasUsers)
         {
             var users = await _userQueryService.ListUsersAsync(token);
-            result.Users = users.Select(u => new UserDto
-            {
-                Id = u.Id,
-                Username = u.Username,
-                AvatarBase64 = u.AvatarBlob != null ? Convert.ToBase64String(u.AvatarBlob) : null,
-                AvatarContentType = u.AvatarContentType,
-                Level = u.Level,
-                OpdsPath = u.OpdsPath,
-                CreatedAt = u.CreatedAt,
-                LastLoginAt = u.LastLoginAt,
-                IsActive = true,
-                HasPassword = !string.IsNullOrWhiteSpace(u.PasswordHash)
-            }).ToList();
+            result.Users = users.Select(PickerEntry).ToList();
         }
 
         return Ok(result);
     }
+
+    /// <summary>
+    /// One user as the public, pre-sign-in picker shows them: name, avatar and
+    /// level, nothing that works as a credential. The OPDS path is one (it signs
+    /// a reader app and the MCP endpoint in as that user), so it goes out blank,
+    /// not omitted — Hub's UserDto requires the field. Email is left unset (the
+    /// picker never had it). The signed-in user's own path still comes from
+    /// /api/auth/me and select-user.
+    /// </summary>
+    internal static UserDto PickerEntry(UserEntity u) => new()
+    {
+        Id = u.Id,
+        Username = u.Username,
+        AvatarBase64 = u.AvatarBlob != null ? Convert.ToBase64String(u.AvatarBlob) : null,
+        AvatarContentType = u.AvatarContentType,
+        Level = u.Level,
+        OpdsPath = string.Empty,
+        CreatedAt = u.CreatedAt,
+        LastLoginAt = u.LastLoginAt,
+        IsActive = true,
+        HasPassword = !string.IsNullOrWhiteSpace(u.PasswordHash)
+    };
 
     /// <summary>
     /// POST /api/auth/login - Authenticate user with username and password.

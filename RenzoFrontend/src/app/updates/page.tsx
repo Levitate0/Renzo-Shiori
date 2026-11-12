@@ -299,7 +299,8 @@ export default function UpdatesPage() {
 
   // Each user's library (and its updates) is isolated. Owner-level accounts
   // can flip to every user's updates for support/troubleshooting.
-  const { canOwner } = useAuth();
+  // canManage gates "Update now": POST /api/serie/scan-all needs Manager.
+  const { canOwner, canManage } = useAuth();
   const [viewAllLibraries, setViewAllLibraries] = useState(false);
   const { data, isLoading } = useUpdatesFeed(0, FETCH_LIMIT, canOwner && viewAllLibraries);
   const [scanning, setScanning] = useState(false);
@@ -405,6 +406,7 @@ export default function UpdatesPage() {
               {viewAllLibraries ? "All libraries" : "My library"}
             </button>
           )}
+          {canManage && (
           <button
             type="button"
             onClick={() => void handleUpdateNow()}
@@ -415,6 +417,7 @@ export default function UpdatesPage() {
             {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             Update now
           </button>
+          )}
         </div>
 
         {/* Scan progress — visible while per-provider chapter checks are queued */}

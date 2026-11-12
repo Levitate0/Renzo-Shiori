@@ -151,6 +151,12 @@ namespace Mihon.ExtensionsBridge.Core.Runtime
                         config.setSocksProxyEnabled(prefs.SocksProxy.Enabled);
                         update = true;
                     }
+                    int version = prefs.SocksProxy.Version == 4 ? 4 : 5;
+                    if (version != config.getSocksProxyVersion())
+                    {
+                        config.setSocksProxyVersion(version);
+                        update = true;
+                    }
                     int port = 0;
                     string originalPort = (string)config.getSocksProxyPort();
                     int.TryParse(originalPort, out port);

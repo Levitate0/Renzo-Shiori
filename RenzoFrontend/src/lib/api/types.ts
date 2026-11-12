@@ -47,7 +47,10 @@ export interface Settings {
   socksProxyHost: string;
   socksProxyPort: number;
   socksProxyUsername: string;
+  /** Always blank from the server; sent blank, the stored password is kept. */
   socksProxyPassword: string;
+  /** A SOCKS password is stored (the server never sends it back). */
+  socksProxyPasswordSet?: boolean;
   nsfwVisibility: NsfwVisibility;
   // Setup Wizard properties
   isWizardSetupComplete: boolean;
@@ -62,7 +65,10 @@ export interface Settings {
   smtpHost: string;
   smtpPort: number;
   smtpUsername: string;
+  /** Always blank from the server; sent blank, the stored password is kept. */
   smtpPassword: string;
+  /** An SMTP password is stored (the server never sends it back). */
+  smtpPasswordSet?: boolean;
   smtpUseSsl: boolean;
   smtpFromAddress: string;
   /** Enables the built-in web reader (library reading + Browse preview). */
