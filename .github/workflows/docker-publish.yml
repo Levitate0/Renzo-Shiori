@@ -223,7 +223,7 @@ jobs:
           # SidecarProcessManager REPLACES LD_LIBRARY_PATH with it — so on
           # arm64 it points at a directory that doesn't exist and JCEF loses
           # libjawt.so. An arm64 image would push fine and fail at runtime,
-          # which is worse than not offering one. See docs/DOCKER.md for the
+          # which is worse than not offering one. See the wiki's Installation page for the
           # one-line Dockerfile change that would unblock arm64.
           platforms: linux/amd64
           push: true

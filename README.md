@@ -1,228 +1,104 @@
 <p align="center">
-  <img src="./docs/renzo-banner.png" alt="Renzo Shiori — Your World. Your Library." width="100%">
+  <img src="./docs/renzo-banner.png" alt="Renzo Shiori: Your World. Your Library." width="100%">
 </p>
 
 <h1 align="center">連蔵・栞 · Renzo Shiori</h1>
 <p align="center"><em>Your world. Your library.</em></p>
 
-**Renzo Shiori** is a self-hosted, multi-user manga / manhwa / manhua library and download manager. Subscribe to a series once and Renzo Shiori keeps it — across every source you configure — downloaded, organized, and up to date, in a *drop-and-forget* fashion. One server hosts many fully-isolated private libraries: every user gets their own library, downloads, sources, updates feed, reading progress, and account settings.
+**Renzo Shiori** is a self-hosted, multi-user manga, manhwa and manhua server. Add a series once, and it keeps every chapter downloaded, organised and up to date from the sources you pick. When one source fails, it falls back to the next. It includes a web reader, tracker sync and an OPDS feed. Every user has their own private library, sources, queue and reading progress.
 
-> **Part of the Renzo ecosystem.** *Renzo Shiori* (連蔵・栞 — *shiori*, "bookmark") is the reading & library half: manga, manhwa, and manhua. Its sibling, **Renzo**, is a self-hosted anime streaming & download app. Same look, same private-per-user philosophy, two halves of one library.
+**Documentation: [the wiki](https://github.com/Levitate0/Renzo-Shiori/wiki)**
 
-> Renzo Shiori is a rebrand and continuation of a fork of [maxpiva/Rensaio](https://github.com/maxpiva/Rensaio) (itself a fork of **Kaizoku / Kaizoku Next Gen** by OAE). Huge thanks to the upstream authors — this project stands on their work. A handful of features were shaped by looking at [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server) — another self-hosted manga server — as a reference point (see [Under the hood](#-under-the-hood) for the compatibility layer derived directly from it); the rest of the feature set was designed independently for Renzo Shiori.
+## Part of the Renzo ecosystem
 
-> [!IMPORTANT]
-> **Back up your `/config` directory (including the database) before upgrading.** Upgrades are automatic on restart, but the devil never rests.
+| | |
+|---|---|
+| **Renzo Shiori** | Manga server and web reader (this repository) |
+| **Renzo** | The anime counterpart |
+| **[Renzo Hub](https://github.com/Levitate0/Renzo-Hub)** | The native client for both, on Android, Android TV and Windows. It is the only app; there are no separate Shiori apps. |
 
----
+## Features
 
-## ✨ Highlights
+- **Mihon/Tachiyomi extensions** for sources. Install from repositories, pin versions, roll back, or sideload your own APK. Extensions run on a real JVM with an embedded Chromium, so sites that need a browser or a Cloudflare check work too.
+- **Many sources per series, in priority order.** Downloads come from the best source that has the chapter. Failing sources step down automatically, and a **Health** tab shows which sources are dying. **Migrate** moves whole series off a broken source.
+- **A fair download queue.** No single source can hog it. Clear completed or failed downloads, or retry everything, in one click.
+- **A web reader** with paged, right-to-left, double-page and long-strip (webtoon) modes. It streams chapters that aren't downloaded yet, has **Switch source** for a bad upload, and makes chapter breaks hard to scroll past by accident.
+- **Paid chapters.** Sign in to coin-based sites with your own account. Chapters you own unlock and download automatically, and auto-buy is optional, per series.
+- **Trackers.** Sync reading progress to AniList, MyAnimeList, Kitsu and MangaDex.
+- **OPDS** feed and an **MCP** endpoint for each user, behind a private random URL.
+- **Multi-user**, with User, Manager, Admin and Owner roles, invites, password reset, per-device sign-in and TV pairing.
+- **Collections** and drag-to-reorder **categories**. Series are filed into Manga, Manhwa, Manhua or Comic automatically.
+- **18+ filter.** Adult series are hidden in the library and Browse until you choose to show them.
+- **Import** an existing library from disk, or reading progress from a Tachiyomi/Mihon backup.
+- **Plain files on disk:** CBZ chapters with `ComicInfo.xml`, `cover.jpg`, and a `renzo.json` per series that carries metadata and read state.
 
-- 👥 **True multi-user** — Isolated libraries per user with permission levels (User / Manager / Admin / Owner). Optional authentication, invites, and an Owner "global view" for support. Each user gets a personal **Account** page for their own sensitive settings (per-site logins for coin/paid sources, external tracker links) — kept separate from the Owner-only app-wide `/settings`.
-- 🔎 **Multi-source & multi-linking** — Link one series to many sources via **Mihon extensions**. Temporary vs. permanent sources: temporary sources only fill gaps and are auto-replaced when a permanent source provides the chapter.
-- 📥 **Automatic downloads** — A fair, per-provider download queue (no single source can starve the others), automatic retries/rescheduling on failure, and a dedicated downloads page. Extensions auto-update.
-- 🗂️ **Automatic categorization** — Series are auto-filed into **Manga / Manhwa / Manhua / Comic** by country-of-origin. When you link a series to a scrobbler (MAL/AniList/Kitsu), Renzo Shiori uses that ID-based `media_type` as the authoritative signal — far more accurate than a title guess.
-- 🔗 **Built-in tracker sync (container-hosted OAuth)** — Connect **AniList · MyAnimeList · Kitsu · MangaDex** per user. The OAuth service is **bundled inside the container** — no reliance on any external hosted proxy. See [Tracker / OAuth setup](#-tracker--oauth-setup).
-- 📖 **Built-in reader + read-state tracking** — Paged, paged-RTL, double-page, webtoon/longstrip, and a **Smart Detect** auto mode that inspects page shapes to pick webtoon vs. paged automatically. Resume where you left off on any device; progress is stored with the series (and syncs over OPDS).
-- 🔓 **Coin/paid-site support** — Renzo Shiori can log in to coin-gated scanlation sites on your behalf, keep the session alive, and detect/unlock chapters you've actually purchased — locked chapters download automatically once owned.
-- 🧩 **Extension version control** — Roll an extension back or forward between versions, pin it against auto-update, or sideload a patched APK — all from the Sources page.
-- 📡 **OPDS server** — Read from any OPDS app; per-user private path. `https://renzo.example.com/door-pebble`
-- 🤖 **MCP server** — Expose your library to AI tools via the Model Context Protocol (append `/mcp` to your OPDS path), respecting user permissions.
-- 🧙 **Import wizard** — Bring in an existing library from disk (Kavita-style filename parsing) or a Suwayomi backup, with automatic per-user account creation from `renzo.json` read-state where present.
-- 🩺 **Status & health dashboard** — Color-coded alerts for broken providers, stale series, and more; live job/download progress over SignalR with an automatic polling fallback if the socket connection drops.
-- 🎨 **Theming** — Light/dark mode plus six selectable accent colors, synced across tabs and devices.
-- 🧾 **Rich metadata** — `ComicInfo.xml` injection, per-series `cover.jpg`, and a `renzo.json` metadata/read-state map stored alongside your series.
-- 🖼️ **Format support** — jxl, jp2, avif, heic/heif, and more, with real-time transcoding for clients that can't render them natively.
-- 🌐 **Reverse-proxy friendly** — External-domain support; invite / password links resolve their base URL by priority: **1)** `External Domain` setting → **2)** first public-looking `Allowed Origins` entry → **3)** first private/LAN IP → **4)** `localhost`.
+The full guide is on the [Features](https://github.com/Levitate0/Renzo-Shiori/wiki/Features) wiki page.
 
----
+## Quick start (Docker)
 
-## 📋 Feature list
-
-### Library & discovery
-- Library grid with genre/provider/category/favorites filtering, sorting, and favorites lists
-- Browse page — latest releases across every installed source in one feed, with genre/tag filters and add-to-library
-- Updates feed — new chapters bucketed today/yesterday/this week, with batch-release stacking
-- Automatic Manga/Manhwa/Manhua/Comic categorization, scrobbler-ID-aware when a tracker is linked
-- Import wizard for existing on-disk libraries or Suwayomi backups
-
-### Reading
-- Built-in reader: library mode (downloaded, full progress tracking) and preview mode (stream from source, nothing stored)
-- Paged, paged-RTL, double-page, webtoon/longstrip modes, plus Smart Detect auto-mode
-- Continuous mode auto-advances across chapter boundaries
-- Coin/paid-site login + session management, with automatic locked-chapter detection and unlock-on-purchase
-
-### Sources & extensions
-- Mihon (Tachiyomi) extension support — MangaDex, Kiryuu, ComicK, ReadComicsOnline, and many more
-- Temporary vs. permanent source linking per series, with automatic gap-filling
-- Extension pin / rollback / forward / sideload from the Sources page
-- FlareSolverr (Cloudflare bypass) and SOCKS proxy support for source requests
-
-### Downloads & jobs
-- Fair, per-provider download queue with automatic retry/reschedule on failure
-- Live job/download progress via SignalR with a polling fallback
-- Scheduled recurring tasks (chapter checks, extension updates) configurable per job type
-
-### Multi-user & accounts
-- Four permission levels: User / Manager / Admin / Owner
-- Optional authentication, invite-based onboarding with emailed one-time setup links
-- Per-user Account page (password, personal site logins, personal tracker links) separate from Owner-only app settings
-- Unauthenticated server-discovery endpoint so clients can validate a server address before login
-
-### Trackers
-- AniList, MyAnimeList, Kitsu, and MangaDex scrobbling with automatic series matching
-- Container-hosted OAuth proxy — no external hosted service required, one public port handles every provider's callback
-
-### Sharing
-- OPDS server with a per-user private feed path
-- MCP server exposing your library to AI tools, permission-aware
-
-### Admin & ops
-- Status/health dashboard with color-coded provider and series alerts
-- First-run setup wizard
-- App-wide settings: security, content preferences, repositories, downloads, schedules, storage, FlareSolverr, SOCKS
-
-### Platform & theming
-- Light/dark mode plus six selectable accent colors, synced across tabs and devices
-- Reverse-proxy/external-domain aware link resolution
-
----
-
-## 📚 Sources
-
-Renzo Shiori connects to sources through **Mihon (Tachiyomi) extensions** — MangaDex, Kiryuu, ComicK, ReadComicsOnline, and many more, plus site-specific paid/locked-chapter handling for supported scanlator sites. Add, pin, and manage extensions from the **Sources** page.
-
----
-
-## 🖥️ Platforms
-
-| | Platform | Notes |
-|---|----------|-------|
-| 🪟 | **RenzoShiori.exe** | Windows desktop app (WebView2) — see [Releases](https://github.com/Levitate0/Renzo-Shiori/releases) |
-| 🌐 | **Web app** | The web UI — dark & light themes, responsive, PWA-friendly |
-| 🤖 | **Android app** | Ships in **Renzo Hub** — one app for manga and anime. The standalone `app.renzoshiori.client` build is archived and no longer released. |
-
----
-
-## 🐳 Docker
-
-Available for `amd64` and `arm64`. **Host networking** is recommended for parallel downloads/searches.
-
-### Volumes & ports
-
-| Path / Port | Description |
-|-------------|-------------|
-| `/config` | Application config + database |
-| `/series` | Downloaded series |
-| `9833` | Web UI |
-
-### Permissions
-
-| Var | Default | Description |
-|-----|---------|-------------|
-| `PUID` | `99` | Host user ID |
-| `PGID` | `100` | Host group ID |
-| `UMASK` | `022` | File permission mask |
-
-Ensure `PUID`/`PGID` have write access to `/config` and `/series`.
-
-### docker-compose
+The image is `ghcr.io/levitate0/renzo-shiori`, for **linux/amd64** only.
 
 ```yaml
 services:
   renzo-shiori:
+    image: ghcr.io/levitate0/renzo-shiori:latest
     container_name: renzo-shiori
-    image: 'renzo-shiori:latest'        # build locally (see "Build it yourself") or use your registry
-    network_mode: host
-    volumes:
-      - '/path/to/your/series:/series'
-      - '/path/to/your/config:/config'
-    environment:
-      - PUID=99
-      - PGID=100
-      - UMASK=022
-      # --- Tracker / OAuth (optional; needed for MAL/AniList/etc. linking) ---
-      - PROXY_MYANIMELIST_CLIENT_ID=your_mal_client_id
-      - PROXY_MYANIMELIST_CLIENT_SECRET=your_mal_client_secret
-      - PROXY_ANILIST_CLIENT_ID=your_anilist_client_id
-      - PROXY_ANILIST_CLIENT_SECRET=your_anilist_client_secret
+    restart: unless-stopped
     ports:
-      - '9833:9833'
+      - "9833:9833"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./config:/config     # database, settings, extensions, logs
+      - ./library:/series    # your library
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          pids: 6000
 ```
 
----
-
-## 🔗 Tracker / OAuth setup
-
-Renzo Shiori hosts its **own** OAuth service inside the container (on loopback `127.0.0.1:5050`, fronted by the backend at `/api/oauth`). There is **no external auth server** to depend on or maintain. To enable per-user tracker linking:
-
-1. **Register an API application** with each provider you want:
-   - MyAnimeList → <https://myanimelist.net/apidocs> (create a Client ID)
-   - AniList → *Settings → Developer → Create New Client*
-2. **Set the redirect URI** in that provider app to:
-   ```
-   https://<your-renzo-shiori-domain>/api/oauth/<provider>/callback
-   ```
-   e.g. `https://renzo.example.com/api/oauth/myanimelist/callback`
-3. **Provide the credentials** to the container via env vars (see compose above):
-   `PROXY_MYANIMELIST_CLIENT_ID` / `PROXY_MYANIMELIST_CLIENT_SECRET`, `PROXY_ANILIST_CLIENT_ID` / `PROXY_ANILIST_CLIENT_SECRET`, and likewise `PROXY_KITSU_*` / `PROXY_MANGADEX_*`.
-4. Each user then links their own account from **Account → Trackers**.
-
-> The provider redirect URI must exactly match your public Renzo Shiori domain, and that domain must reach the container's port `9833`.
-
----
-
-## 🧱 Build it yourself
-
-**Full, per-artifact build instructions live in [BUILD.md](./BUILD.md)** — the
-server (with its embedded UI), the web frontend, the **Android** and **Windows**
-native clients, the auxiliary projects, the deploy cycle, and the release
-checklist.
-
-Quick start (Windows helper scripts):
-
-```powershell
-.\build_frontend.ps1   # builds the Next.js UI → wwwroot.zip
-.\build_docker.ps1     # publishes the backend (+ bundled OAuth proxy) and builds the image
-.\build_apps.ps1       # publishes backend + tray app for win/linux/osx
+```bash
+docker compose up -d
 ```
 
-The backend serves the pre-built frontend embedded as `wwwroot.zip` (extracted
-on startup when its checksum changes — see BUILD.md). The Docker image bundles
-the OAuth proxy under `/app/oauthproxy`, started automatically by the entrypoint.
-The native clients (APK / Windows installer) are built and signed separately —
-see [BUILD.md](./BUILD.md).
+Open `http://<host>:9833` and follow the setup wizard. The first account becomes the **Owner**.
 
----
+### Why the limits matter
 
-## 🛠️ Under the hood
+- **`memory`.** The .NET server sizes its heap from the container's memory limit. Without one, it can grow until the whole host swaps. The image caps .NET at half the limit and leaves the rest for the extension JVM and its browsers.
+- **`pids`.** This limit counts threads, not just processes, and each embedded browser uses hundreds. If the container runs out, the server aborts with a misleading `Out of memory.` while memory is fine. Keep this generous; the reference deployment uses 6000.
+- **CPU.** Don't cap CPU tightly. Downloads are many concurrent page fetches, some through a real browser.
 
-- **Frontend** — Next.js (static export), dark/light themed, forked from Kaizoku Next by OAE.
-- **Backend** — A .NET engine handling schedules, downloads, metadata, OPDS/MCP, and tracker sync, with a **Mihon bridge** (IKVM + a Java 8 Android compatibility layer derived from [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server)) that runs Android Mihon extensions on .NET.
-- **OAuth proxy** — A small ASP.NET service bundled in the container that performs the provider OAuth handshake with your own client credentials.
+Only port `9833` needs publishing. Back up `/config` before upgrading: database migrations run automatically on start.
 
----
+See [Installation](https://github.com/Levitate0/Renzo-Shiori/wiki/Installation) for volumes, permissions, reverse proxies and the reasoning behind amd64-only. See [Configuration](https://github.com/Levitate0/Renzo-Shiori/wiki/Configuration) for every setting and environment variable.
 
-## ⚠️ Resource usage
+## Documentation
 
-Renzo Shiori can be memory-intensive with large libraries or heavy parallel search/download. Plan headroom accordingly.
+| Page | |
+|---|---|
+| [Installation](https://github.com/Levitate0/Renzo-Shiori/wiki/Installation) | Docker, volumes, ports, limits, reverse proxy |
+| [Configuration](https://github.com/Levitate0/Renzo-Shiori/wiki/Configuration) | Settings page, `appsettings.json`, environment variables, tracker OAuth |
+| [Features](https://github.com/Levitate0/Renzo-Shiori/wiki/Features) | User guide |
+| [Troubleshooting](https://github.com/Levitate0/Renzo-Shiori/wiki/Troubleshooting) | Known failure modes and what to check |
+| [Architecture](https://github.com/Levitate0/Renzo-Shiori/wiki/Architecture) | How the server, the JVM sidecar, the database and the queues fit together |
+| [API Reference](https://github.com/Levitate0/Renzo-Shiori/wiki/API-Reference) | Every HTTP route and its permission level |
+| [Development](https://github.com/Levitate0/Renzo-Shiori/wiki/Development) | Building from source, tests, migrations, custom extensions |
+| [Releasing](https://github.com/Levitate0/Renzo-Shiori/wiki/Releasing) | Versioning and publishing the image |
 
-> [!WARNING]
-> **CPU: give it real cores — a low CPU limit will make the whole app feel slow.** Renzo Shiori runs a **JVM extension sidecar with an embedded Chromium (JCEF)** for the Mihon engine and Cloudflare/WebView handling, and downloads are **CF-solved page fetches** run many at a time. This is genuinely CPU-heavy, especially while a large backlog downloads. On modern multi-core hosts it's a non-issue; on **older/low-clock CPUs** (e.g. an early Xeon) it can saturate a couple of cores and make the UI/API sluggish while the queue drains.
->
-> Recommendations:
-> - **Do not set a tight `cpus:` limit** in `docker-compose.yml` — leave CPU uncapped, or give it at least 4 modern cores. (Only `memory` is limited by default.)
-> - `RENZO_SIDECAR_THREADS` (default **32**) sizes the sidecar's HTTP pool — shared by downloads and the interactive API. Lower it on very small hosts; raise it if you have spare cores and want faster downloads.
-> - **Download concurrency** is `MaxThreads` on the `Downloads` queue (default **16**, with `MaxPerGroup=3` so no single source is hammered). More width = faster drain but more CPU.
-> - **"Download all chapters"** queues *every* chapter of *every* series. With a large library that's a big one-time backlog; turn it off if you only want new chapters going forward.
-> - Failed downloads (paid chapters without a site login, un-solvable Cloudflare, dead hosts) retry **8×** then give up — re-queue succeeds once the blocker is fixed. (This was 150×, which used to churn the CPU for hours.)
+## Building from source
 
----
+In short: build the web UI with pnpm, zip it into `RenzoBackend/wwwroot.zip` with a fresh `wwwroot.sha256` (**before** `dotnet publish`, because it is embedded in the binary), build the sidecar jar with JDK 21, publish the backend, then build the image from `RenzoBackend/`. Clone with Git LFS. The full steps are on the [Development](https://github.com/Levitate0/Renzo-Shiori/wiki/Development) page.
 
-## 🤝 Contributing
+## Contributing
 
-PRs welcome — especially frontend polish and backend stability/architecture. If you hit issues, check the `logs` folder and attach the relevant logs.
+Issues and pull requests are welcome. When reporting a problem, include your version (`/api/system/version`) and the relevant lines from `config/logs/`. Remove cookies, tokens and your OPDS address first.
 
----
+## Credits and licence
 
-<p align="center"><sub>連蔵・栞 · Renzo Shiori — a fork of <a href="https://github.com/maxpiva/Rensaio">maxpiva/Rensaio</a> · Kaizoku lineage by OAE.</sub></p>
+Renzo Shiori continues a fork of [maxpiva/Rensaio](https://github.com/maxpiva/Rensaio), itself descended from **Kaizoku** by OAE. The extension engine's Android compatibility layer derives from [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server), and the server runs [Mihon](https://mihon.app) extensions. Thanks to all of their authors.
+
+Licensed under the [GNU GPL v3](./LICENSE).
