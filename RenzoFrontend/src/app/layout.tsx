@@ -37,6 +37,7 @@ import { ServiceWorkerRegistrar } from "@/components/comp/service-worker-registr
 import { OfflineWatcher } from "@/components/comp/offline-watcher";
 import { OfflineDownloadPill } from "@/components/comp/offline-download-pill";
 import { VersionRefresher } from "@/components/comp/version-refresher";
+import { OneLinePaste } from "@/components/comp/one-line-paste";
 import { OnboardingWalkthrough } from "@/components/comp/onboarding/onboarding-walkthrough";
 
 export default function RootLayout({
@@ -112,6 +113,7 @@ export default function RootLayout({
                         <OfflineWatcher />
                         <OfflineDownloadPill />
                         <VersionRefresher />
+                        <OneLinePaste />
                         <ClientSideSetupWizard />
                         <OnboardingWalkthrough />
                         <ImportProgressPill />

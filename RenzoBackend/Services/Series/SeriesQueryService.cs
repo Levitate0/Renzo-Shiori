@@ -1428,52 +1428,91 @@ namespace RenzoBackend.Services.Series
         /// <returns>Distinct genres with their occurrence counts</returns>
         public async Task<List<LatestGenreDto>> GetLatestGenresAsync(CancellationToken token = default)
         {
-            // Cached, because this counts tags across the WHOLE catalogue and there
-            // is no way to do that cheaply: it reads the Genre column of every
-            // LatestSeries row (582k of them here, ~1.5s warm and ~5.6s cold on the
-            // live 6.5GB database, measured) and value-converts each one into its
-            // own List<string>. The browse screen asks for it on every mount, so an
-            // uncached call put seconds on the critical path of opening Browse,
-            // alongside whatever the page query itself cost.
-            //
-            // Five minutes matches the staleTime the clients already apply, so this
-            // changes nothing a user can observe except the wait. The counts only
-            // move as the background catalogue fill discovers series, which is a
-            // slow drip, not something a user is watching for.
-            const string cacheKey = "BrowseLatestGenres";
-            if (_memoryCache.TryGetValue(cacheKey, out List<LatestGenreDto>? cachedGenres) && cachedGenres != null)
-                return cachedGenres;
-
-            // Project only the Genre column so whole rows aren't materialized; EF
-            // still applies the value converter, giving a List<string> per row.
-            List<List<string>> genreLists = await _db.LatestSeries
-                .AsNoTracking()
-                .Select(a => a.Genre)
-                .ToListAsync(token).ConfigureAwait(false);
-
-            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var glist in genreLists)
+            // This counts tags across the WHOLE catalogue and there is no cheap way
+            // to do that: it reads the Genre column of every LatestSeries row (645k
+            // here; ~1.5s warm, and 20s+ cold, measured live 2026-11-13, when it ran
+            // beside the page query and slowed that down too). The browse screen
+            // asks on every mount, so:
+            //   - one count runs at a time, however many clients ask (each used to
+            //     start its own full scan);
+            //   - an answer older than five minutes is still served at once while a
+            //     fresh count runs in the background. The counts only move as the
+            //     catalogue fill discovers series, a slow drip nobody watches for,
+            //     so a few minutes' staleness is invisible; a 20s wait is not.
+            // Only the very first call after a start waits for a count.
+            GenresSnapshot? snap = _genres;
+            if (snap != null)
             {
-                if (glist == null)
-                    continue;
-                foreach (var raw in glist)
-                {
-                    var name = raw?.Trim();
-                    if (string.IsNullOrEmpty(name))
-                        continue;
-                    counts.TryGetValue(name, out int c);
-                    counts[name] = c + 1;
-                }
+                if (DateTime.UtcNow - snap.At > GenresMaxAge)
+                    _ = RefreshGenresAsync();
+                return snap.Genres;
             }
+            return await RefreshGenresAsync().WaitAsync(token).ConfigureAwait(false);
+        }
 
-            List<LatestGenreDto> result = counts
-                .Select(kv => new LatestGenreDto { Name = kv.Key, Count = kv.Value })
-                .OrderByDescending(g => g.Count)
-                .ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+        private sealed record GenresSnapshot(List<LatestGenreDto> Genres, DateTime At);
+        private static readonly TimeSpan GenresMaxAge = TimeSpan.FromMinutes(5);
+        private static volatile GenresSnapshot? _genres;
+        private static Task<List<LatestGenreDto>>? _genresRefresh;
+        private static readonly object GenresGate = new();
 
-            _memoryCache.Set(cacheKey, result, TimeSpan.FromMinutes(5));
-            return result;
+        /// <summary>Starts a tag count in the background (called at startup) so the first Browse after a restart doesn't wait for one.</summary>
+        public void WarmBrowseTags() => _ = RefreshGenresAsync();
+
+        /// <summary>The running count, or a new one; never two at once.</summary>
+        private Task<List<LatestGenreDto>> RefreshGenresAsync()
+        {
+            lock (GenresGate)
+            {
+                if (_genresRefresh is { IsCompleted: false } running)
+                    return running;
+                _genresRefresh = Task.Run(CountGenresAsync);
+                return _genresRefresh;
+            }
+        }
+
+        // Its own scope: it outlives the request that started it.
+        private async Task<List<LatestGenreDto>> CountGenresAsync()
+        {
+            try
+            {
+                using IServiceScope scope = _scopeFactory.CreateScope();
+                AppDbContext db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                // Project only the Genre column so whole rows aren't materialized; EF
+                // still applies the value converter, giving a List<string> per row.
+                List<List<string>> genreLists = await db.LatestSeries
+                    .AsNoTracking()
+                    .Select(a => a.Genre)
+                    .ToListAsync().ConfigureAwait(false);
+
+                var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var glist in genreLists)
+                {
+                    if (glist == null)
+                        continue;
+                    foreach (var raw in glist)
+                    {
+                        var name = raw?.Trim();
+                        if (string.IsNullOrEmpty(name))
+                            continue;
+                        counts.TryGetValue(name, out int c);
+                        counts[name] = c + 1;
+                    }
+                }
+
+                List<LatestGenreDto> result = counts
+                    .Select(kv => new LatestGenreDto { Name = kv.Key, Count = kv.Value })
+                    .OrderByDescending(g => g.Count)
+                    .ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                _genres = new GenresSnapshot(result, DateTime.UtcNow);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Counting Browse tags failed.");
+                return _genres?.Genres ?? [];
+            }
         }
     }
 }

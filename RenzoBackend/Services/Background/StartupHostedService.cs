@@ -116,6 +116,26 @@ namespace RenzoBackend.Services.Background
                 AppDbContext db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 await db.Database.MigrateAsync(cancellationToken).ConfigureAwait(false);
                 await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false);
+
+                // Browse's 18+ check looks rows up by lower(Title) (case-insensitive
+                // title match). A plain index on Title can't serve lower(Title), so
+                // every Browse page scanned the whole LatestSeries table: 1.2s warm,
+                // 20-35s cold on a 645k-row catalogue (measured 2026-11-13), which is
+                // what made Browse spin and time out in Hub. An index on the
+                // expression itself serves both forms EF emits for Contains. Created
+                // here rather than in a migration so fresh installs (EnsureCreated,
+                // migrations marked applied) get it too; IF NOT EXISTS makes it a
+                // no-op after the first start.
+                try
+                {
+                    await db.Database.ExecuteSqlRawAsync(
+                        "CREATE INDEX IF NOT EXISTS \"IX_LatestSerie_TitleLower\" ON \"LatestSeries\" (lower(\"Title\"));",
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not create the lower(Title) index on LatestSeries; Browse will be slower.");
+                }
                 //await db.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=5000;", cancellationToken).ConfigureAwait(false);
 
                 // Keep the query planner's statistics current.
@@ -148,6 +168,9 @@ namespace RenzoBackend.Services.Background
                     _logger.LogWarning(ex, "Could not refresh SQLite query-planner statistics.");
                 }
                 await RepairWindowsUnsafeStoragePathsAsync(db, settings, cancellationToken).ConfigureAwait(false);
+                // Count Browse's tags now, in the background, rather than on the
+                // first Browse request (a full catalogue scan).
+                scope.ServiceProvider.GetRequiredService<RenzoBackend.Services.Series.SeriesQueryService>().WarmBrowseTags();
                 await _fixes.FixThumbnailsOfSeriesWithMissingThumbnailsAsync(cancellationToken).ConfigureAwait(false);
 
                 // One-time backfill: per-user library separation. Every pre-existing

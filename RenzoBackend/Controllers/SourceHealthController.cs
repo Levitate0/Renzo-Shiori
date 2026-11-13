@@ -91,7 +91,14 @@ namespace RenzoBackend.Controllers
                     LastSuccessUtc = last,
                     Speed = _speed.For(g.Key),
                 };
-                bool quiet = last == null || now - last.Value > DeadAfter;
+                // "Not working" means the site itself has gone: nothing served AND
+                // nothing answered all day. A site that still answers chapter-list
+                // checks is up; if its downloads fail it is struggling, not dead
+                // (EZmanga, 2026-11-13: one series' false short-chapter failures and
+                // a quiet day for downloads made a working site read "Not working").
+                DateTime? alive = _health.LastAlive(g.Key);
+                bool quiet = (last == null || now - last.Value > DeadAfter)
+                             && (alive == null || now - alive.Value > DeadAfter);
                 dto.Status =
                     dto.EnabledCount > 0 && dto.FailuresLastDay >= DeadAfterFailures && quiet ? "dead"
                     : dto.SteppedDownCount > 0 || dto.FailuresLastDay >= DeadAfterFailures

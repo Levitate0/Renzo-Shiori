@@ -215,6 +215,32 @@ namespace RenzoBackend
 
             app.UseResponseCompression();
             //app.UseSerilogRequestLogging();
+            // Slow API requests, so "it spins" can be measured instead of guessed
+            // at. /api only: OPDS/MCP paths are themselves a credential and must
+            // never reach a log, and the query string is left out for the same
+            // reason (image tokens).
+            ILogger slowLog = app.ApplicationServices.GetRequiredService<ILoggerFactory>().CreateLogger("SlowRequest");
+            app.Use(async (context, next) =>
+            {
+                if (!context.Request.Path.StartsWithSegments("/api"))
+                {
+                    await next().ConfigureAwait(false);
+                    return;
+                }
+                long started = System.Diagnostics.Stopwatch.GetTimestamp();
+                try
+                {
+                    await next().ConfigureAwait(false);
+                }
+                finally
+                {
+                    TimeSpan took = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+                    if (took.TotalSeconds >= 2)
+                        slowLog.LogInformation("Slow request {Method} {Path} -> {Status} in {Seconds:0.0}s{Aborted}",
+                            context.Request.Method, context.Request.Path.Value, context.Response.StatusCode, took.TotalSeconds,
+                            context.RequestAborted.IsCancellationRequested ? " (client gave up)" : "");
+                }
+            });
             // Apply CORS policy before other middleware
             app.UseCors();
 

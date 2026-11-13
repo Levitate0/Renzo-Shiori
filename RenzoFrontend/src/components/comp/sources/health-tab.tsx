@@ -64,7 +64,8 @@ export function HealthTab({ onMigrate }: { onMigrate: (provider: string) => void
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
         How each source your series use has been doing. A source is <em>Not working</em> when it has failed
-        on your series all day without serving a single chapter. Failure counts start over when the server restarts.
+        on your series all day without serving a single chapter or even answering a chapter check. Failure counts start
+        over when the server restarts.
       </p>
       <div className="divide-y divide-border/50 rounded-lg border border-border/50">
         {data.map((s) => {

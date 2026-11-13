@@ -84,6 +84,7 @@ public sealed class SourceHealthService
     /// <summary>Per source (provider name): failures in the last day, and its last success of any kind, for Sources › Health.</summary>
     private readonly ConcurrentDictionary<string, Queue<DateTime>> _failures = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTime> _succeeded = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTime> _alive = new(StringComparer.Ordinal);
     private static readonly TimeSpan FailureWindow = TimeSpan.FromDays(1);
     private readonly ILogger<SourceHealthService> _logger;
     private readonly Func<DateTime> _now;
@@ -312,6 +313,17 @@ public sealed class SourceHealthService
     /// <summary>When this source last served pages or a download, since the service started; null when it has not.</summary>
     public DateTime? LastSuccess(string provider) =>
         _succeeded.TryGetValue(provider, out DateTime at) ? at : null;
+
+    /// <summary>The site answered a chapter-list request. Proof it is up, not that its chapters download.</summary>
+    public void NoteAlive(string? provider)
+    {
+        if (!string.IsNullOrEmpty(provider))
+            _alive[provider] = _now();
+    }
+
+    /// <summary>When the site last answered a chapter-list request; null when unknown.</summary>
+    public DateTime? LastAlive(string provider) =>
+        _alive.TryGetValue(provider, out DateTime at) ? at : null;
 
     /// <summary>Why this series' source is stepped down right now; null when it is not.</summary>
     public string? StepDownReason(Guid seriesProviderId, string? mihonProviderId)

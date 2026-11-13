@@ -69,6 +69,20 @@ public class SourceHealthSummaryTests
     }
 
     [Fact]
+    public void A_site_that_answers_chapter_checks_is_remembered_as_alive()
+    {
+        // EZmanga 2026-11-13: failures on one series and no download that day
+        // read as "Not working" while its chapter checks kept succeeding.
+        var health = Health();
+        Assert.Null(health.LastAlive("EZmanga"));
+        health.NoteAlive("EZmanga");
+        Assert.Equal(_now, health.LastAlive("EZmanga"));
+        Assert.Null(health.LastSuccess("EZmanga")); // alive is not "delivered"
+        health.NoteAlive(null);
+        health.NoteAlive("");
+    }
+
+    [Fact]
     public void Last_delivered_is_the_newest_completed_download()
     {
         var speed = new SourceSpeedStats(NullLogger<SourceSpeedStats>.Instance);

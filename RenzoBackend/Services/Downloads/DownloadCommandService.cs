@@ -452,8 +452,17 @@ namespace RenzoBackend.Services.Downloads
             // normally runs to is not a short chapter, it is a broken listing.
             // Genuinely short extras survive — six pages against a median of
             // twenty is above the threshold.
-            int typical = await TypicalPageCountAsync(ch.SeriesId, token).ConfigureAwait(false);
-            int shortAt = Math.Max(2, typical / 4);
+            //
+            // The reference is THIS source's own history for the series, not every
+            // source's: sources slice the same chapter differently. EZmanga stitches
+            // a chapter into ~11 tall strips where MangaFire lists ~90 pages, and
+            // judging EZmanga by MangaFire's count failed every chapter it had
+            // (2026-11-13) and marked a working site "Not working". With no history
+            // on this source the cross-source median still catches a lone banner,
+            // but nothing subtler: a source that slices differently looks exactly
+            // like a short one by page count alone.
+            (int typical, bool ownHistory) = await TypicalPageCountAsync(ch.SeriesId, ch.SeriesProviderId, token).ConfigureAwait(false);
+            int shortAt = ownHistory ? Math.Max(2, typical / 4) : Math.Min(2, typical / 4);
             // Another upload of it on this same source comes first.
             if (typical >= ShortChapterReferenceFloor && ch.Pages.Count <= shortAt
                 && await TryOtherUploadsAsync(src, ch, provider, p => p.Count > shortAt, token).ConfigureAwait(false) is { } fuller)
@@ -1343,7 +1352,12 @@ namespace RenzoBackend.Services.Downloads
         /// would drag an average far enough to make the check useless in the
         /// direction that matters.
         /// </summary>
-        private async Task<int> TypicalPageCountAsync(Guid seriesId, CancellationToken token)
+        /// <summary>
+        /// Median page count of the series' downloaded chapters from this source
+        /// (ownHistory = true), or, when this source has too few, from all of the
+        /// series' sources. 0 = too little history to judge.
+        /// </summary>
+        private async Task<(int Typical, bool OwnHistory)> TypicalPageCountAsync(Guid seriesId, Guid seriesProviderId, CancellationToken token)
         {
             try
             {
@@ -1352,21 +1366,25 @@ namespace RenzoBackend.Services.Downloads
                     .AsNoTracking()
                     .ToListAsync(token).ConfigureAwait(false);
 
-                List<int> counts = providers
+                static List<int> Counts(IEnumerable<SeriesProviderEntity> ps) => ps
                     .SelectMany(p => p.Chapters)
                     .Where(c => !c.IsDeleted && !string.IsNullOrEmpty(c.Filename) && c.PageCount > 0)
                     .Select(c => c.PageCount!.Value)
                     .OrderBy(n => n)
                     .ToList();
 
-                if (counts.Count < ShortChapterMinSamples)
-                    return 0; // too little history to judge — never block on a guess
-                return counts[counts.Count / 2];
+                List<int> own = Counts(providers.Where(p => p.Id == seriesProviderId));
+                if (own.Count >= ShortChapterMinSamples)
+                    return (own[own.Count / 2], true);
+                List<int> all = Counts(providers);
+                if (all.Count < ShortChapterMinSamples)
+                    return (0, false); // too little history to judge — never block on a guess
+                return (all[all.Count / 2], false);
             }
             catch (Exception e)
             {
                 _logger.LogDebug(e, "Could not compute a typical page count for series {SeriesId}.", seriesId);
-                return 0;
+                return (0, false);
             }
         }
 

@@ -670,6 +670,11 @@ namespace RenzoBackend.Services.Series
                 return JobResult.Failed;
             }
 
+            // The site answered with a chapter list: it is up, whatever its
+            // downloads are doing. Health never calls such a source "not working".
+            if (chapterData is { Count: > 0 })
+                _health.NoteAlive(serie.Provider);
+
             if (chapterData == null || chapterData.Count == 0)
             {
                 _logger.LogWarning("Series {series} from Provider {provider} has no chapters.", serie.Title, provider);
