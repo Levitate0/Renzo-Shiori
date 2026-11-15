@@ -427,10 +427,10 @@ public class McpToolService
 
     private async Task<JsonElement> BuildStatusResourceResponseAsync(UserEntity user, string uri, JsonElement? id, CancellationToken token)
     {
-        var alerts = await _db.HealthStatuses
+        var alerts = await ScopeAlertsAsync(user, await _db.HealthStatuses
             .Where(h => h.IsActive)
             .AsNoTracking()
-            .ToListAsync(token);
+            .ToListAsync(token), token);
         var alertItems = string.Join("", alerts.Select(a => $@"
             <div style='padding:6px;border-bottom:1px solid #eee'>
                 <span style='color:{(a.Level == HealthStatusLevel.Red ? "#d32f2f" : "#f57c00")}'>&#9679;</span>
@@ -584,7 +584,7 @@ public class McpToolService
         string? sourceId = args.TryGetProperty("sourceId", out var srcEl) ? srcEl.GetString() : null;
         string? keyword = args.TryGetProperty("keyword", out var kwEl) ? kwEl.GetString() : null;
 
-        var latest = await _seriesQuery.GetLatestAsync(start, count, sourceId, keyword, null, null, user.Id, user.Level == UserLevel.Owner, token);
+        var latest = await _seriesQuery.GetLatestAsync(RenzoBackend.Extensions.PageLimits.ClampStart(start), RenzoBackend.Extensions.PageLimits.ClampCount(count, RenzoBackend.Extensions.PageLimits.Latest), sourceId, keyword, null, null, user.Id, user.Level == UserLevel.Owner, token);
         return new { success = true, count = latest.Count, data = latest };
     }
 
@@ -607,6 +607,7 @@ public class McpToolService
         if (!Guid.TryParse(idEl.GetString(), out var guid))
             return new { success = false, error = "'id' must be a valid GUID" };
 
+        if (await DenySeriesAsync(user, guid, token) is { } deny) return deny;
         bool alsoPhysical = args.TryGetProperty("alsoPhysical", out var physEl) && physEl.GetBoolean();
         await _seriesCommand.DeleteSeriesAsync(guid, alsoPhysical, token);
         return new { success = true, message = "Series deleted" };
@@ -620,9 +621,11 @@ public class McpToolService
         if (!Guid.TryParse(idEl.GetString(), out var guid))
             return new { success = false, error = "'id' must be a valid GUID" };
 
-        var jobId = await _jobManagement.EnqueueJobAsync(JobType.GetChapters, new { SeriesId = guid },
-            Priority.Normal, key: guid.ToString(), token: token);
-        return new { success = true, jobId = jobId.ToString(), message = "Update enqueued" };
+        if (await DenySeriesAsync(user, guid, token) is { } deny) return deny;
+        // Same call as POST /api/series/refresh. The old GetChapters { SeriesId }
+        // job never ran: GetChapters takes one source's id, not a series id.
+        int queued = await _seriesCommand.RefreshSeriesMetadataAsync(guid, null, token);
+        return new { success = true, queued, message = "Update enqueued" };
     }
 
     private async Task<object> UpdateAllSeriesAsync(UserEntity user, JsonElement args, CancellationToken token)
@@ -640,6 +643,7 @@ public class McpToolService
         if (!Guid.TryParse(idEl.GetString(), out var guid))
             return new { success = false, error = "'id' must be a valid GUID" };
 
+        if (await DenySeriesAsync(user, guid, token) is { } deny) return deny;
         var result = await _seriesArchive.VerifyIntegrityAsync(guid, false, token);
         return new { success = true, data = result };
     }
@@ -690,6 +694,9 @@ public class McpToolService
         string pkgName = pkgEl.GetString() ?? "";
         string? repoName = args.TryGetProperty("repoName", out var repoEl) ? repoEl.GetString() : null;
         bool force = args.TryGetProperty("force", out var forceEl) && forceEl.GetBoolean();
+        // Same rule as POST /api/provider/install: force recompiles over the live build.
+        if (force && user.Level < UserLevel.Owner)
+            return new { success = false, error = "Only the owner can force a reinstall." };
 
         var success = await _providerManager.InstallProviderAsync(pkgName, repoName, force, token);
         return new { success, message = success ? "Extension installed" : "Failed to install extension" };
@@ -718,7 +725,7 @@ public class McpToolService
         int maxCount = args.TryGetProperty("maxCount", out var countEl) ? countEl.GetInt32() : 50;
         string? keyword = args.TryGetProperty("keyword", out var kwEl) ? kwEl.GetString() : null;
 
-        var downloads = await _downloadQuery.GetDownloadsAsync(status, maxCount, keyword, user.Id, user.Level == UserLevel.Owner, token);
+        var downloads = await _downloadQuery.GetDownloadsAsync(status, RenzoBackend.Extensions.PageLimits.ClampCount(maxCount, RenzoBackend.Extensions.PageLimits.Downloads), keyword, user.Id, user.Level == UserLevel.Owner, token);
         return new { success = true, data = downloads };
     }
 
@@ -741,6 +748,8 @@ public class McpToolService
         var series = await _db.Series.FindAsync(new object[] { guid }, token);
         if (series == null)
             return new { success = false, error = "Series not found" };
+        if (!SeriesQueryService.CanAccessSeries(series.OwnerId, user.Id, IsOwner(user)))
+            return new { success = false, error = NotYourSeries };
 
         series.PauseDownloads = pause;
         await _db.SaveChangesAsync(token);
@@ -753,10 +762,10 @@ public class McpToolService
 
     private async Task<object> GetHealthAlertsAsync(UserEntity user, JsonElement args, CancellationToken token)
     {
-        var alerts = await _db.HealthStatuses
+        var alerts = await ScopeAlertsAsync(user, await _db.HealthStatuses
             .Where(h => h.IsActive)
             .AsNoTracking()
-            .ToListAsync(token);
+            .ToListAsync(token), token);
 
         return new { success = true, count = alerts.Count, data = alerts };
     }
@@ -768,6 +777,7 @@ public class McpToolService
 
         if (!Guid.TryParse(idEl.GetString(), out var guid))
             return new { success = false, error = "'id' must be a valid GUID" };
+        if (await DenySeriesAsync(user, guid, token) is { } deny) return deny;
 
         var alerts = await _db.HealthStatuses
             .Where(h => h.IsActive && h.TargetType == HealthStatusTargetType.Series && h.TargetId == guid)
@@ -779,10 +789,10 @@ public class McpToolService
 
     private async Task<object> GetProviderHealthAsync(UserEntity user, JsonElement args, CancellationToken token)
     {
-        var alerts = await _db.HealthStatuses
+        var alerts = await ScopeAlertsAsync(user, await _db.HealthStatuses
             .Where(h => h.IsActive && h.TargetType == HealthStatusTargetType.Provider)
             .AsNoTracking()
-            .ToListAsync(token);
+            .ToListAsync(token), token);
 
         return new { success = true, count = alerts.Count, data = alerts };
     }
@@ -793,11 +803,29 @@ public class McpToolService
 
     private async Task<object> ListJobsAsync(UserEntity user, JsonElement args, CancellationToken token)
     {
-        var jobs = await _db.Jobs
-            .AsNoTracking()
-            .OrderByDescending(j => j.NextExecution)
-            .Take(50)
-            .ToListAsync(token);
+        List<JobEntity> jobs;
+        if (IsOwner(user))
+        {
+            jobs = await _db.Jobs
+                .AsNoTracking()
+                .OrderByDescending(j => j.NextExecution)
+                .Take(50)
+                .ToListAsync(token);
+        }
+        else
+        {
+            // Below Owner: only the chapter checks of series in the caller's own
+            // library (the same set /api/status shows them), never server-wide jobs.
+            HashSet<Guid> mine = await AccessibleProviderIdsAsync(user, token);
+            jobs = (await _db.Jobs
+                    .AsNoTracking()
+                    .Where(j => j.JobType == JobType.GetChapters)
+                    .ToListAsync(token))
+                .Where(j => Guid.TryParse(j.Key, out Guid pid) && mine.Contains(pid))
+                .OrderByDescending(j => j.NextExecution)
+                .Take(50)
+                .ToList();
+        }
 
         return new { success = true, count = jobs.Count, data = jobs };
     }
@@ -811,7 +839,7 @@ public class McpToolService
             return new { success = false, error = "'jobId' must be a valid GUID" };
 
         var job = await _db.Jobs.FindAsync(new object[] { guid }, token);
-        return job != null
+        return job != null && await CanAccessJobAsync(user, job, token)
             ? new { success = true, data = job }
             : new { success = false, error = "Job not found" };
     }
@@ -827,6 +855,11 @@ public class McpToolService
         var job = await _db.Jobs.FindAsync(new object[] { guid }, token);
         if (job == null)
             return new { success = false, error = "Job not found" };
+        // These are the recurring schedules (daily update, extension updates, every
+        // source's chapter check). Below Owner only a chapter check of a series in
+        // the caller's own library may be removed; the server-wide ones are Owner's.
+        if (!await CanAccessJobAsync(user, job, token))
+            return new { success = false, error = "Only the owner can cancel server-wide jobs." };
 
         _db.Jobs.Remove(job);
         await _db.SaveChangesAsync(token);
@@ -838,12 +871,20 @@ public class McpToolService
         if (!args.TryGetProperty("jobType", out var typeEl))
             return new { success = false, error = "Missing required parameter: 'jobType'" };
 
-        if (!Enum.TryParse<JobType>(typeEl.GetString(), true, out var jobType))
+        if (!Enum.TryParse<JobType>(typeEl.GetString(), true, out var jobType) || !Enum.IsDefined(jobType))
             return new { success = false, error = $"Invalid jobType. Valid values: {string.Join(", ", Enum.GetNames<JobType>())}" };
 
-        var priority = args.TryGetProperty("priority", out var prioEl)
-            ? Enum.Parse<Priority>(prioEl.GetString() ?? "Normal", true)
-            : Priority.Normal;
+        var priority = Priority.Normal;
+        if (args.TryGetProperty("priority", out var prioEl) &&
+            (!Enum.TryParse(prioEl.GetString(), true, out priority) || !Enum.IsDefined(priority)))
+            return new { success = false, error = $"Invalid priority. Valid values: {string.Join(", ", Enum.GetNames<Priority>())}" };
+
+        // Raw job parameters reach the job runners unchecked (ScanLocalFiles takes a
+        // path, Download a whole chapter record, ImportSeries/UpdateExtensions act
+        // server-wide), so below Owner only the jobs that have a Manager-level REST
+        // twin are allowed, with parameters rebuilt here rather than passed through.
+        if (!IsOwner(user))
+            return await EnqueueManagerJobAsync(user, jobType, priority, args, token);
 
         string? key = args.TryGetProperty("key", out var keyEl) ? keyEl.GetString() : null;
 
@@ -910,6 +951,121 @@ public class McpToolService
     // ──────────────────────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────────────────────
+
+    private const string NotYourSeries = "This series belongs to another user's library.";
+
+    private static bool IsOwner(UserEntity user) => user.Level == UserLevel.Owner;
+
+    /// <summary>
+    /// The MCP side of SeriesController.DenyAccessAsync: null when the caller may
+    /// act on the series, otherwise the tool's error result. Tool levels alone
+    /// don't isolate libraries — a Manager could otherwise refresh, pause or
+    /// verify (and an Admin delete) another user's series by id.
+    /// </summary>
+    private async Task<object?> DenySeriesAsync(UserEntity user, Guid seriesId, CancellationToken token)
+    {
+        Guid? ownerId = await _db.Series.Where(s => s.Id == seriesId).Select(s => (Guid?)s.OwnerId)
+            .FirstOrDefaultAsync(token);
+        if (ownerId == null)
+            return new { success = false, error = "Series not found" };
+        if (!SeriesQueryService.CanAccessSeries(ownerId.Value, user.Id, IsOwner(user)))
+            return new { success = false, error = NotYourSeries };
+        return null;
+    }
+
+    /// <summary>Ids of every source of every series the caller can access.</summary>
+    private async Task<HashSet<Guid>> AccessibleProviderIdsAsync(UserEntity user, CancellationToken token)
+    {
+        Guid me = user.Id;
+        return new HashSet<Guid>(await _db.SeriesProviders.AsNoTracking()
+            .Where(sp => _db.Series.Any(s => s.Id == sp.SeriesId && (s.OwnerId == me || s.OwnerId == Guid.Empty)))
+            .Select(sp => sp.Id)
+            .ToListAsync(token));
+    }
+
+    private async Task<bool> CanAccessProviderAsync(UserEntity user, Guid providerId, CancellationToken token)
+    {
+        Guid? seriesId = await _db.SeriesProviders.Where(sp => sp.Id == providerId).Select(sp => (Guid?)sp.SeriesId)
+            .FirstOrDefaultAsync(token);
+        return seriesId != null && await DenySeriesAsync(user, seriesId.Value, token) == null;
+    }
+
+    /// <summary>
+    /// A recurring job belongs to a library only when it is one source's chapter
+    /// check (keyed by that source's id); every other job is server-wide and
+    /// visible to the Owner only.
+    /// </summary>
+    private async Task<bool> CanAccessJobAsync(UserEntity user, JobEntity job, CancellationToken token)
+    {
+        if (IsOwner(user))
+            return true;
+        return job.JobType == JobType.GetChapters && Guid.TryParse(job.Key, out Guid providerId)
+               && await CanAccessProviderAsync(user, providerId, token);
+    }
+
+    /// <summary>
+    /// Health alerts limited to the caller's library, the same rule as
+    /// GET /api/status/summary: series alerts for their series, source alerts for
+    /// sources of their series. The Owner sees everything.
+    /// </summary>
+    private async Task<List<HealthStatusEntity>> ScopeAlertsAsync(UserEntity user, List<HealthStatusEntity> alerts, CancellationToken token)
+    {
+        if (IsOwner(user) || alerts.Count == 0)
+            return alerts;
+        Guid me = user.Id;
+        var seriesIds = new HashSet<Guid>(await _db.Series.AsNoTracking()
+            .Where(s => s.OwnerId == me || s.OwnerId == Guid.Empty)
+            .Select(s => s.Id)
+            .ToListAsync(token));
+        HashSet<Guid> providerIds = await AccessibleProviderIdsAsync(user, token);
+        return alerts.Where(h =>
+            (h.TargetType == HealthStatusTargetType.Series && seriesIds.Contains(h.TargetId)) ||
+            (h.TargetType == HealthStatusTargetType.Provider && providerIds.Contains(h.TargetId))).ToList();
+    }
+
+    /// <summary>
+    /// enqueue_job below Owner: the library-wide update and scan (POST
+    /// /api/series/update-all and /scan-all are Manager) and one source's chapter
+    /// check for a series in the caller's library. Parameters and keys are built
+    /// here; nothing the caller sent is passed to the job as-is.
+    /// </summary>
+    private async Task<object> EnqueueManagerJobAsync(UserEntity user, JobType jobType, Priority priority, JsonElement args, CancellationToken token)
+    {
+        switch (jobType)
+        {
+            case JobType.UpdateAllSeries:
+            {
+                var jobId = await _jobManagement.EnqueueJobAsync(JobType.UpdateAllSeries, (string?)null, priority, token: token);
+                return new { success = true, jobId = jobId.ToString(), message = $"Job '{jobType}' enqueued" };
+            }
+            case JobType.LibraryScan:
+            {
+                var jobId = await _jobManagement.EnqueueJobAsync(JobType.LibraryScan, (string?)null, priority, "LibraryScan", token: token);
+                return new { success = true, jobId = jobId.ToString(), message = $"Job '{jobType}' enqueued" };
+            }
+            case JobType.GetChapters:
+            {
+                // GetChapters takes one source id: accept it as the bare parameter
+                // ("<guid>") or as { "providerId": "<guid>" }.
+                Guid providerId = Guid.Empty;
+                if (args.TryGetProperty("parameters", out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.String) Guid.TryParse(p.GetString(), out providerId);
+                    else if (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("providerId", out var pid)
+                             && pid.ValueKind == JsonValueKind.String) Guid.TryParse(pid.GetString(), out providerId);
+                }
+                if (providerId == Guid.Empty)
+                    return new { success = false, error = "GetChapters needs 'parameters' set to a source id." };
+                if (!await CanAccessProviderAsync(user, providerId, token))
+                    return new { success = false, error = "Source not found in your library." };
+                var jobId = await _jobManagement.EnqueueJobAsync(JobType.GetChapters, providerId, priority,
+                    key: providerId.ToString(), token: token);
+                return new { success = true, jobId = jobId.ToString(), message = $"Job '{jobType}' enqueued" };
+            }
+            default:
+                return new { success = false, error = $"Only the owner can enqueue '{jobType}' jobs. Allowed: UpdateAllSeries, LibraryScan, GetChapters." };
+        }
+    }
 
     /// <summary>
     /// Wraps a raw tool result object into the MCP standard response format:
@@ -983,9 +1139,9 @@ public class McpToolService
             "list_jobs" => "List recent and queued jobs",
             "get_job_status" => "Get the status of a specific job",
             "cancel_job" => "Cancel a queued job",
-            "enqueue_job" => "Enqueue a new job of a specific type",
+            "enqueue_job" => "Enqueue a new job of a specific type (below Owner: UpdateAllSeries, LibraryScan, or GetChapters for one of your sources)",
             "get_settings" => "Get all application settings",
-            "update_settings" => "Update application settings (Admin only)",
+            "update_settings" => "Update application settings (Owner only)",
             "list_scrobbler_providers" => "List available scrobbler/tracker providers",
             "get_scrobbler_status" => "Get scrobbler sync status for the current user",
             _ => "No description available"

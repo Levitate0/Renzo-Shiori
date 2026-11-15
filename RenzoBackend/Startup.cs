@@ -175,14 +175,7 @@ namespace RenzoBackend
             // Without this, Kestrel is unaware of the original HTTPS scheme when deployed
             // behind a reverse proxy (Nginx, Traefik, Caddy, etc.), causing redirects to
             // incorrectly use http:// instead of https://.
-            services.Configure<ForwardedHeadersOptions>(options =>
-            {
-                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-                // Clear default restrictions to accept forwarded headers from any proxy.
-                // This is safe when the app is always deployed behind a trusted reverse proxy.
-                options.KnownNetworks.Clear();
-                options.KnownProxies.Clear();
-            });
+            services.Configure<ForwardedHeadersOptions>(options => ConfigureForwardedHeaders(options, Configuration));
 
             // Register AppDbContext with SQLite provider, using the connection string from configuration (now points to runtime/renzo.db)
             services.AddDbContext<AppDbContext>(options => options.UseSqlite(Configuration.GetConnectionString("DefaultConnection")));
@@ -193,6 +186,30 @@ namespace RenzoBackend
             // Follows a source to its new domain: stored links, covers and the
             // site login move with it.
             services.AddHostedService<Services.Background.SourceMoveService>();
+        }
+
+        /// <summary>Which peers may set the client IP and scheme via X-Forwarded-*.</summary>
+        internal static void ConfigureForwardedHeaders(ForwardedHeadersOptions options, IConfiguration configuration)
+        {
+            options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+            // Trust X-Forwarded-* from loopback ONLY. The container runs with
+            // host networking and the LAN reaches Kestrel directly, so trusting
+            // every peer (as this once did) let any LAN client pick its own IP
+            // per request: a fresh login rate-limit bucket every time, and a
+            // made-up address on the TV-pairing approval screen. The tunnel
+            // (cloudflared, also host-networked) connects from localhost. A
+            // reverse proxy elsewhere must be added via ForwardedHeaders:KnownProxies.
+            options.KnownNetworks.Clear();
+            options.KnownProxies.Clear();
+            options.KnownNetworks.Add(new IPNetwork(System.Net.IPAddress.Parse("127.0.0.0"), 8));
+            options.KnownNetworks.Add(new IPNetwork(System.Net.IPAddress.IPv6Loopback, 128));
+            // A dual-stack listener reports IPv4 loopback as ::ffff:127.x.
+            options.KnownNetworks.Add(new IPNetwork(System.Net.IPAddress.Parse("::ffff:127.0.0.0"), 104));
+            foreach (string proxy in configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+            {
+                if (System.Net.IPAddress.TryParse(proxy.Trim(), out System.Net.IPAddress? address))
+                    options.KnownProxies.Add(address);
+            }
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
@@ -449,9 +466,9 @@ namespace RenzoBackend
 
             var request = context.Request;
 
-            var clientIp =
-                context.Request.Headers["X-Forwarded-For"].FirstOrDefault()
-                ?? context.Connection.RemoteIpAddress?.ToString();
+            // RemoteIpAddress, not the raw header: UseForwardedHeaders has already
+            // applied X-Forwarded-For when (and only when) a trusted proxy sent it.
+            var clientIp = context.Connection.RemoteIpAddress?.ToString();
 
             var correlationId =
                 context.TraceIdentifier;

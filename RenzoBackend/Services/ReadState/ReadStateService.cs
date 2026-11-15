@@ -266,33 +266,44 @@ public class ReadStateService
             if (current.UserReadStates == null)
                 current.UserReadStates = [];
 
+            // One pass for the whole batch: entries for the same user (a backup
+            // listing a title many times) merge into one index per user instead
+            // of each re-scanning the file's list, and duplicate chapter numbers
+            // collapse (incoming replaces existing for the same number).
+            var indexByUser = new Dictionary<string, (UserReadStateSnapshot user, Dictionary<decimal, ChapterReadState> byNumber)>(StringComparer.Ordinal);
             foreach (var incoming in readStates)
             {
-                var existing = current.UserReadStates.FirstOrDefault(u => u.Username == incoming.Username);
-                if (existing != null)
+                if (!indexByUser.TryGetValue(incoming.Username, out var idx))
                 {
-                    // Merge chapters (incoming ones replace existing for same chapter number)
-                    foreach (var chapter in incoming.Chapters)
+                    var existing = current.UserReadStates.FirstOrDefault(u => u.Username == incoming.Username);
+                    if (existing == null)
                     {
-                        var existingChapter = existing.Chapters.FirstOrDefault(c => c.ChapterNumber == chapter.ChapterNumber);
-                        if (existingChapter != null)
-                        {
-                            existingChapter.Progress = chapter.Progress;
-                            existingChapter.IsCompleted = chapter.IsCompleted;
-                            existingChapter.LastReadDeviceId = chapter.LastReadDeviceId;
-                            existingChapter.LastReadDeviceName = chapter.LastReadDeviceName;
-                            existingChapter.LastReadFilename = chapter.LastReadFilename;
-                            existingChapter.LastReadAt = chapter.LastReadAt;
-                        }
-                        else
-                        {
-                            existing.Chapters.Add(chapter);
-                        }
+                        existing = new UserReadStateSnapshot { Username = incoming.Username, Chapters = [] };
+                        current.UserReadStates.Add(existing);
                     }
+                    var byNumber = new Dictionary<decimal, ChapterReadState>();
+                    foreach (var c in existing.Chapters)
+                        byNumber.TryAdd(c.ChapterNumber, c);
+                    idx = (existing, byNumber);
+                    indexByUser[incoming.Username] = idx;
                 }
-                else
+
+                foreach (var chapter in incoming.Chapters)
                 {
-                    current.UserReadStates.Add(incoming);
+                    if (idx.byNumber.TryGetValue(chapter.ChapterNumber, out var existingChapter))
+                    {
+                        existingChapter.Progress = chapter.Progress;
+                        existingChapter.IsCompleted = chapter.IsCompleted;
+                        existingChapter.LastReadDeviceId = chapter.LastReadDeviceId;
+                        existingChapter.LastReadDeviceName = chapter.LastReadDeviceName;
+                        existingChapter.LastReadFilename = chapter.LastReadFilename;
+                        existingChapter.LastReadAt = chapter.LastReadAt;
+                    }
+                    else
+                    {
+                        idx.user.Chapters.Add(chapter);
+                        idx.byNumber[chapter.ChapterNumber] = chapter;
+                    }
                 }
             }
 

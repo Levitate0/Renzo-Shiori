@@ -560,6 +560,12 @@ namespace Mihon.ExtensionsBridge.Core.Services
             {
                 throw new ArgumentException("APK Tachiyomi library version is not a valid number.");
             }
+            // The manifest's package and versionName become folder/file names below and
+            // in GetExtensionVersionFolder — refuse anything that could traverse.
+            if (!Utilities.ExtensionIdentity.IsValidPackageName(meta.getPackageName()))
+                throw new ArgumentException("APK package name is not a valid Java package id.");
+            if (!Utilities.ExtensionIdentity.IsValidVersionName(meta.getVersionName()))
+                throw new ArgumentException("APK version name contains characters that are not allowed.");
             unit.Entry.Extension.Name = meta.getLabel();
             unit.Entry.Extension.Name = unit.Entry.Extension.ParsedName();
             unit.Entry.Extension.Package = meta.getPackageName();

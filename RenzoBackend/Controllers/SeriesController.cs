@@ -1,3 +1,4 @@
+using RenzoBackend.Extensions;
 using RenzoBackend.Data;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
@@ -625,7 +626,7 @@ namespace RenzoBackend.Controllers
         {
             try
             {
-                var result = await _queryService.GetUpdatesFeedAsync(start, count, CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
+                var result = await _queryService.GetUpdatesFeedAsync(PageLimits.ClampStart(start), PageLimits.ClampCount(count, PageLimits.Updates), CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
                 await _thumb.PopulateThumbsAsync(result, "/api/image/", token).ConfigureAwait(false);
                 return Ok(result);
             }
@@ -648,7 +649,7 @@ namespace RenzoBackend.Controllers
         {
             try
             {
-                var result = await _queryService.GetHistoryFeedAsync(start, count, CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
+                var result = await _queryService.GetHistoryFeedAsync(PageLimits.ClampStart(start), PageLimits.ClampCount(count, PageLimits.History), CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
                 await _thumb.PopulateThumbsAsync(result, "/api/image/", token).ConfigureAwait(false);
                 return Ok(result);
             }
@@ -666,7 +667,7 @@ namespace RenzoBackend.Controllers
         {
             try
             {
-                var result = await _queryService.GetLatestAsync(start, count, sourceId, keyword, genre, excludeGenre, CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
+                var result = await _queryService.GetLatestAsync(PageLimits.ClampStart(start), PageLimits.ClampCount(count, PageLimits.Latest), sourceId, keyword, genre, excludeGenre, CurrentUserId, ResolveAllowAll(viewAll), token).ConfigureAwait(false);
                 await _thumb.PopulateThumbsAsync(result, "/api/image/", token).ConfigureAwait(false);
                 return Ok(result);
             }
@@ -713,7 +714,7 @@ namespace RenzoBackend.Controllers
         {
             try
             {
-                var result = await _providerService.GetMatchAsync(providerId, token).ConfigureAwait(false);
+                var result = await _providerService.GetMatchAsync(providerId, CurrentUserId, IsOwnerLevel, token).ConfigureAwait(false);
                 return Ok(result);
             }
             catch (Exception ex)
@@ -740,7 +741,7 @@ namespace RenzoBackend.Controllers
             {
                 if (pmatch == null)
                     return BadRequest("No provider match provided");
-                var result = await _providerService.SetMatchAsync(pmatch, token).ConfigureAwait(false);
+                var result = await _providerService.SetMatchAsync(pmatch, CurrentUserId, IsOwnerLevel, token).ConfigureAwait(false);
                 return Ok(result);
             }
             catch (Exception ex)
@@ -797,6 +798,12 @@ namespace RenzoBackend.Controllers
             catch (UnauthorizedAccessException ex)
             {
                 return StatusCode(403, new { success = false, error = ex.Message });
+            }
+            catch (ArgumentException ex) when (ex is not ArgumentNullException)
+            {
+                // A storage folder or chapter filename that would leave the library.
+                _logger.LogWarning("Add series rejected: {Message}", ex.Message);
+                return BadRequest(new { success = false, error = ex.Message });
             }
             catch (Exception ex)
             {

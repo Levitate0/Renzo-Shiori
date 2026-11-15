@@ -55,6 +55,13 @@ public class OpdsController : ControllerBase
         return (Request.Headers.UserAgent.ToString() ?? "", user);
     }
 
+    /// <summary>
+    /// Same per-user library rule as the /api endpoints: an OPDS path only
+    /// reaches its own user's series (the Owner reaches every library).
+    /// </summary>
+    public static bool CanAccess(UserEntity user, SeriesEntity series) =>
+        Services.Series.SeriesQueryService.CanAccessSeries(series.OwnerId, user.Id, user.Level == Models.Enums.UserLevel.Owner);
+
     // ──────────────────────────────────────────────────────────────────────────
     // Catalog / Feed Endpoints
     // ──────────────────────────────────────────────────────────────────────────
@@ -200,7 +207,7 @@ public class OpdsController : ControllerBase
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
         var capturedUser = user;
         var capturedFormats = _clientCapabilitiesHelper.GetSupportedImageFormats(Request, HttpContext);
-        var capturedStoragePath = series?.StoragePath;
+        var capturedStoragePath = series != null && CanAccess(user, series) ? series.StoragePath : null;
         Response.OnCompleted(() =>
         {
             if (!string.IsNullOrWhiteSpace(capturedStoragePath))
@@ -236,7 +243,7 @@ public class OpdsController : ControllerBase
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
         var capturedUser = user;
         var capturedFormats = _clientCapabilitiesHelper.GetSupportedImageFormats(Request, HttpContext);
-        var capturedStoragePath = series?.StoragePath;
+        var capturedStoragePath = series != null && CanAccess(user, series) ? series.StoragePath : null;
         Response.OnCompleted(() =>
         {
             if (!string.IsNullOrWhiteSpace(capturedStoragePath))
@@ -267,7 +274,7 @@ public class OpdsController : ControllerBase
         var result  = await _feedService.GetChapterStreamAsync(user, seriesId, chapterFilename, token);
         if (result == null)
             return NotFound();
-        return File(result.Value.Item1, result.Value.Item2, chapterFilename);
+        return File(result.Value.Item1, result.Value.mimeType, result.Value.filename);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -293,7 +300,8 @@ public class OpdsController : ControllerBase
         if (result.StatusCode == HttpStatusCode.OK)
         {
             Response.AddETag(_thumbCache.GetCacheDuration(), result.etag!);
-            return File(result.stream ?? new MemoryStream(), result.mimetype ?? "application/octet-stream");
+            Response.AddImageSafetyHeaders(key, result.mimetype!);
+            return File(result.stream!, result.mimetype!);
         }
         return StatusCode((int)result.StatusCode);
     }
@@ -317,7 +325,7 @@ public class OpdsController : ControllerBase
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
 
-        if (series == null || string.IsNullOrWhiteSpace(series.ThumbnailUrl))
+        if (series == null || !CanAccess(user, series) || string.IsNullOrWhiteSpace(series.ThumbnailUrl))
             return NotFound();
 
         string key = await _thumbCache.GetKeyAsync(series.ThumbnailUrl, token);
@@ -328,7 +336,8 @@ public class OpdsController : ControllerBase
         if (result.StatusCode == HttpStatusCode.OK)
         {
             Response.AddETag(_thumbCache.GetCacheDuration(), result.etag!);
-            return File(result.stream ?? new MemoryStream(), result.mimetype ?? "application/octet-stream");
+            Response.AddImageSafetyHeaders(key, result.mimetype!);
+            return File(result.stream!, result.mimetype!);
         }
         return StatusCode((int)result.StatusCode);
     }
@@ -357,7 +366,7 @@ public class OpdsController : ControllerBase
         var series = await _db.Series
             .Include(s=>s.Sources).AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
-        if (series == null || string.IsNullOrWhiteSpace(series.StoragePath))
+        if (series == null || !CanAccess(user, series) || string.IsNullOrWhiteSpace(series.StoragePath))
             return NotFound("Series not found");
 
         SeriesProviderEntity? source = series.Sources.FirstOrDefault(a => a.Chapters.Any(c => c.Filename != null && c.Filename.Equals(chapterFilename, StringComparison.OrdinalIgnoreCase)));
@@ -416,10 +425,11 @@ public class OpdsController : ControllerBase
         if (chapterFilename == null)
             return BadRequest("Invalid chapter identifier");
 
+        // Sources must be loaded: without them every chapter lookup below missed.
         var series = await _db.Series
-            .AsNoTracking()
+            .Include(s => s.Sources).AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
-        if (series == null || string.IsNullOrWhiteSpace(series.StoragePath))
+        if (series == null || !CanAccess(user, series) || string.IsNullOrWhiteSpace(series.StoragePath))
             return NotFound("Series not found");
         
         SeriesProviderEntity? source = series.Sources.FirstOrDefault(a => a.Chapters.Any(c => c.Filename != null && c.Filename.Equals(chapterFilename, StringComparison.OrdinalIgnoreCase)));
@@ -455,10 +465,11 @@ public class OpdsController : ControllerBase
         if (chapterFilename == null)
             return BadRequest("Invalid chapter identifier");
 
+        // Sources must be loaded: without them every chapter lookup below missed.
         var series = await _db.Series
-            .AsNoTracking()
+            .Include(s => s.Sources).AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
-        if (series == null || string.IsNullOrWhiteSpace(series.StoragePath))
+        if (series == null || !CanAccess(user, series) || string.IsNullOrWhiteSpace(series.StoragePath))
             return NotFound("Series not found");
         SeriesProviderEntity? source = series.Sources.FirstOrDefault(a => a.Chapters.Any(c => c.Filename != null && c.Filename.Equals(chapterFilename, StringComparison.OrdinalIgnoreCase)));
         Chapter? chapter = source?.Chapters.FirstOrDefault(c => c.Filename != null && c.Filename.Equals(chapterFilename, StringComparison.OrdinalIgnoreCase));
@@ -492,11 +503,13 @@ public class OpdsController : ControllerBase
         var series = await _db.Series
             .Include(a=>a.Sources).AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
-        if (series == null || string.IsNullOrWhiteSpace(series.StoragePath))
+        if (series == null || !CanAccess(user, series) || string.IsNullOrWhiteSpace(series.StoragePath))
             return NotFound("Series not found");
         var provider = series.Sources.FirstOrDefault(a => a.Chapters.Any(c => c.Filename != null && c.Filename.Equals(chapterFilename, StringComparison.OrdinalIgnoreCase)));
         var chapter = provider?.Chapters?.FirstOrDefault(c => c.Filename != null && c.Filename.Equals(chapterFilename, StringComparison.OrdinalIgnoreCase));
-        string language = provider?.Language ?? "en";
+        if (provider == null || chapter == null)
+            return NotFound("Chapter not found");
+        string language = provider.Language ?? "en";
         decimal? chapterNumber = chapter.ChapterNumber;
 
 

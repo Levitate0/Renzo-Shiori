@@ -35,7 +35,8 @@ interface SourcesToolbarProps {
   availableLanguageOptions: MultiSelectOption[];
   sort: SortOption;
   setSort: (v: SortOption) => void;
-  onInstallFromApk: () => void;
+  /** Omitted below Owner (POST /api/provider/install/file is Owner-only), which hides the menu. */
+  onInstallFromApk?: () => void;
   nsfwVisibility: NsfwVisibility;
 }
 
@@ -175,6 +176,7 @@ export function SourcesToolbar({
         <div className="flex-1" />
 
         {/* 3-dot overflow */}
+        {onInstallFromApk && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -191,6 +193,7 @@ export function SourcesToolbar({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        )}
       </div>
 
       {/* ── Mobile toolbar (below md) ── */}
@@ -244,6 +247,7 @@ export function SourcesToolbar({
         <div className="flex-1" />
 
         {/* 3-dot overflow — APK install on mobile */}
+        {onInstallFromApk && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -260,6 +264,7 @@ export function SourcesToolbar({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        )}
       </div>
 
       {/* ── Mobile language sheet ── */}

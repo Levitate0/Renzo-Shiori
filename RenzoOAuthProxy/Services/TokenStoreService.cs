@@ -14,8 +14,29 @@ public class TokenStoreService
     // 5 was tight enough to expire mid-flow on an unhurried user.
     private readonly TimeSpan _entryTtl = TimeSpan.FromMinutes(15);
 
+    /// <summary>
+    /// Hard ceiling on live sessions. Expired entries were only dropped when
+    /// their own state was looked up again, so every abandoned authorize call
+    /// stayed in memory for the life of the process. One instance needs a
+    /// handful at a time; the cap only bites on a flood.
+    /// </summary>
+    public const int MaxEntries = 256;
+
     public void Store(string state, string instanceKey, string provider, string redirectUri, string? codeVerifier = null, string? authUrl = null)
     {
+        DateTime now = DateTime.UtcNow;
+        foreach (var kv in _store)
+        {
+            if (now - kv.Value.CreatedAt >= _entryTtl)
+                _store.TryRemove(kv.Key, out _);
+        }
+        int excess = _store.Count - (MaxEntries - 1);
+        if (excess > 0)
+        {
+            foreach (var oldest in _store.OrderBy(kv => kv.Value.CreatedAt).Take(excess).ToList())
+                _store.TryRemove(oldest.Key, out _);
+        }
+
         _store[state] = new TokenStoreEntry
         {
             State = state,
@@ -24,7 +45,7 @@ public class TokenStoreService
             RedirectUri = redirectUri,
             CodeVerifier = codeVerifier,
             AuthUrl = authUrl,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = now
         };
     }
 

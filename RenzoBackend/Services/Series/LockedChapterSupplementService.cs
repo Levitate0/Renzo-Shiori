@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RenzoBackend.Extensions;
 using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
@@ -62,6 +63,24 @@ public class LockedChapterSupplementService
     }
 
     private enum Platform { None, Vapi, VComics, WordPressLock }
+
+    /// <summary>No series page or chapter-list page is near this; it stops a URL filling memory.</summary>
+    private const int MaxSiteBodyBytes = 8 * 1024 * 1024;
+
+    /// <summary>
+    /// For the site fetches. The URLs here derive from stored chapter URLs, which
+    /// POST /api/serie lets a client set, and "vapi.{host}" or an API host read out
+    /// of the page can resolve anywhere — so these use the named client whose
+    /// handler connects only to public addresses (every hop, after DNS), and
+    /// GetAsync's whole-body buffering is capped.
+    /// </summary>
+    private HttpClient CreateSiteClient()
+    {
+        HttpClient http = _httpFactory.CreateClient(nameof(LockedChapterSupplementService));
+        http.Timeout = TimeSpan.FromSeconds(25);
+        http.MaxResponseContentBufferSize = MaxSiteBodyBytes;
+        return http;
+    }
 
     // Per host, for the process lifetime. A platform found stays found (it is a
     // site-wide build, not per series) until its fingerprint stops matching; "none"
@@ -247,8 +266,7 @@ public class LockedChapterSupplementService
             string apiBase = api.Groups["u"].Value.TrimEnd('/');
 
             string endpoint = $"{apiBase}/api/chapters?postId={postId}";
-            using HttpClient http = _httpFactory.CreateClient();
-            http.Timeout = TimeSpan.FromSeconds(25);
+            using HttpClient http = CreateSiteClient();
             http.DefaultRequestHeaders.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             // The API is CORS-locked to the site origin; send it so it answers.
@@ -455,8 +473,7 @@ public class LockedChapterSupplementService
             string slug = parts[si + 1];
 
             string apiBase = $"{uri.Scheme}://vapi.{uri.Host}/api/v1";
-            using HttpClient http = _httpFactory.CreateClient();
-            http.Timeout = TimeSpan.FromSeconds(25);
+            using HttpClient http = CreateSiteClient();
             http.DefaultRequestHeaders.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             http.DefaultRequestHeaders.Referrer = new Uri($"{uri.Scheme}://{uri.Host}/");
@@ -546,8 +563,7 @@ public class LockedChapterSupplementService
     {
         try
         {
-            using HttpClient http = _httpFactory.CreateClient();
-            http.Timeout = TimeSpan.FromSeconds(25);
+            using HttpClient http = CreateSiteClient();
             http.DefaultRequestHeaders.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             using HttpResponseMessage resp = await http.GetAsync(url, token).ConfigureAwait(false);
@@ -561,6 +577,10 @@ public class LockedChapterSupplementService
         catch { /* fall through to FlareSolverr */ }
 
         if (!settings.FlareSolverrEnabled || string.IsNullOrWhiteSpace(settings.FlareSolverrUrl))
+            return null;
+        // The solver's browser fetches the URL itself, outside our connect check,
+        // so a private target is never handed to it.
+        if (!await OutboundUrlGuard.IsPublicHttpUrlAsync(url, token).ConfigureAwait(false))
             return null;
         return await FetchViaFlareSolverrAsync(settings, url, token).ConfigureAwait(false);
     }
@@ -583,8 +603,11 @@ public class LockedChapterSupplementService
         int ms = (int)Math.Clamp(settings.FlareSolverrTimeout.TotalMilliseconds, 15000, 120000);
         var payload = new { cmd = "request.get", url, maxTimeout = ms };
 
+        // The solver itself is configured by the Owner and usually on the LAN, so
+        // this is the plain client; only its answer (the page) is capped.
         using HttpClient http = _httpFactory.CreateClient();
         http.Timeout = TimeSpan.FromMilliseconds(ms + 15000);
+        http.MaxResponseContentBufferSize = 4L * MaxSiteBodyBytes;
         string endpoint = settings.FlareSolverrUrl.TrimEnd('/') + "/v1";
 
         using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");

@@ -12,6 +12,7 @@ public static class Program
 
         // Register services
         builder.Services.AddSingleton<TokenStoreService>();
+        builder.Services.AddSingleton<InstanceGuardService>();
         builder.Services.AddScoped<ProviderApiService>();
         builder.Services.AddHttpClient();
 

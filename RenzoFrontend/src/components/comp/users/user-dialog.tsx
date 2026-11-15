@@ -278,8 +278,11 @@ export function EditUserDialog({ user, open, onOpenChange }: EditUserDialogProps
               <div className="relative flex-1">
                 <div className="flex items-center gap-2 w-full p-2 rounded-md border bg-muted/30 text-xs font-mono text-muted-foreground pr-10">
                   <Route className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{user.opdsPath}</span>
+                  <span className="truncate">
+                    {user.opdsPath || 'Only this user can see their OPDS path'}
+                  </span>
                 </div>
+                {user.opdsPath && (
                 <button
                   type="button"
                   className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 flex items-center justify-center rounded hover:bg-muted transition-colors"
@@ -292,6 +295,7 @@ export function EditUserDialog({ user, open, onOpenChange }: EditUserDialogProps
                     <Copy className="h-3.5 w-3.5" />
                   )}
                 </button>
+                )}
               </div>
               <Button
                 type="button"

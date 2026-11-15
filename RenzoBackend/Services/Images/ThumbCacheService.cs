@@ -311,13 +311,17 @@ namespace RenzoBackend.Services.Images
             Stream? s = await img.ObtainStreamAsync(cacheEntry!, token).ConfigureAwait(false);
             if (s==null)
                 return (HttpStatusCode.NotFound, null, null, null);
-            string contentType = cacheEntry!.ContentType;
+            // The type served is ALWAYS sniffed from the bytes, never the stored
+            // ContentType: rows cached before 2026-11-15 kept the upstream type for
+            // anything that wasn't an image (text/html served from our origin =
+            // stored XSS). Not a known raster image (SVG included) = not served.
+            (string? contentType, _) = s.GetImageMimeTypeAndExtension();
             if (string.IsNullOrEmpty(contentType))
             {
-                (string? detectedContentType, string? detectedExtension) = s.GetImageMimeTypeAndExtension();
-                s.Position = 0;
-                contentType = detectedContentType ?? "";
+                s.Dispose();
+                return (HttpStatusCode.NotFound, null, null, null);
             }
+            s.Position = 0;
             return (HttpStatusCode.OK, cacheEntry!.Etag, contentType, s);
         }
     }

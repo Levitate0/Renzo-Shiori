@@ -36,7 +36,8 @@ import java.util.concurrent.Executors
  * custom Kotlin-side fix (interceptors, WebView/Cloudflare handling, network tweaks) carries over.
  *
  * Only JDK built-ins (com.sun.net.httpserver) + kotlinx.serialization (already a dependency) are used.
- * The .NET backend is the sole client and talks to it on 127.0.0.1 only.
+ * The .NET backend is the sole client and talks to it on 127.0.0.1 only, and every request (both
+ * listeners) must carry the per-launch secret the backend put in RENZO_SIDECAR_SECRET; see [route].
  *
  * Endpoints (all POST unless noted; JSON in/out, except /image which returns raw bytes):
  *   /setup              {dataRoot, tempRoot}
@@ -54,6 +55,9 @@ import java.util.concurrent.Executors
  *   /health (GET)
  */
 object SidecarServer {
+    /** Far above any real page or cover; it only stops a body from filling the heap. */
+    private const val MAX_IMAGE_BYTES = 64L * 1024 * 1024
+
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val sources = ConcurrentHashMap<Long, CatalogueSource>()
     @Volatile private var initialized = false
@@ -118,6 +122,12 @@ object SidecarServer {
 
     @JvmStatic
     fun main(args: Array<String>) {
+        if (secret == null) {
+            // Fail closed: without a secret every request would be refused anyway,
+            // and an unauthenticated sidecar is exactly what this guards against.
+            System.err.println("[sidecar] $SECRET_ENV is not set; refusing to start (the backend sets it on launch)")
+            kotlin.system.exitProcess(2)
+        }
         val port = (System.getenv("RENZO_SIDECAR_PORT") ?: "9834").toInt()
         workers = (System.getenv("RENZO_SIDECAR_THREADS") ?: "16").toInt()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
@@ -134,36 +144,36 @@ object SidecarServer {
         runCatching {
             val status = HttpServer.create(InetSocketAddress("127.0.0.1", statusPort), 0)
             status.executor = Executors.newSingleThreadExecutor { r -> Thread(r, "sidecar-status").apply { isDaemon = true } }
-            status.createContext("/status") { ex -> respond(ex, 200, statusJson()) }
+            status.route("/status", get = true) { ex -> respond(ex, 200, statusJson()) }
             status.start()
             System.err.println("[sidecar] status on 127.0.0.1:$statusPort")
         }.onFailure { System.err.println("[sidecar] status listener unavailable: ${it.message}") }
 
-        server.createContext("/health") { ex -> respond(ex, 200, """{"ok":true,"initialized":$initialized}""") }
-        server.createContext("/setup") { ex -> guarded(ex) { setup(readObj(ex)) } }
-        server.createContext("/config") { ex -> guarded(ex) { config(readObj(ex)) } }
-        server.createContext("/cookies/inject") { ex -> guarded(ex) { cookiesInject(readObj(ex)) } }
-        server.createContext("/cookies/snapshot") { ex -> guarded(ex) { cookiesSnapshot(readObj(ex)) } }
-        server.createContext("/cookies/clear") { ex -> guarded(ex) { cookiesClear(readObj(ex)) } }
-        server.createContext("/convert") { ex -> guarded(ex) { convert(readObj(ex)) } }
-        server.createContext("/sources/load") { ex -> guarded(ex) { loadSources(readObj(ex)) } }
-        server.createContext("/source/popular") { ex -> guarded(ex) { popular(readObj(ex)) } }
-        server.createContext("/source/latest") { ex -> guarded(ex) { latest(readObj(ex)) } }
-        server.createContext("/source/search") { ex -> guarded(ex) { search(readObj(ex)) } }
-        server.createContext("/source/details") { ex -> guarded(ex) { details(readObj(ex)) } }
-        server.createContext("/source/chapters") { ex -> guarded(ex) { chapters(readObj(ex)) } }
-        server.createContext("/source/pages") { ex -> guarded(ex) { pages(readObj(ex)) } }
-        server.createContext("/source/image") { ex -> tracked { image(ex) } }
-        server.createContext("/source/preferences") { ex -> guarded(ex) { preferences(readObj(ex)) } }
-        server.createContext("/source/preference") { ex -> guarded(ex) { setPreference(readObj(ex)) } }
-        server.createContext("/source/unload") { ex -> guarded(ex) { unload(readObj(ex)) } }
+        server.route("/health", get = true) { ex -> respond(ex, 200, """{"ok":true,"initialized":$initialized}""") }
+        server.route("/setup") { ex -> guarded(ex) { setup(readObj(ex)) } }
+        server.route("/config") { ex -> guarded(ex) { config(readObj(ex)) } }
+        server.route("/cookies/inject") { ex -> guarded(ex) { cookiesInject(readObj(ex)) } }
+        server.route("/cookies/snapshot") { ex -> guarded(ex) { cookiesSnapshot(readObj(ex)) } }
+        server.route("/cookies/clear") { ex -> guarded(ex) { cookiesClear(readObj(ex)) } }
+        server.route("/convert") { ex -> guarded(ex) { convert(readObj(ex)) } }
+        server.route("/sources/load") { ex -> guarded(ex) { loadSources(readObj(ex)) } }
+        server.route("/source/popular") { ex -> guarded(ex) { popular(readObj(ex)) } }
+        server.route("/source/latest") { ex -> guarded(ex) { latest(readObj(ex)) } }
+        server.route("/source/search") { ex -> guarded(ex) { search(readObj(ex)) } }
+        server.route("/source/details") { ex -> guarded(ex) { details(readObj(ex)) } }
+        server.route("/source/chapters") { ex -> guarded(ex) { chapters(readObj(ex)) } }
+        server.route("/source/pages") { ex -> guarded(ex) { pages(readObj(ex)) } }
+        server.route("/source/image") { ex -> tracked { image(ex) } }
+        server.route("/source/preferences") { ex -> guarded(ex) { preferences(readObj(ex)) } }
+        server.route("/source/preference") { ex -> guarded(ex) { setPreference(readObj(ex)) } }
+        server.route("/source/unload") { ex -> guarded(ex) { unload(readObj(ex)) } }
         // Runs script steps on a page in a WebView (auto-buy of paid chapters).
-        server.createContext("/webview/script") { ex -> guarded(ex) { SidecarPageScript.run(readObj(ex)) } }
+        server.route("/webview/script") { ex -> guarded(ex) { SidecarPageScript.run(readObj(ex)) } }
         // Diagnostics (127.0.0.1 only, like everything here): what each source
         // needs from the network layer, and what a WebView actually ends up on.
-        server.createContext("/debug/probe") { ex -> guarded(ex) { SidecarProbe.probe(sources.values.toList(), readObj(ex)) } }
-        server.createContext("/debug/webview") { ex -> guarded(ex) { SidecarProbe.webView(readObj(ex)) } }
-        server.createContext("/debug/cloudflare") { ex ->
+        server.route("/debug/probe") { ex -> guarded(ex) { SidecarProbe.probe(sources.values.toList(), readObj(ex)) } }
+        server.route("/debug/webview") { ex -> guarded(ex) { SidecarProbe.webView(readObj(ex)) } }
+        server.route("/debug/cloudflare") { ex ->
             guarded(ex) {
                 buildJsonObject {
                     put("sites", buildJsonObject { eu.kanade.tachiyomi.network.interceptor.ChallengeSolver.describe().forEach { (k, v) -> put(k, v) } })
@@ -171,7 +181,7 @@ object SidecarServer {
                 }.toString()
             }
         }
-        server.createContext("/debug/fetch") { ex -> guarded(ex) { SidecarProbe.fetchVia(src(readObj(ex).also { lastDebug = it }), lastDebug!!) } }
+        server.route("/debug/fetch") { ex -> guarded(ex) { SidecarProbe.fetchVia(src(readObj(ex).also { lastDebug = it }), lastDebug!!) } }
 
         server.start()
         System.err.println("[sidecar] listening on 127.0.0.1:$port")
@@ -503,19 +513,23 @@ object SidecarServer {
             val req = readObj(ex)
             val s = src(req) as? HttpSource ?: throw IllegalStateException("Source does not support HTTP")
             val p = pageFrom(req["page"]!! as JsonObject)
-            if (p.imageUrl.isNullOrEmpty()) {
+            // "publicOnly": the app is fetching a URL a user stored (a cover), not
+            // one the extension produced, so it must not reach loopback or the LAN.
+            val publicOnly = req["publicOnly"]?.jsonPrimitive?.contentOrNull == "true"
+            if (p.imageUrl.isNullOrEmpty() && !publicOnly) {
                 // Let a failure here surface as itself — swallowed, it resurfaced
                 // one call later as a meaningless "no scheme was found for null".
                 p.imageUrl = bounded { s.getImageUrl(p) }
             }
             // Not under the per-site cap: the app already queues images per
             // image host, and a chapter's pages would otherwise wait on 8 slots.
-            val resp = bounded { s.getImage(p) }
+            val resp = if (publicOnly) bounded { PublicOnlyFetch.image(s, p) } else bounded { s.getImage(p) }
             try {
                 if (resp.code != 200) throw RuntimeException("Request error! ${resp.code}")
                 val body = resp.body
                 val ct = body.contentType()?.toString() ?: "application/octet-stream"
-                val bytes = body.bytes()
+                // Bounded: a URL that streams gigabytes must not fill the JVM heap.
+                val bytes = PublicOnlyFetch.readCapped(body, MAX_IMAGE_BYTES)
                 ex.responseHeaders.set("Content-Type", ct)
                 ex.sendResponseHeaders(200, bytes.size.toLong())
                 ex.responseBody.use { it.write(bytes) }
@@ -630,6 +644,48 @@ object SidecarServer {
     }
 
     // ---- HTTP plumbing ----
+
+    private const val SECRET_ENV = "RENZO_SIDECAR_SECRET"
+    private const val SECRET_HEADER = "X-Renzo-Sidecar-Key"
+    private val secret: ByteArray? = System.getenv(SECRET_ENV)?.takeIf { it.isNotBlank() }?.toByteArray(Charsets.UTF_8)
+
+    /**
+     * Every endpoint goes through here. 127.0.0.1 is the host's loopback (host
+     * networking), so "only local" is not a boundary: an SSRF anywhere on the
+     * host, or a page our own browser opens, could reach /webview/script,
+     * the cookie endpoints, /config or /sources/load. So each request must carry the
+     * per-launch secret in a custom header (compared in constant time), and the
+     * JSON endpoints take only POST + application/json. Browsers cannot send
+     * either cross-origin without a CORS preflight, and the preflight (OPTIONS,
+     * no secret) is refused here, so a web page never gets a request through.
+     */
+    private fun HttpServer.route(path: String, get: Boolean = false, handler: (HttpExchange) -> Unit) {
+        createContext(path) { ex ->
+            val rejected = when {
+                !authorized(ex) -> 401
+                get && ex.requestMethod != "GET" -> 405
+                !get && ex.requestMethod != "POST" -> 405
+                !get && !isJson(ex) -> 415
+                else -> 0
+            }
+            if (rejected != 0) {
+                runCatching { respond(ex, rejected, """{"error":"refused ($rejected)"}""") }
+                ex.close()
+            } else {
+                handler(ex)
+            }
+        }
+    }
+
+    private fun authorized(ex: HttpExchange): Boolean {
+        val want = secret ?: return false
+        val got = ex.requestHeaders.getFirst(SECRET_HEADER)?.toByteArray(Charsets.UTF_8) ?: return false
+        return java.security.MessageDigest.isEqual(want, got)
+    }
+
+    private fun isJson(ex: HttpExchange): Boolean =
+        ex.requestHeaders.getFirst("Content-Type")?.substringBefore(';')?.trim()
+            ?.equals("application/json", ignoreCase = true) == true
 
     private inline fun guarded(ex: HttpExchange, body: () -> String) = tracked {
         try {

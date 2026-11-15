@@ -12,23 +12,46 @@ public class UserInviteService
     public static readonly TimeSpan PasswordSetTokenLifetime = TimeSpan.FromDays(7);
 
     /// <summary>
+    /// Marks a stored password-set token as an explicit reset. Stored in front of
+    /// the hash so no schema change is needed; hashes are hex, so it can't clash.
+    /// </summary>
+    private const string ResetMarker = "R:";
+
+    /// <summary>
+    /// Tags the stored token with the level the account had when it was issued
+    /// ("L2:"). The issuing request checks the level and then saves the token, so
+    /// an Owner promoting the account in between (which wipes pending tokens) could
+    /// otherwise be followed by the save, leaving an Admin holding an invite that a
+    /// non-owner Admin issued. A level change since issue voids the token.
+    /// Untagged tokens from before this are still accepted.
+    /// </summary>
+    private const string LevelMarker = "L";
+
+    /// <summary>
     /// Generates a one-time password-set (invite) token. Stores only its SHA-256
     /// hash plus a 7-day expiry on the user; returns the RAW token for the invite
     /// link. Hardened to match the reset token: 256-bit crypto-random, hashed at
     /// rest, expiring, single-use, constant-time compared — the old form was a
     /// plaintext Guid with no expiry and a case-insensitive compare.
+    /// <paramref name="isReset"/> marks it as a deliberate reset of an account
+    /// that already has a password (see <see cref="ConsumePasswordSetToken"/>);
+    /// the caller has already checked it may reset that account.
     /// </summary>
-    public string GeneratePasswordSetToken(UserEntity user)
+    public string GeneratePasswordSetToken(UserEntity user, bool isReset = false)
     {
         string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        user.PasswordSetToken = HashResetToken(token);
+        user.PasswordSetToken = (isReset ? ResetMarker : "") + LevelMarker + (int)user.Level + ":" + HashResetToken(token);
         user.PasswordSetTokenExpiresAt = DateTime.UtcNow.Add(PasswordSetTokenLifetime);
         return token;
     }
 
     /// <summary>
     /// Consumes (validates and clears) a password-set token: matches the stored
-    /// hash (constant-time), checks expiry, and is single-use.
+    /// hash (constant-time), checks expiry, and is single-use. A plain invite
+    /// token only ever sets a FIRST password: once the account has a password
+    /// (set any other way after the invite went out), only a token issued as a
+    /// reset can replace it — otherwise an old invite link, which the inviting
+    /// admin has seen, would stay a way into the account.
     /// </summary>
     public bool ConsumePasswordSetToken(UserEntity user, string token)
     {
@@ -40,7 +63,22 @@ public class UserInviteService
             return false;
         }
 
-        byte[] expected = Convert.FromHexString(user.PasswordSetToken);
+        string stored = user.PasswordSetToken;
+        bool isReset = stored.StartsWith(ResetMarker, StringComparison.Ordinal);
+        if (isReset)
+            stored = stored[ResetMarker.Length..];
+        else if (!string.IsNullOrWhiteSpace(user.PasswordHash))
+            return false;
+        if (stored.StartsWith(LevelMarker, StringComparison.Ordinal))
+        {
+            int colon = stored.IndexOf(':');
+            if (colon < 0 || !int.TryParse(stored.AsSpan(LevelMarker.Length, colon - LevelMarker.Length), out int issuedFor)
+                || issuedFor != (int)user.Level)
+                return false;
+            stored = stored[(colon + 1)..];
+        }
+
+        byte[] expected = Convert.FromHexString(stored);
         byte[] actual = Convert.FromHexString(HashResetToken(token));
         if (!CryptographicOperations.FixedTimeEquals(expected, actual))
             return false;
@@ -118,10 +156,15 @@ public class UserInviteService
             return $"Hello {user.Username},\n\n" +
                    $"Click this link to set your password (valid for 7 days):\n" +
                    $"{cleanDomain}/auth/set-password?username={Uri.EscapeDataString(user.Username)}&token={rawSetToken}\n\n" +
-                   $"Your OPDS path is: {cleanDomain}/{user.OpdsPath}";
+                   // Not the OPDS path itself: it is this user's credential and the
+                   // inviting admin reads this message. It is on their profile.
+                   $"Your OPDS link is on your profile once you've signed in.";
         }
         else
         {
+            // Auth off: there is no sign-in to protect (anyone can pick any user and
+            // gets that user's path from select-user), and the path is all an
+            // invite is for, so it stays in the message.
             return $"Hello {user.Username},\n\n" +
                    $"Your OPDS path is: {cleanDomain}/{user.OpdsPath}";
         }

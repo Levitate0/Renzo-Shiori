@@ -90,6 +90,14 @@ namespace RenzoBackend.Services
             // Singleton: clearance is cached PER HOST and single-flighted, which
             // only works if every image request shares one instance.
             services.AddSingleton<Services.Images.CloudflareClearanceService>();
+            // Cover fetches follow stored URLs anyone with Manager could have set:
+            // public addresses only, re-checked at every connect and redirect.
+            services.AddHttpClient(nameof(ThumbCacheService), c => c.Timeout = TimeSpan.FromSeconds(30))
+                .ConfigurePrimaryHttpMessageHandler(() => OutboundUrlGuard.CreateHandler());
+            // Same guard for the paid-chapter probes: their URLs derive from stored
+            // chapter URLs (POST /api/serie) and from what those pages say.
+            services.AddHttpClient(nameof(LockedChapterSupplementService))
+                .ConfigurePrimaryHttpMessageHandler(() => OutboundUrlGuard.CreateHandler());
             services.AddScoped<IImageProvider, UrlImageProvider>();
             services.AddScoped<IImageProvider, ExtensionsImageProvider>();
             services.AddScoped<IImageProvider, StorageImageProvider>();

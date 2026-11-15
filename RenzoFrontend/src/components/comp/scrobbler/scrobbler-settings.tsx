@@ -15,6 +15,7 @@ import { SeriesMatchDialog } from '@/components/comp/scrobbler/series-match-dial
 import { RefreshCw, Link, Link2Off, ExternalLink, Key, ListChecks } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api/client';
+import { useAuth } from '@/contexts/auth-context';
 
 const providerIcons: Record<ScrobblerProvider, string> = {
   [ScrobblerProvider.MyAnimeList]: 'MAL',
@@ -25,6 +26,7 @@ const providerIcons: Record<ScrobblerProvider, string> = {
 };
 
 export function ScrobblerSettings() {
+  const { canOwner } = useAuth();
   const queryClient = useQueryClient();
   const { data: configs, isLoading: configsLoading } = useScrobblerConfigs();
   const { data: unmatched } = useScrobblerUnmatched();
@@ -360,6 +362,9 @@ export function ScrobblerSettings() {
                         </div>
                       </div>
                     ) : null
+                  ) : config.provider === ScrobblerProvider.ComicVine && !canOwner ? (
+                    // The key is server-wide; POST .../comicvine/apikey is Owner-only.
+                    <span className="text-xs text-muted-foreground">The owner sets the ComicVine API key.</span>
                   ) : config.provider === ScrobblerProvider.ComicVine ? (
                     <div className="flex flex-wrap items-center gap-2">
                       <Input

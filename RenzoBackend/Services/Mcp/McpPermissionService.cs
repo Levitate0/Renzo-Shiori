@@ -34,7 +34,8 @@ public class McpPermissionService : IMcpPermissionService
         // ── Extensions Install (Manager+) ──
         ["install_extension"] = UserLevel.Manager,
         ["list_extensions"] = UserLevel.User,
-        ["set_extension_preferences"] = UserLevel.Manager,
+        // REST twin POST /api/provider/preferences is Owner-only.
+        ["set_extension_preferences"] = UserLevel.Owner,
 
         // ── Extensions Uninstall (Admin+) ──
         ["uninstall_extension"] = UserLevel.Admin,
@@ -62,8 +63,10 @@ public class McpPermissionService : IMcpPermissionService
         // ── Settings Read (User+) ──
         ["get_settings"] = UserLevel.User,
 
-        // ── Settings Write (Admin+) ──
-        ["update_settings"] = UserLevel.Admin,
+        // ── Settings Write (Owner) ──
+        // Same as PUT /api/settings: settings hold sign-in, proxies, solver URLs,
+        // extension repos and the external domain, so writing them is a takeover.
+        ["update_settings"] = UserLevel.Owner,
 
         // ── Scrobbling (User+) ──
         ["list_scrobbler_providers"] = UserLevel.User,

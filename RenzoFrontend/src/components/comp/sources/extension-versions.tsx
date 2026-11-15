@@ -10,6 +10,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { extensionsService, type ExtensionInfo } from "@/lib/api/services/extensionsService";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/auth-context";
 
 /**
  * Extension version manager — the "keep it working while upstream fixes it"
@@ -20,6 +21,8 @@ export function ExtensionVersions() {
   const [open, setOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
+  // Sideloading runs an arbitrary APK's code on the server: Owner only.
+  const { canOwner } = useAuth();
 
   const { data: extensions, isLoading } = useQuery({
     queryKey: ["extensions", "list"],
@@ -86,6 +89,7 @@ export function ExtensionVersions() {
               pinned extension until you unpin it. Sideloaded APKs only replace the
               running version if they compile successfully.
             </p>
+            {canOwner && (
             <button
               type="button"
               disabled={busy}
@@ -95,6 +99,7 @@ export function ExtensionVersions() {
               {sideload.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
               Install APK
             </button>
+            )}
             <input
               ref={fileRef}
               type="file"

@@ -43,6 +43,25 @@ public class RefreshSessionEntity
 
     public DateTime? PreviousTokenValidUntil { get; set; }
 
+    /// <summary>
+    /// Set when <see cref="PreviousTokenHash"/> has already been forgiven once
+    /// (the device came back on it and was issued a fresh token). A second
+    /// arrival on the same old token is no longer "a lost response" — it is a
+    /// copy of the token in someone else's hands, and the session is revoked.
+    /// </summary>
+    public DateTime? PreviousTokenReplayedAt { get; set; }
+
+    /// <summary>
+    /// Hash of a token this session has moved past for good: the one before
+    /// <see cref="PreviousTokenHash"/>, or a replacement superseded by the
+    /// stranded-device path. A legitimate client never presents it again, so
+    /// seeing it means the session's tokens have been copied — revoke.
+    /// A newline-separated LIST (recent rolled-off hashes plus pinned disowned
+    /// replacements), not one slot: a single overwritten slot was wiped by the
+    /// copier's own next rotation. Format in RefreshSessionService.RetiredEntries.
+    /// </summary>
+    public string? RetiredTokenHash { get; set; }
+
     public DateTime ExpiresAt { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

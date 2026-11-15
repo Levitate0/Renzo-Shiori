@@ -13,6 +13,7 @@ import { ScrobblerProvider, type ScrobblerConfig } from '@/lib/api/types';
 import { SeriesMappingRequester } from '@/components/comp/scrobbler/series-mapping-requester';
 import { Link, Link2Off, Key, RefreshCw, Radio, ExternalLink } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
+import { useAuth } from '@/contexts/auth-context';
 
 interface UserTrackerRequesterProps {
   open: boolean;
@@ -21,6 +22,7 @@ interface UserTrackerRequesterProps {
 
 export function UserTrackerRequester({ open, onOpenChange }: UserTrackerRequesterProps) {
   const queryClient = useQueryClient();
+  const { canOwner } = useAuth();
   const { data: configs, isLoading: configsLoading, error: configsError } = useScrobblerConfigs(open);
   const { data: syncStatuses } = useSyncStatus(open);
   const { data: unmatched } = useScrobblerUnmatched(open);
@@ -365,6 +367,9 @@ export function UserTrackerRequester({ open, onOpenChange }: UserTrackerRequeste
                               </Button>
                             </div>
                           ) : null
+                        ) : config.provider === ScrobblerProvider.ComicVine && !canOwner ? (
+                          // The key is server-wide; POST .../comicvine/apikey is Owner-only.
+                          <span className="text-xs text-muted-foreground">The owner sets the ComicVine API key.</span>
                         ) : config.provider === ScrobblerProvider.ComicVine ? (
                           <div className="flex items-center gap-2 w-full">
                             <Input

@@ -177,9 +177,15 @@ namespace RenzoBackend.Extensions
             var normalized1 = NormalizeTitle(title1);
             var normalized2 = NormalizeTitle(title2);
 
+            var maxLength = Math.Max(normalized1.Length, normalized2.Length);
+            // The distance is at least the length difference, so a pair that
+            // differs in length by more than the tolerance can't pass: skip the
+            // O(n*m) work (same answer, most library pairs end here).
+            if (maxLength > 0 && (double)Math.Abs(normalized1.Length - normalized2.Length) / maxLength > threshold)
+                return false;
+
             // Calculate similarity using Levenshtein distance
             var distance = normalized1.LevenshteinDistance(normalized2);
-            var maxLength = Math.Max(normalized1.Length, normalized2.Length);
 
             // If strings are similar enough (less than tolerance different), consider them similar
             return maxLength > 0 && (double)distance / maxLength <= threshold;
@@ -204,36 +210,32 @@ namespace RenzoBackend.Extensions
                 return s1.Length;
             }
 
-            // Create distance matrix
-            var matrix = new int[s1.Length + 1, s2.Length + 1];
-
-            // Initialize first row and column
-            for (var i = 0; i <= s1.Length; i++)
-            {
-                matrix[i, 0] = i;
-            }
-
+            // Two rows instead of the full (n+1)x(m+1) matrix: O(min(n, m))
+            // memory. The distance is symmetric, so the shorter string is the
+            // row. Same recurrence, same result (a long backup title used to
+            // allocate n*m ints here).
+            if (s2.Length > s1.Length)
+                (s1, s2) = (s2, s1);
+            var previous = new int[s2.Length + 1];
+            var current = new int[s2.Length + 1];
             for (var j = 0; j <= s2.Length; j++)
-            {
-                matrix[0, j] = j;
-            }
+                previous[j] = j;
 
-            // Fill the matrix
             for (var i = 1; i <= s1.Length; i++)
             {
+                current[0] = i;
                 for (var j = 1; j <= s2.Length; j++)
                 {
                     var cost = s1[i - 1] == s2[j - 1] ? 0 : 1;
-
-                    matrix[i, j] = Math.Min(
-                        Math.Min(matrix[i - 1, j] + 1, matrix[i, j - 1] + 1),
-                        matrix[i - 1, j - 1] + cost
+                    current[j] = Math.Min(
+                        Math.Min(previous[j] + 1, current[j - 1] + 1),
+                        previous[j - 1] + cost
                     );
                 }
+                (previous, current) = (current, previous);
             }
 
-            // Return the distance
-            return matrix[s1.Length, s2.Length];
+            return previous[s2.Length];
         }
 
 

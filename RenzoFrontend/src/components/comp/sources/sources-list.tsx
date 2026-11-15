@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { providerService } from "@/lib/api/services/providerService";
 import { useSettings } from "@/lib/api/hooks/useSettings";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/auth-context";
 import { ProviderPreferencesRequester } from "@/components/comp/provider-preferences-requester";
 import {
   getExtensionLanguages,
@@ -52,6 +53,10 @@ export function SourcesList({
 }: SourcesListProps) {
   // ── Embedded search (no global command bar inside dialogs) ───────────────────
   const [internalSearch, setInternalSearch] = useState('');
+  // Server gates: a real install (code into the shared sidecar) is Manager+,
+  // APK upload and extension settings are Owner-only. Enabling a source that is
+  // already installed system-wide stays open to everyone.
+  const { canManage, canOwner } = useAuth();
   const effectiveSearchTerm = embedded ? internalSearch : (searchTerm ?? '');
   const doClearSearch = embedded ? () => setInternalSearch('') : clearSearch;
   // ── Data state ──────────────────────────────────────────────────────────────
@@ -226,7 +231,7 @@ export function SourcesList({
       doClearSearch?.();
 
       // Open preferences for the extension the user just enabled/installed
-      if (target) {
+      if (target && canOwner) {
         setShowPreferencesFor({ pkgName: target.package, name: target.name });
       }
     } catch (error) {
@@ -378,7 +383,7 @@ export function SourcesList({
         availableLanguageOptions={availableLanguageOptions}
         sort={sort}
         setSort={setSort}
-        onInstallFromApk={handleApkButtonClick}
+        onInstallFromApk={canOwner ? handleApkButtonClick : undefined}
         nsfwVisibility={nsfwVisibility}
       />
 
@@ -404,7 +409,7 @@ export function SourcesList({
               key={ext.package}
               extension={ext}
               mode="available"
-              onInstall={(pkgName) => void handleInstall(pkgName)}
+              onInstall={ext.isInstaled || canManage ? (pkgName) => void handleInstall(pkgName) : undefined}
               isLoading={actionLoading === ext.package}
               showNsfwIndicator={true}
             />

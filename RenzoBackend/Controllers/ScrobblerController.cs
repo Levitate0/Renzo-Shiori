@@ -551,8 +551,10 @@ public class ScrobblerController : ControllerBase
     /// <summary>
     /// POST /api/scrobbler/config/comicvine/apikey
     /// Save the ComicVine API key to the database settings table.
+    /// Owner only: it is ONE server-wide key every user's lookups run on.
     /// </summary>
     [HttpPost("config/comicvine/apikey")]
+    [RequireUserLevel(UserLevel.Owner)]
     public async Task<ActionResult> SaveComicVineApiKey([FromBody] ComicVineApiKeyDto dto)
     {
         var setting = await _db.Settings

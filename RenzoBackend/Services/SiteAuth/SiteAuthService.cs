@@ -54,6 +54,18 @@ public class SiteAuthService
         _logger = logger;
     }
 
+    /// <summary>
+    /// The cookie jar is ONE session shared by the whole server, and it is the
+    /// Owner's (auto-buy and every locked read run on it). Only an Owner's login
+    /// may write to it or clear it; a lower account's saved login is left unused.
+    /// </summary>
+    private async Task<bool> MayUseJarAsync(Guid userId, CancellationToken token) =>
+        userId != Guid.Empty && await _db.Users.AsNoTracking()
+            .AnyAsync(u => u.Id == userId && u.Level == Models.Enums.UserLevel.Owner, token).ConfigureAwait(false);
+
+    private static readonly SiteLoginResult NotOwnerResult =
+        new(false, "failed", "Site logins share one session for the whole server, so only the owner's are used.", 0);
+
     private SidecarProcessManager? Sidecar => _services.GetService(typeof(SidecarProcessManager)) as SidecarProcessManager;
 
     private async Task<string?> DomainForAsync(string provider, CancellationToken token)
@@ -70,6 +82,8 @@ public class SiteAuthService
     public async Task<(SiteCredentialEntity entity, SiteLoginResult result)> SaveAndLoginAsync(
         Guid userId, string provider, string username, string password, CancellationToken token = default)
     {
+        if (!await MayUseJarAsync(userId, token).ConfigureAwait(false))
+            return (new SiteCredentialEntity(), NotOwnerResult);
         SiteCredentialEntity? cred = await _db.SiteCredentials
             .FirstOrDefaultAsync(c => c.UserId == userId && c.Provider == provider, token).ConfigureAwait(false);
         if (cred == null)
@@ -93,6 +107,8 @@ public class SiteAuthService
     public async Task<(SiteCredentialEntity entity, SiteLoginResult result)> SaveCookieAsync(
         Guid userId, string provider, string username, string cookieHeader, CancellationToken token = default)
     {
+        if (!await MayUseJarAsync(userId, token).ConfigureAwait(false))
+            return (new SiteCredentialEntity(), NotOwnerResult);
         string? domain = await DomainForAsync(provider, token).ConfigureAwait(false);
         if (domain == null)
             return (new SiteCredentialEntity(), new SiteLoginResult(false, "failed", "Couldn't determine this site's domain.", 0));
@@ -150,8 +166,10 @@ public class SiteAuthService
             .FirstOrDefaultAsync(c => c.Id == id && c.UserId == userId, token).ConfigureAwait(false);
         if (cred == null)
             return;
-        string? domain = await DomainForAsync(cred.Provider, token).ConfigureAwait(false);
-        if (domain != null)
+        // Only the Owner's login is the live session; removing anyone else's
+        // saved row must not sign the whole server out of the site.
+        if (await MayUseJarAsync(userId, token).ConfigureAwait(false)
+            && await DomainForAsync(cred.Provider, token).ConfigureAwait(false) is { } domain)
             _jar.ClearHost(domain);
         _db.SiteCredentials.Remove(cred);
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
@@ -170,6 +188,8 @@ public class SiteAuthService
     /// </param>
     public async Task<SiteLoginResult> LoginAsync(SiteCredentialEntity cred, CancellationToken token = default, bool interactive = true)
     {
+        if (!await MayUseJarAsync(cred.UserId, token).ConfigureAwait(false))
+            return NotOwnerResult;
         CoinSiteDefinition? def = await _registry.GetDefinitionAsync(cred.Provider, token).ConfigureAwait(false);
         string? password = _protector.TryDecrypt(cred.EncryptedPassword);
 
@@ -976,7 +996,11 @@ public class SiteAuthService
     /// <summary>On startup, re-inject cached cookies for every stored credential.</summary>
     public async Task RestoreAllAsync(CancellationToken token = default)
     {
-        List<SiteCredentialEntity> all = await _db.SiteCredentials.ToListAsync(token).ConfigureAwait(false);
+        // Only the Owner's: lower accounts' rows never write to the shared jar.
+        List<Guid> owners = await _db.Users.AsNoTracking()
+            .Where(u => u.Level == Models.Enums.UserLevel.Owner).Select(u => u.Id).ToListAsync(token).ConfigureAwait(false);
+        List<SiteCredentialEntity> all = await _db.SiteCredentials
+            .Where(c => owners.Contains(c.UserId)).ToListAsync(token).ConfigureAwait(false);
         int total = 0;
         foreach (SiteCredentialEntity cred in all)
             total += ReinjectCached(cred);

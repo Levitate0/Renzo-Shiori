@@ -46,18 +46,39 @@ public class OpdsFeedService
     private bool FallbackReadStateEnabled => _configuration.GetValue<bool>("FallbackReadState");
 
 
-    public async Task<(Stream, string mimeType)?> GetChapterStreamAsync(UserEntity user, Guid seriesId, string filename,CancellationToken token = default)
+    public async Task<(Stream, string mimeType, string filename)?> GetChapterStreamAsync(UserEntity user, Guid seriesId, string filename,CancellationToken token = default)
     {
-        var series = await _db.Series.AsNoTracking().FirstOrDefaultAsync(a => a.Id == seriesId, token);
+        var series = await _db.Series.Include(a => a.Sources).AsNoTracking().FirstOrDefaultAsync(a => a.Id == seriesId, token);
         if (series == null)
             return null;
         if (!Series.SeriesQueryService.CanAccessSeries(series.OwnerId, user.Id, user.Level == Models.Enums.UserLevel.Owner))
             return null;
-        string? archiveName = _settingsService.DirectSettings?.ResolveChapterPath(series.StoragePath, filename);
+        // Only ever serve one of this series' own downloaded chapter files: the
+        // requested name is the client's, so look it up and use the STORED name.
+        // (It once went straight to Path.Combine and served any file on the host.)
+        string? known = KnownChapterFilename(series, filename);
+        if (known == null)
+            return null;
+        string? archiveName = _settingsService.DirectSettings?.ResolveChapterPath(series.StoragePath, known);
         if (archiveName == null)
             return null;
-        string mimeType = GetChapterContentType(filename);
-        return (File.OpenRead(archiveName), mimeType);
+        string mimeType = GetChapterContentType(known);
+        return (File.OpenRead(archiveName), mimeType, known);
+    }
+
+    /// <summary>
+    /// The stored filename of a downloaded chapter of <paramref name="series"/>
+    /// matching <paramref name="requested"/> (case-insensitive, like every OPDS
+    /// chapter lookup), or null when the series holds no such file.
+    /// </summary>
+    public static string? KnownChapterFilename(SeriesEntity series, string? requested)
+    {
+        if (string.IsNullOrEmpty(requested))
+            return null;
+        return series.Sources
+            .SelectMany(s => s.Chapters)
+            .Select(c => c.Filename)
+            .FirstOrDefault(f => !string.IsNullOrEmpty(f) && f.Equals(requested, StringComparison.OrdinalIgnoreCase));
     }
 
     private StringBuilder RenderHeader(UserEntity user, string id, string title, string user_agent)

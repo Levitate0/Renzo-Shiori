@@ -10,48 +10,50 @@ public class OAuthController : ControllerBase
 {
     private readonly ProviderApiService _providerApi;
     private readonly TokenStoreService _tokenStore;
-    private readonly IConfiguration _configuration;
+    private readonly InstanceGuardService _guard;
     private readonly ILogger<OAuthController> _logger;
 
     public OAuthController(
         ProviderApiService providerApi,
         TokenStoreService tokenStore,
-        IConfiguration configuration,
+        InstanceGuardService guard,
         ILogger<OAuthController> logger)
     {
         _providerApi = providerApi;
         _tokenStore = tokenStore;
-        _configuration = configuration;
+        _guard = guard;
         _logger = logger;
     }
-
-    /// <summary>
-    /// Resolves the public base URL (scheme://host) this proxy is reachable at, so the
-    /// OAuth redirect_uri matches the admin's registered provider app. Priority:
-    /// the caller-supplied X-Public-Base header (the user's real request host, threaded
-    /// through by the backend), then OAuth:PublicBaseUrl config, then the request host.
-    /// </summary>
-    private string ResolvePublicBase(string? publicBaseHeader)
-        => (publicBaseHeader ?? _configuration["OAuth:PublicBaseUrl"])?.TrimEnd('/')
-           ?? $"{Request.Scheme}://{Request.Host}";
 
     [HttpPost("{provider}/url")]
     public async Task<ActionResult<OAuthUrlResponseDto>> GetAuthUrl(
         string provider,
-        [FromHeader(Name = "X-Instance-Key")] string instanceKey,
+        [FromHeader(Name = "X-Instance-Key")] string? instanceKey,
         [FromHeader(Name = "X-Public-Base")] string? publicBase = null)
     {
-        if (string.IsNullOrWhiteSpace(instanceKey))
-            return Unauthorized(new ErrorResponseDto { Error = "X-Instance-Key header required" });
+        if (!_guard.IsValidInstanceKey(instanceKey))
+            return Unauthorized(new ErrorResponseDto { Error = "Invalid or missing X-Instance-Key" });
+
+        // The redirect_uri is built from this, so it must be one of this
+        // instance's own public addresses (OAuth:PublicBaseUrl,
+        // OAuth:AllowedPublicBases, or the backend's external domain / allowed
+        // origins) — the old code took any value it was handed.
+        string? publicBaseResolved = _guard.ResolvePublicBase(publicBase, () => $"{Request.Scheme}://{Request.Host}");
+        if (publicBaseResolved == null)
+        {
+            _logger.LogWarning("GetAuthUrl: refused X-Public-Base {PublicBase} — not an allowed public base (set OAuth__AllowedPublicBases).", publicBase);
+            return BadRequest(new ErrorResponseDto { Error = "That public address is not allowed for OAuth redirects. Add it to OAuth__AllowedPublicBases." });
+        }
 
         try
         {
             // Reuse an already-live, not-yet-completed session for this instance+
             // provider instead of minting a competing one — see FindActive's comment.
             var existing = _tokenStore.FindActive(instanceKey, provider);
+            // The instance key is a credential now — never logged.
             _logger.LogInformation(
-                "GetAuthUrl: instanceKey={InstanceKey} provider={Provider} existingFound={Found} existingState={ExistingState} liveEntryCount={Count}",
-                instanceKey, provider, existing != null, existing?.State ?? "(none)", _tokenStore.DebugLiveCount());
+                "GetAuthUrl: provider={Provider} existingFound={Found} liveEntryCount={Count}",
+                provider, existing != null, _tokenStore.DebugLiveCount());
             if (existing?.AuthUrl != null)
                 return Ok(new OAuthUrlResponseDto { AuthUrl = existing.AuthUrl, State = existing.State });
 
@@ -59,7 +61,7 @@ public class OAuthController : ControllerBase
             // Public callback lives at /oauth/... on the Renzo domain (the backend
             // forwards /oauth/* to this proxy's /api/oauth/*). This is the URL the admin
             // registers as the provider redirect_uri.
-            var redirectUri = $"{ResolvePublicBase(publicBase)}/oauth/{provider}/callback";
+            var redirectUri = $"{publicBaseResolved}/oauth/{provider}/callback";
             var (authUrl, codeVerifier) = await _providerApi.GenerateAuthUrlAsync(provider, redirectUri, state);
 
             _tokenStore.Store(state, instanceKey, provider, redirectUri, codeVerifier, authUrl);
@@ -76,14 +78,15 @@ public class OAuthController : ControllerBase
     public async Task<IActionResult> Callback(
         string provider,
         [FromQuery] string code,
-        [FromQuery] string state,
-        [FromQuery] string? redirectUri = null)
+        [FromQuery] string state)
     {
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
             return BadRequest(new ErrorResponseDto { Error = "Missing code or state parameter" });
 
         var tokenEntry = _tokenStore.Retrieve(state);
-        if (tokenEntry == null)
+        // The provider segment is echoed into the page script below, so it must be
+        // the one this state was issued for, not whatever the URL says.
+        if (tokenEntry == null || !string.Equals(tokenEntry.Provider, provider, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new ErrorResponseDto { Error = "Invalid state — authorization session not found" });
 
         try
@@ -91,8 +94,9 @@ public class OAuthController : ControllerBase
             // The redirect_uri sent to the provider on token-exchange MUST byte-match the
             // one used at authorize time. Reuse the stored value (the public URL), not the
             // forwarded request host (which is 127.0.0.1 when the backend forwards here).
-            var callbackUri = redirectUri
-                ?? (string.IsNullOrEmpty(tokenEntry.RedirectUri) ? null : tokenEntry.RedirectUri)
+            // Never a ?redirectUri= from the public callback URL: only what this
+            // state was authorized with is ever sent with our client secret.
+            var callbackUri = (string.IsNullOrEmpty(tokenEntry.RedirectUri) ? null : tokenEntry.RedirectUri)
                 ?? $"{Request.Scheme}://{Request.Host}/api/oauth/{provider}/callback";
             var tokenResult = await _providerApi.ExchangeCodeAsync(provider, code, callbackUri, tokenEntry.CodeVerifier);
 
@@ -174,8 +178,12 @@ p{{font-size:0.875rem;opacity:0.7;margin-bottom:1.5rem}}
     [HttpPost("{provider}/token")]
     public ActionResult<TokenRetrieveResponseDto> GetToken(
         string provider,
-        [FromBody] TokenRetrieveRequestDto request)
+        [FromBody] TokenRetrieveRequestDto request,
+        [FromHeader(Name = "X-Instance-Key")] string? instanceKey = null)
     {
+        // The backend sends its key in the body here (and usually the header too).
+        if (!_guard.IsValidInstanceKey(instanceKey) && !_guard.IsValidInstanceKey(request.InstanceKey))
+            return Unauthorized(new ErrorResponseDto { Error = "Invalid or missing X-Instance-Key" });
         if (string.IsNullOrWhiteSpace(request.State))
             return BadRequest(new ErrorResponseDto { Error = "State is required" });
 
@@ -203,10 +211,12 @@ p{{font-size:0.875rem;opacity:0.7;margin-bottom:1.5rem}}
     public async Task<ActionResult<TokenRefreshResponseDto>> RefreshToken(
         string provider,
         [FromBody] TokenRefreshRequestDto request,
-        [FromHeader(Name = "X-Instance-Key")] string instanceKey)
+        [FromHeader(Name = "X-Instance-Key")] string? instanceKey)
     {
-        if (string.IsNullOrWhiteSpace(instanceKey))
-            return Unauthorized(new ErrorResponseDto { Error = "X-Instance-Key header required" });
+        // Spends the app's client secret on whatever refresh token it is handed,
+        // so only this instance's backend may call it.
+        if (!_guard.IsValidInstanceKey(instanceKey))
+            return Unauthorized(new ErrorResponseDto { Error = "Invalid or missing X-Instance-Key" });
 
         try
         {

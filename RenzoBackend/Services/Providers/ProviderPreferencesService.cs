@@ -414,6 +414,13 @@ namespace RenzoBackend.Services.Providers
                     .ToListAsync(token).ConfigureAwait(false);
                 if (saved.Count == 0)
                     return;
+                // Applying writes the extension's shared live store, which only the
+                // Owner may change (POST /api/provider/preferences is Owner-only);
+                // rows a lower level saved before that rule are left unapplied.
+                bool isOwner = await _db.Users.AsNoTracking()
+                    .AnyAsync(u => u.Id == userId && u.Level == UserLevel.Owner, token).ConfigureAwait(false);
+                if (!isOwner)
+                    return;
 
                 var repoGroup = _mihon.ListExtensions().FirstOrDefault(a => a.GetActiveEntry().Extension.Package == pkgName);
                 if (repoGroup == null)

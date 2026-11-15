@@ -10,6 +10,7 @@ using RenzoBackend.Extensions;
 using RenzoBackend.Models;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
+using RenzoBackend.Models.Enums;
 using RenzoBackend.Services.SiteAuth;
 
 namespace RenzoBackend.Services.Reader.AutoBuy;
@@ -91,6 +92,13 @@ public class ChapterAutoBuyService
         if (answer != null || plan == null)
             return answer ?? Fail("unavailable", "Couldn't work out where to buy this chapter.");
 
+        if (!await IsOnSourceSiteAsync(plan.Source.Provider, plan.Chapter.Url!, token).ConfigureAwait(false))
+        {
+            _logger.LogWarning("Auto-buy {Series} ch {Chapter}: not opening the chapter link, it isn't an https page on {Provider}'s site.",
+                plan.Series.Title, chapterNumber, plan.Source.Provider);
+            return Fail("unavailable", $"This chapter's link isn't on {plan.Source.Provider}'s own site, so it can't be bought automatically.", plan.Source.Provider);
+        }
+
         if (!await Gate.WaitAsync(TimeSpan.FromMinutes(3), token).ConfigureAwait(false))
             return Fail("unavailable", "Another chapter is being bought right now. Try again in a moment.", plan.Source.Provider);
         try
@@ -119,8 +127,24 @@ public class ChapterAutoBuyService
         Guid ownerId = series.OwnerId;
         if (ownerId != Guid.Empty && requester != null && requester.Id != ownerId)
             return (new AutoBuyResultDto { Status = "off", Reason = "not-owner" }, null);
-        UserEntity? owner = ownerId == Guid.Empty ? requester
-            : await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, token).ConfigureAwait(false);
+        // A legacy series nobody owns is in every library. Buying on it spends the
+        // Owner's coins with the Owner's logins and only when the Owner asks; it
+        // used to take ANY user's saved login, so anyone opening the chapter could
+        // spend someone else's coins. No requester is guest mode (auth off), which
+        // counts as the Owner everywhere else too.
+        if (ownerId == Guid.Empty && requester != null && requester.Level != UserLevel.Owner)
+            return (new AutoBuyResultDto { Status = "off", Reason = "not-owner" }, null);
+        UserEntity? owner = ownerId != Guid.Empty
+            ? await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, token).ConfigureAwait(false)
+            : requester ?? await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Level == UserLevel.Owner, token).ConfigureAwait(false);
+        Guid credUserId = owner?.Id ?? Guid.Empty;
+        // The extension browser has ONE cookie jar per site, shared by every
+        // account: the buy first runs on whatever session it already holds (and a
+        // pasted cookie replaces it for everyone). So only the Owner's coins can be
+        // safely spent through it; another user's "buy" would run on the Owner's
+        // session. Until sessions are kept per user, auto-buy is the Owner's.
+        if (owner != null && owner.Level != UserLevel.Owner)
+            return (new AutoBuyResultDto { Status = "off", Reason = "not-owner" }, null);
         bool enabled = series.AutoBuyPaidChapters ?? owner?.GetAutoBuyPaidChapters() ?? false;
         if (!enabled && !dryRun)
             return (new AutoBuyResultDto { Status = "off" }, null);
@@ -141,7 +165,7 @@ public class ChapterAutoBuyService
             return (Remember(seriesId, chapterNumber, Fail("unavailable", "None of this series' sources has a link for this chapter to buy it from.")), null);
 
         List<SiteCredentialEntity> creds = await _db.SiteCredentials.AsNoTracking()
-            .Where(c => (c.Status == "ok" || c.Status == "manual_cookie") && (ownerId == Guid.Empty || c.UserId == ownerId))
+            .Where(c => (c.Status == "ok" || c.Status == "manual_cookie") && c.UserId == credUserId)
             .ToListAsync(token).ConfigureAwait(false);
         var pick = holders.Select(h => (h.p, h.c, cred: creds.FirstOrDefault(c => c.Provider.Equals(h.p.Provider, StringComparison.OrdinalIgnoreCase))))
             .FirstOrDefault(x => x.cred != null);
@@ -240,6 +264,35 @@ public class ChapterAutoBuyService
         return Fail("not-confirmed", i.Clicked
             ? $"Pressed \"{i.Buttons.FirstOrDefault()}\" on {site}, but the chapter still doesn't open. {site} may need a step only a person can do."
             : $"The chapter page on {site} opened without a buy button, yet the chapter still doesn't load here.", site, i.Price, i.Balance);
+    }
+
+    /// <summary>
+    /// The chapter link is opened in the extension host's browser, which holds
+    /// every site login's cookies and sits on the host network. A stored link is
+    /// data anyone who can add a series could have set, so only an https page on
+    /// the source's own site (or a subdomain of it) is ever opened there.
+    /// </summary>
+    private async Task<bool> IsOnSourceSiteAsync(string provider, string url, CancellationToken token)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? u) || u.Scheme != Uri.UriSchemeHttps)
+            return false;
+        CoinSiteDefinition? def = await _registry.GetDefinitionAsync(provider, token).ConfigureAwait(false);
+        return def != null && IsOnSiteHost(u.Host, def.Domain);
+    }
+
+    /// <summary>True when <paramref name="host"/> is <paramref name="siteDomain"/> or a subdomain of it ("www." ignored).</summary>
+    public static bool IsOnSiteHost(string host, string? siteDomain)
+    {
+        if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(siteDomain))
+            return false;
+        // Domain is a bare host, but tolerate a stray scheme, path or port.
+        string d = siteDomain.Trim();
+        int scheme = d.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0) d = d[(scheme + 3)..];
+        d = d.Split('/', 2)[0].Split(':', 2)[0];
+        d = Providers.SourceHostsService.Normalize(d);
+        string h = Providers.SourceHostsService.Normalize(host);
+        return d.Length > 0 && (h == d || h.EndsWith("." + d, StringComparison.Ordinal));
     }
 
     /// <summary>Does the source hand over the chapter's pages now? Pages coming back is the purchase.</summary>

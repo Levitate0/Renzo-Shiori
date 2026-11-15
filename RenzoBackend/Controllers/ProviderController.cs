@@ -37,6 +37,11 @@ namespace RenzoBackend.Controllers
 
         private Guid CurrentUserId => (HttpContext.Items["User"] as UserEntity)?.Id ?? Guid.Empty;
 
+        // Same rule as RequireUserLevel: no user with auth off is guest mode (Owner).
+        private bool IsOwner => HttpContext.Items["User"] is UserEntity u
+            ? u.Level >= UserLevel.Owner
+            : HttpContext.Items["AuthEnabled"] is not true;
+
         /// <summary>
         /// Sources the current user has personally enabled for Search/Browse/Add-series.
         /// Installing a source (any privilege level) doesn't make it visible to every
@@ -206,15 +211,20 @@ namespace RenzoBackend.Controllers
         /// <response code="200">Extension installed successfully</response>
         /// <response code="400">Failed to install extension</response>
         /// <response code="500">If an error occurs during installation</response>
-        // Sources are installable by any user — the shared extension only ever
-        // shows up in whoever installed it (or separately enabled it)'s own
-        // Search/Browse, so there's no reason to gate the action itself.
+        // A real install downloads an APK and loads its code into the shared
+        // sidecar for every user, so it is Manager+ (a plain User adds an
+        // already-installed source to their own list via my-sources/package).
+        // force re-downloads and recompiles over the running build — Owner only.
         [HttpPost("install/{pkgName}")]
+        [RequireUserLevel(UserLevel.Manager)]
         [ProducesResponseType(typeof(object), 200)]
         [ProducesResponseType(typeof(object), 400)]
+        [ProducesResponseType(typeof(object), 403)]
         [ProducesResponseType(typeof(object), 500)]
         public async Task<IActionResult> InstallProvider([FromRoute] string pkgName, [FromQuery] string? repoName = null, [FromQuery] bool force = false, CancellationToken token = default)
         {
+            if (force && !IsOwner)
+                return StatusCode(403, new { error = "Only the owner can force a reinstall." });
             try
             {
                 var success = await _managerService.InstallProviderAsync(pkgName, repoName, force, token).ConfigureAwait(false);
@@ -244,6 +254,9 @@ namespace RenzoBackend.Controllers
         /// <response code="400">Provider not found</response>
         /// <response code="500">If an error occurs while retrieving preferences</response>
         [HttpGet("preferences/{pkgName}")]
+        // Owner only, like saving: extension settings can hold a source's
+        // login (username/password fields) and API keys.
+        [RequireUserLevel(UserLevel.Owner)]
         [ProducesResponseType(typeof(ProviderPreferencesDto), 200)]
         [ProducesResponseType(typeof(object), 400)]
         [ProducesResponseType(typeof(object), 500)]
@@ -273,10 +286,13 @@ namespace RenzoBackend.Controllers
         /// <returns>Status of the operation</returns>
         /// <response code="200">Preferences set successfully</response>
         /// <response code="500">If an error occurs while setting preferences</response>
-        // Any user can set their own preferences for a source they can see — this
-        // now saves as THEIR value (see SetProviderPreferencesAsync), not a
-        // system-wide change gated behind Manager.
+        // Owner only. Every value here lands in the extension's ONE shared
+        // preference store (and the -1 entry is the system-wide IsStorage flag);
+        // the per-user copy is only re-applied over it on that user's search.
+        // Extension settings include things like a source's base URL/mirror, so a
+        // lower level could point the shared sidecar at any host for everyone.
         [HttpPost("preferences")]
+        [RequireUserLevel(UserLevel.Owner)]
         [ProducesResponseType(typeof(object), 200)]
         [ProducesResponseType(typeof(object), 500)]
         public async Task<IActionResult> SetPreferencesAsync([FromBody] ProviderPreferencesDto prefs, CancellationToken token = default)
@@ -334,7 +350,10 @@ namespace RenzoBackend.Controllers
         /// <response code="200">Extension installed successfully</response>
         /// <response code="400">Failed to install extension</response>
         /// <response code="500">If an error occurs during installation</response>
+        // Owner only: the uploaded APK is compiled and loaded into the sidecar,
+        // where its static initialisers run — arbitrary code on the server.
         [HttpPost("install/file")]
+        [RequireUserLevel(UserLevel.Owner)]
         [ProducesResponseType(typeof(object), 200)]
         [ProducesResponseType(typeof(object), 400)]
         [ProducesResponseType(typeof(object), 500)]

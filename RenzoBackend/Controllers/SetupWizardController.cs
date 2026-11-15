@@ -3,6 +3,7 @@ using RenzoBackend.Hubs;
 using RenzoBackend.Models;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Models.Enums;
+using RenzoBackend.Services.Auth;
 using RenzoBackend.Services.Helpers;
 using RenzoBackend.Services.Import;
 using RenzoBackend.Services.Jobs;
@@ -21,6 +22,11 @@ namespace RenzoBackend.Controllers
     [ApiController]
     [Route("api/setup")]
     [Produces("application/json")]
+    // Owner only: the wizard scans the library folders, installs extensions,
+    // imports series and creates user accounts. The very first run still works:
+    // before anyone signs in (auth off, no user) RequireUserLevel is guest mode
+    // at Owner level, and with auth on the first account is the Owner.
+    [RequireUserLevel(UserLevel.Owner)]
     public class SetupWizardController : ControllerBase
     {
         private readonly ILogger _logger;

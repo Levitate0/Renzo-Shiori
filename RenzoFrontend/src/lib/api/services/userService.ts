@@ -40,8 +40,12 @@ export const userService = {
     return apiClient.post<LoginResponse>('/api/auth/set-password', data);
   },
 
-  async changePassword(data: ChangePasswordRequest): Promise<void> {
-    return apiClient.post<void>('/api/auth/change-password', data);
+  /**
+   * The server ends every access token issued before a password change — this
+   * device's included — and answers with a fresh one for this device.
+   */
+  async changePassword(data: ChangePasswordRequest): Promise<{ success?: boolean; token?: string }> {
+    return apiClient.post<{ success?: boolean; token?: string }>('/api/auth/change-password', data);
   },
 
   async forgotPassword(email: string): Promise<void> {

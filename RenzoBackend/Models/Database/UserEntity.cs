@@ -103,6 +103,15 @@ public class UserEntity
     public bool IsActive { get; set; } = true;
 
     /// <summary>
+    /// Bumped whenever the account's credentials or powers change (password
+    /// set/change/reset, level change). Every access token carries the value it
+    /// was minted under and the auth middleware rejects a mismatch, so those
+    /// changes end already-issued access tokens instead of letting them live
+    /// out their expiry.
+    /// </summary>
+    public int SecurityStamp { get; set; }
+
+    /// <summary>
     /// Per-user UI preferences as a small JSON blob (theme mode, accent color,
     /// custom accent HSL). Owned by the user; hydrated on login and saved via
     /// PUT /api/auth/me so appearance follows the account across devices.

@@ -69,7 +69,10 @@ public class OpdsImageController : ControllerBase
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == seriesId, token);
 
-        if (series == null || string.IsNullOrWhiteSpace(series.StoragePath))
+        // Checked here, not only in GetPageImageAsync: the 304 path below records
+        // read progress before the image service is ever reached.
+        if (series == null || string.IsNullOrWhiteSpace(series.StoragePath) ||
+            !Services.Series.SeriesQueryService.CanAccessSeries(series.OwnerId, user.Id, user.Level == Models.Enums.UserLevel.Owner))
             return NotFound("Series not found");
 
         string seriesStoragePath = series.StoragePath;

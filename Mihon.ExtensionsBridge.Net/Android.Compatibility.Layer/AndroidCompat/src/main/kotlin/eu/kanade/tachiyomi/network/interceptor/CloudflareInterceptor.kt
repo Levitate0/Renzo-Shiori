@@ -31,11 +31,21 @@ import java.io.IOException
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
+/**
+ * Request tag: never solve or carry this request through Chromium. Set on
+ * fetches of user-supplied URLs (PublicOnlyFetch) — a host the user named can
+ * answer with a fake challenge, and the solver would then load its page in the
+ * sidecar's browser, which sits on the host network. The challenged response
+ * is handed back as it is.
+ */
+object NoBrowser
+
 class CloudflareInterceptor : Interceptor {
     private val logger = androidCompatLogger(CloudflareInterceptor::class.java)
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        if (request.tag(NoBrowser::class.java) != null) return chain.proceed(request)
 
         // A site whose plain requests Cloudflare refuses while it lets Chromium
         // through: don't send the doomed one, carry it through Chromium.

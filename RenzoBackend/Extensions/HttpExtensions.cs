@@ -118,5 +118,47 @@
                 }
             }
         }
+
+        /// <summary>
+        /// Headers for a cached cover served from our own origin. Even a sniffed
+        /// image is pinned down: no sniffing into another type, and a document
+        /// opened directly on it gets no script, no subresources and a unique
+        /// origin, so nothing stored there can ever run as the app.
+        /// </summary>
+        public static void AddImageSafetyHeaders(this HttpResponse response, string key, string mimeType)
+        {
+            string ext = mimeType switch
+            {
+                "image/jpeg" => ".jpg",
+                "image/x-icon" => ".ico",
+                "application/octet-stream" => ".bin",
+                _ => "." + mimeType[(mimeType.IndexOf('/') + 1)..],
+            };
+            string name = new string(key.Where(char.IsAsciiLetterOrDigit).Take(64).ToArray());
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            response.Headers["Content-Security-Policy"] = "default-src 'none'; sandbox";
+            response.Headers["Content-Disposition"] = $"inline; filename=\"{(name.Length == 0 ? "image" : name)}{ext}\"";
+        }
+
+        /// <summary>
+        /// The type to serve a streamed page image as. The bytes and the type come
+        /// from a source (or from a URL a client stored), so "text/html" or SVG
+        /// served from our origin would run as the app: the sniffed image type wins,
+        /// then the upstream type only when it is a plain raster image/*, and
+        /// anything else goes out as an opaque download. <img> and Coil still
+        /// decode it whatever the label says.
+        /// </summary>
+        public static string SafePageContentType(Stream stream, string? upstream)
+        {
+            (string? sniffed, _) = stream.GetImageMimeTypeAndExtension();
+            if (!string.IsNullOrEmpty(sniffed))
+                return sniffed;
+            string media = (upstream ?? "").Split(';', 2)[0].Trim().ToLowerInvariant();
+            bool plainImage = media.StartsWith("image/", StringComparison.Ordinal)
+                && !media.Contains("svg", StringComparison.Ordinal)
+                && media.Length < 64
+                && media.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '.' or '+' or '-');
+            return plainImage ? media : "application/octet-stream";
+        }
     }
 }

@@ -273,17 +273,18 @@ namespace RenzoBackend.Services.Providers
         }
 
         /// <summary>
-        /// Installs an extension by package name
+        /// Installs an extension from an uploaded APK
         /// </summary>
-        /// <param name="pkgName">Package name of the extension</param>
+        /// <param name="content">The APK bytes</param>
+        /// <param name="force">Recompile even when this version is already installed</param>
         /// <param name="token">Cancellation token</param>
-        /// <returns>True if installation was successful</returns>
+        /// <returns>The installed package name, or null if installation failed</returns>
         public async Task<string?> InstallProviderFromFileAsync(byte[] content, bool force, CancellationToken token = default)
         {
             try
             {
                 _logger.LogInformation("Installing provider...");
-                var repo = await _mihon.AddExtensionAsync(content, false, token).ConfigureAwait(false);
+                var repo = await _mihon.AddExtensionAsync(content, force, token).ConfigureAwait(false);
                 if (repo == null)
                 {
                     _logger.LogWarning("Failed to add provider local extensions");
@@ -294,6 +295,9 @@ namespace RenzoBackend.Services.Providers
                 // Re-enable existing providers and restore SeriesProvider state
                 await ReEnableProvidersForPackageAsync(repo, token).ConfigureAwait(false);
                 await _providerCache.RefreshCacheAsync(false, token).ConfigureAwait(false);
+                // The caller enables this package for the uploader and the clients
+                // open its settings by it; returning null here made every upload a 400.
+                return repo.Entries[repo.ActiveEntry].Extension.Package;
             }
             catch (Exception ex)
             {

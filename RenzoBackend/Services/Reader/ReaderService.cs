@@ -257,7 +257,10 @@ public class ReaderService
             return null;
         }
         var settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-        string path = Path.Combine(settings.StorageFolder, series.StoragePath, filename);
+        // Contained: StoragePath is stored data, so it is checked here too.
+        string? path = settings.ResolveChapterFilePath(series.StoragePath, filename);
+        if (path == null)
+            return null;
         if (File.Exists(path))
             return path;
 
@@ -302,7 +305,9 @@ public class ReaderService
         try
         {
             var settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-            string folder = Path.Combine(settings.StorageFolder, series.StoragePath);
+            string? folder = settings.ResolveSeriesAbsolutePath(series.StoragePath);
+            if (folder == null)
+                return;
             if (!Directory.Exists(folder))
             {
                 _logger.LogWarning(

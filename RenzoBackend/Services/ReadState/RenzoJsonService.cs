@@ -46,7 +46,7 @@ public class RenzoJsonService
         Func<ImportSeriesSnapshot?, ImportSeriesSnapshot> modifyFunc,
         CancellationToken token = default)
     {
-        string renzoJsonPath = ResolveRenzoJsonPath(seriesFolderOrStoragePath);
+        string renzoJsonPath = ResolveRenzoJsonPath(seriesFolderOrStoragePath) ?? throw OutsideLibrary(seriesFolderOrStoragePath);
         string seriesFolder = System.IO.Path.GetDirectoryName(renzoJsonPath)!;
 
         using (await Lock.LockAsync(renzoJsonPath, token).ConfigureAwait(false))
@@ -89,7 +89,7 @@ public class RenzoJsonService
         string seriesStoragePath,
         Func<ImportSeriesSnapshot?, ImportSeriesSnapshot> modifyFunc)
     {
-        string renzoJsonPath = ResolveRenzoJsonPath(seriesStoragePath);
+        string renzoJsonPath = ResolveRenzoJsonPath(seriesStoragePath) ?? throw OutsideLibrary(seriesStoragePath);
         string seriesFolder = System.IO.Path.GetDirectoryName(renzoJsonPath)!;
 
         using (Lock.LockAsync(renzoJsonPath).GetAwaiter().GetResult())
@@ -122,7 +122,7 @@ public class RenzoJsonService
 
     /// <summary>Is the series' folder there to keep a renzo.json in (storage mounted, folder not moved away)?</summary>
     public bool SeriesFolderExists(string seriesFolderOrStoragePath) =>
-        Directory.Exists(System.IO.Path.GetDirectoryName(ResolveRenzoJsonPath(seriesFolderOrStoragePath)));
+        ResolveRenzoJsonPath(seriesFolderOrStoragePath) is { } p && Directory.Exists(System.IO.Path.GetDirectoryName(p));
 
     /// <summary>
     /// Loads renzo.json for a series folder WITHOUT locking.
@@ -131,8 +131,8 @@ public class RenzoJsonService
     /// </summary>
     public async Task<ImportSeriesSnapshot?> LoadAsync(string seriesFolderOrStoragePath, CancellationToken token = default)
     {
-        string renzoJsonPath = ResolveRenzoJsonPath(seriesFolderOrStoragePath);
-        if (!File.Exists(renzoJsonPath))
+        string? renzoJsonPath = ResolveRenzoJsonPath(seriesFolderOrStoragePath);
+        if (renzoJsonPath == null || !File.Exists(renzoJsonPath))
             return null;
 
         try
@@ -152,8 +152,8 @@ public class RenzoJsonService
     /// </summary>
     public ImportSeriesSnapshot? Load(string seriesStoragePath)
     {
-        string renzoJsonPath = ResolveRenzoJsonPath(seriesStoragePath);
-        if (!File.Exists(renzoJsonPath))
+        string? renzoJsonPath = ResolveRenzoJsonPath(seriesStoragePath);
+        if (renzoJsonPath == null || !File.Exists(renzoJsonPath))
             return null;
 
         try
@@ -171,9 +171,14 @@ public class RenzoJsonService
     /// <summary>
     /// Returns the full path to renzo.json for a given series folder or storage path.
     /// If the input is an absolute path (contains drive letter or starts with / or \),
-    /// it's used as-is. Otherwise it's resolved relative to the configured storage folder.
+    /// it's used as-is. Otherwise it's resolved relative to the configured storage folder,
+    /// and null when that relative path would leave the library: a stored StoragePath
+    /// is only as safe as the add that wrote it, and this path is written to.
     /// </summary>
-    private string ResolveRenzoJsonPath(string seriesFolderOrStoragePath)
+    private static IOException OutsideLibrary(string path) =>
+        new($"Series folder '{path}' is outside the library; refusing to write renzo.json there.");
+
+    private string? ResolveRenzoJsonPath(string seriesFolderOrStoragePath)
     {
         // If it's already an absolute path, use it directly
         if (System.IO.Path.IsPathRooted(seriesFolderOrStoragePath))
@@ -183,9 +188,11 @@ public class RenzoJsonService
 
         // Otherwise treat as a partial storage path relative to configured StorageFolder
         var settings = _settingsService.DirectSettings;
-        string fullPath = settings != null && !string.IsNullOrWhiteSpace(settings.StorageFolder)
-            ? System.IO.Path.Combine(settings.StorageFolder, seriesFolderOrStoragePath)
-            : seriesFolderOrStoragePath;
+        string? fullPath = settings != null && !string.IsNullOrWhiteSpace(settings.StorageFolder)
+            ? Extensions.PathSafety.ContainedPath(settings.StorageFolder, seriesFolderOrStoragePath)
+            : Extensions.PathSafety.IsSafeRelativePath(seriesFolderOrStoragePath) ? seriesFolderOrStoragePath : null;
+        if (string.IsNullOrEmpty(fullPath))
+            return null;
 
         // Handle kaizoku.json → renzo.json migration
         string renzoPath = System.IO.Path.Combine(fullPath, "renzo.json");

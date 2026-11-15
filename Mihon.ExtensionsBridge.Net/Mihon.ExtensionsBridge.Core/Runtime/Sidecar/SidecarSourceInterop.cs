@@ -92,7 +92,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// would just move the backlog back into the sidecar. It is bounded by
         /// the sidecar client's own timeout, so it can never be held forever.
         /// </summary>
-        private async Task<ContentTypeStream> ThrottledImageAsync(Page page, CancellationToken token)
+        private async Task<ContentTypeStream> ThrottledImageAsync(Page page, CancellationToken token, bool publicOnly = false)
         {
             // Reader first, downloads never take the last slot — see SourceImageGate.
             SourceImageGate slots = ImageSlots.GetOrAdd(GateKey(page), _ => new SourceImageGate(MaxImageFetchesPerHost));
@@ -109,7 +109,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             try
             {
                 // Deliberately not the caller's token — see above.
-                fetch = _client.ImageAsync(_meta.Id, page, CancellationToken.None);
+                fetch = _client.ImageAsync(_meta.Id, page, CancellationToken.None, publicOnly);
             }
             catch
             {
@@ -124,7 +124,9 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         public Task<ContentTypeStream> DownloadUrlAsync(string url, CancellationToken token = default)
         {
             // Route arbitrary URL fetches through the source's client via a synthetic single-page image.
-            return ThrottledImageAsync(new Page { Index = 0, Url = url, ImageUrl = url }, token);
+            // The only caller is the cover fallback, whose URL a user stored, so the
+            // sidecar keeps every connect (redirects, re-resolved DNS) on public addresses.
+            return ThrottledImageAsync(new Page { Index = 0, Url = url, ImageUrl = url }, token, publicOnly: true);
         }
 
         // Settings, live from the extension's own preference screen in the sidecar.

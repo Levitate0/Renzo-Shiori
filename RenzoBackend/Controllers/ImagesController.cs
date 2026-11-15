@@ -45,13 +45,16 @@ namespace RenzoBackend.Controllers
                         fs.Position = 0;
                     }
                     Response.AddETag(_thumbs.GetCacheDuration(), naetag);
+                    Response.AddImageSafetyHeaders("na", "image/jpeg");
                     return File(fs, "image/jpeg");
                 }
                 var result = await _thumbs.ProcessKeyAsync(key, etag ?? string.Empty, token).ConfigureAwait(false);
                 if (result.StatusCode == System.Net.HttpStatusCode.OK)
                 {
                     Response.AddETag(_thumbs.GetCacheDuration(), result.etag!);
-                    return File(result.stream ?? new MemoryStream(), result.mimetype ?? "application/octet-stream");
+                    // ProcessKeyAsync only answers OK with a sniffed image type.
+                    Response.AddImageSafetyHeaders(key, result.mimetype!);
+                    return File(result.stream!, result.mimetype!);
                 }
                 return StatusCode((int)result.StatusCode);
             }

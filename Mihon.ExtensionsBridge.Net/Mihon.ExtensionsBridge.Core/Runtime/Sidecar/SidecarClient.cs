@@ -198,9 +198,17 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             return list;
         }
 
-        public async Task<ContentTypeStream> ImageAsync(long id, Page page, CancellationToken token = default)
+        /// <summary>Far above any real page or cover; it only stops a body from filling memory.</summary>
+        public const long MaxImageBytes = 64L * 1024 * 1024;
+
+        /// <param name="publicOnly">The URL is one a user stored (a cover), not one the
+        /// extension produced: the sidecar then connects only to public addresses, on
+        /// every hop, and never resolves a page URL through the extension.</param>
+        public async Task<ContentTypeStream> ImageAsync(long id, Page page, CancellationToken token = default, bool publicOnly = false)
         {
-            var body = new { id = id.ToString(), page = PageToNode(page) };
+            object body = publicOnly
+                ? new { id = id.ToString(), page = PageToNode(page), publicOnly = true }
+                : new { id = id.ToString(), page = PageToNode(page) };
             using var req = new HttpRequestMessage(HttpMethod.Post, "/source/image")
             {
                 Content = JsonContent.Create(body),
@@ -227,8 +235,20 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                 var err = await resp.Content.ReadAsStringAsync(bodyToken).ConfigureAwait(false);
                 throw new SidecarException($"image failed: {err}");
             }
-            var bytes = await resp.Content.ReadAsByteArrayAsync(bodyToken).ConfigureAwait(false);
-            return new SidecarContentTypeStream(bytes, ct);
+            // Bounded on this side too: what the sidecar relays came from a URL.
+            if (resp.Content.Headers.ContentLength > MaxImageBytes)
+                throw new SidecarException($"image failed: response is larger than {MaxImageBytes / (1024 * 1024)} MB");
+            await using Stream stream = await resp.Content.ReadAsStreamAsync(bodyToken).ConfigureAwait(false);
+            using var buffer = new MemoryStream();
+            byte[] chunk = new byte[81920];
+            int read;
+            while ((read = await stream.ReadAsync(chunk, bodyToken).ConfigureAwait(false)) > 0)
+            {
+                if (buffer.Length + read > MaxImageBytes)
+                    throw new SidecarException($"image failed: response is larger than {MaxImageBytes / (1024 * 1024)} MB");
+                buffer.Write(chunk, 0, read);
+            }
+            return new SidecarContentTypeStream(buffer.ToArray(), ct);
         }
 
         // ---- JSON mapping ----

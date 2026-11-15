@@ -283,7 +283,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [router, isAuthEnabled]);
 
   const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
-    await userService.changePassword({ currentPassword, newPassword });
+    const result = await userService.changePassword({ currentPassword, newPassword });
+    // The old access token died with the old password; adopt the replacement
+    // so this tab stays signed in (a session without Remember me has no
+    // refresh cookie to fall back on).
+    if (result?.token) {
+      setToken(result.token);
+      sessionStorage.setItem('renzo_token', result.token);
+    }
   }, []);
 
   // Directly set auth state from a token+user pair (used by set-password page)

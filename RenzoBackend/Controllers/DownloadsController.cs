@@ -1,4 +1,5 @@
 ﻿using RenzoBackend.Data;
+using RenzoBackend.Extensions;
 using RenzoBackend.Models.Database;
 using RenzoBackend.Models.Dto;
 using RenzoBackend.Models.Enums;
@@ -72,7 +73,7 @@ namespace RenzoBackend.Controllers
         {
             try
             {
-                var result = await _downloadQuery.GetDownloadsAsync(status, limit, keyword, CurrentUserId, viewAll && IsOwnerLevel, token).ConfigureAwait(false);
+                var result = await _downloadQuery.GetDownloadsAsync(status, PageLimits.ClampCount(limit, PageLimits.Downloads), keyword, CurrentUserId, viewAll && IsOwnerLevel, token).ConfigureAwait(false);
                 await _thumbs.PopulateThumbsAsync(result.Downloads, "/api/image/", token).ConfigureAwait(false);
                 return Ok(result);
             }

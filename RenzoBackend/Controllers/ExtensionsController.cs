@@ -106,9 +106,11 @@ public class ExtensionsController : ControllerBase
     /// <summary>
     /// Sideload a patched/pinned APK. The build is compiled in a temp folder and
     /// only swapped in on success, then pinned against auto-update.
+    /// Owner only: compiling and loading an arbitrary APK runs its code in the
+    /// sidecar (static initialisers), i.e. code execution on the server.
     /// </summary>
     [HttpPost("sideload")]
-    [RequireUserLevel(UserLevel.Manager)]
+    [RequireUserLevel(UserLevel.Owner)]
     [RequestSizeLimit(100 * 1024 * 1024)]
     public async Task<ActionResult> SideloadAsync(IFormFile file, CancellationToken token = default)
     {

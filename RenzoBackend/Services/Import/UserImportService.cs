@@ -16,11 +16,15 @@ public class UserImportService
 {
     private readonly AppDbContext _db;
     private readonly OpdsPathGenerator _opdsPathGenerator;
+    private readonly Settings.SettingsService _settings;
+    private readonly ILogger<UserImportService> _logger;
 
-    public UserImportService(AppDbContext db, OpdsPathGenerator opdsPathGenerator)
+    public UserImportService(AppDbContext db, OpdsPathGenerator opdsPathGenerator, Settings.SettingsService settings, ILogger<UserImportService> logger)
     {
         _db = db;
         _opdsPathGenerator = opdsPathGenerator;
+        _settings = settings;
+        _logger = logger;
     }
 
     /// <summary>
@@ -53,12 +57,22 @@ public class UserImportService
             }
         }
 
-        // Create users that don't exist yet
+        // Create users that don't exist yet. Same rules as POST /api/users: the
+        // name becomes a library folder, so it must be one plain folder name and
+        // unique ignoring case (a renzo.json is library content, not trusted).
+        List<string> taken = await _db.Users.AsNoTracking().Select(u => u.Username).ToListAsync(token);
+        string storageRoot = (await _settings.GetSettingsAsync(token)).StorageFolder;
         foreach (string username in usernamesToCreate)
         {
-            bool exists = await _db.Users.AnyAsync(u => u.Username == username, token);
-            if (!exists)
+            bool exists = taken.Any(n => string.Equals(n, username, StringComparison.OrdinalIgnoreCase));
+            if (!exists && Users.UserCommandService.UsernameProblem(username) == null)
             {
+                // Nor a twin of a folder already in the library (see POST /api/users).
+                if (Users.UserCommandService.LibraryFolderTwinProblem(storageRoot, username) is { } twin)
+                {
+                    _logger.LogWarning("Import: not creating user {Username}: {Reason}", username, twin);
+                    continue;
+                }
                 string opdsPath = await _opdsPathGenerator.GenerateUniquePathAsync();
                 var user = new UserEntity
                 {
@@ -72,6 +86,7 @@ public class UserImportService
                 _db.Users.Add(user);
                 await _db.SaveChangesAsync(token);
                 autoCreated.Add(username);
+                taken.Add(username);
             }
         }
 

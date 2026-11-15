@@ -201,6 +201,9 @@ public class ReaderController : ControllerBase
             if (stream == null)
                 return NotFound();
             Response.Headers.CacheControl = "private, max-age=86400";
+            // Source bytes on our origin: never as a document (see SafePageContentType).
+            contentType = HttpExtensions.SafePageContentType(stream, contentType);
+            Response.AddImageSafetyHeaders($"page{page}", contentType);
             return File(stream, contentType);
         }
         catch (Exception ex)
@@ -271,6 +274,8 @@ public class ReaderController : ControllerBase
             if (stream == null)
                 return NotFound();
             Response.Headers.CacheControl = "private, max-age=86400";
+            contentType = HttpExtensions.SafePageContentType(stream, contentType);
+            Response.AddImageSafetyHeaders($"page{page}", contentType);
             return File(stream, contentType);
         }
         catch (Exception ex)
@@ -283,12 +288,20 @@ public class ReaderController : ControllerBase
     /// <summary>
     /// Clears the in-memory cache of streamed (web-pulled) page images. Downloaded
     /// chapters are unaffected. Useful when a source served stale/broken pages.
+    /// The cache is shared, so only the Owner (or guest mode) wipes all of it;
+    /// anyone else drops just the images their own reads pulled — both clients
+    /// call this on every reader exit, so it must stay open to every level.
     /// </summary>
     [HttpPost("clear-stream-cache")]
     public ActionResult ClearStreamCache()
     {
-        long freed = _preview.ClearStreamCache();
-        _logger.LogInformation("Cleared reader stream image cache ({Count} images).", freed);
+        UserEntity? user = CurrentUser;
+        if (user == null && HttpContext.Items["AuthEnabled"] is true)
+            return Unauthorized();
+        bool everything = user == null || user.Level >= Models.Enums.UserLevel.Owner;
+        long freed = _preview.ClearStreamCache(everything ? null : user!.Id);
+        _logger.LogInformation("Cleared reader stream image cache ({Count} images, {Scope}).", freed,
+            everything ? "all users" : "own reads");
         return Ok(new { success = true, cleared = freed });
     }
 
@@ -297,13 +310,20 @@ public class ReaderController : ControllerBase
     /// <c>keep</c>. The paged reader sends the chapter on screen and its two
     /// neighbours each time it moves, so its cache follows the reader instead of
     /// accumulating the whole session. Downloaded chapters are unaffected.
+    /// Scoped like clear-stream-cache: below Owner only the caller's own pulls are
+    /// dropped, so nobody can evict another reader's pages (and force every
+    /// reader of that series to re-fetch from the source) by naming its id.
     /// </summary>
     [HttpPost("trim-stream-cache")]
     public ActionResult TrimStreamCache([FromBody] TrimStreamCacheRequest request)
     {
         if (request == null || request.SeriesId == Guid.Empty || request.Keep == null || request.Keep.Count == 0)
             return BadRequest(new { error = "seriesId and at least one chapter to keep are required." });
-        int freed = _preview.TrimStreamCache(request.SeriesId, request.Keep);
+        UserEntity? user = CurrentUser;
+        if (user == null && HttpContext.Items["AuthEnabled"] is true)
+            return Unauthorized();
+        bool everyone = user == null || user.Level >= Models.Enums.UserLevel.Owner;
+        int freed = _preview.TrimStreamCache(request.SeriesId, request.Keep, everyone ? null : user!.Id);
         if (freed > 0)
             _logger.LogInformation("Trimmed {Count} streamed page image(s) for series {SeriesId}, keeping chapters {Keep}.", freed, request.SeriesId, string.Join(", ", request.Keep));
         return Ok(new { success = true, cleared = freed });
@@ -331,11 +351,45 @@ public class ReaderController : ControllerBase
         if (file == null || file.Length == 0)
             return BadRequest(new { error = "No backup file provided" });
 
+        // One import per account, and a few at a time overall: each one can hold
+        // up to 64 MB inflated plus its parse, so many parallel uploads were a way
+        // to push the container out of memory.
+        Guid importer = CurrentUserId;
+        if (!RunningImports.TryAdd(importer, 0))
+            return StatusCode(429, new { error = "A backup import is already running for your account." });
+        try
+        {
+            if (!await ImportSlots.WaitAsync(TimeSpan.FromSeconds(30), token).ConfigureAwait(false))
+                return StatusCode(429, new { error = "Other backup imports are running. Try again in a moment." });
+            try
+            {
+                return await ImportBackupCoreAsync(file, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                ImportSlots.Release();
+            }
+        }
+        finally
+        {
+            RunningImports.TryRemove(importer, out _);
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> RunningImports = new();
+    private static readonly SemaphoreSlim ImportSlots = new(2, 2);
+
+    private async Task<ActionResult<BackupImportResultDto>> ImportBackupCoreAsync(IFormFile file, CancellationToken token)
+    {
         List<TachibkManga> backup;
         try
         {
             await using Stream s = file.OpenReadStream();
             backup = TachibkParser.Parse(s);
+        }
+        catch (BackupTooLargeException ex)
+        {
+            return BadRequest(new { error = $"That backup is too large to import ({ex.Message})." });
         }
         catch (Exception ex)
         {
@@ -343,12 +397,18 @@ public class ReaderController : ControllerBase
             return BadRequest(new { error = "Could not parse the backup — is it a .tachibk/.proto.gz file?" });
         }
 
-        List<SeriesEntity> library = await _db.Series.Include(s => s.Sources)
+        List<SeriesEntity> library = await ImportableSeries(_db.Series.Include(s => s.Sources), CurrentUserId)
             .AsNoTracking().ToListAsync(token).ConfigureAwait(false);
 
         string username = CurrentUsername;
         var result = new BackupImportResultDto { BackupSeries = backup.Count };
 
+        // A backup can list the same title (or titles matching one series) many
+        // times. Match each distinct title once, merge every entry's chapters per
+        // matched series, and write each series' renzo.json once — 20k duplicate
+        // entries used to mean 20k fuzzy scans and 20k whole-file rewrites.
+        var matchByTitle = new Dictionary<string, SeriesEntity?>(StringComparer.Ordinal);
+        var perSeries = new Dictionary<Guid, (SeriesEntity series, Dictionary<decimal, TachibkChapter> chapters)>();
         foreach (TachibkManga manga in backup)
         {
             if (string.IsNullOrWhiteSpace(manga.Title))
@@ -357,9 +417,13 @@ public class ReaderController : ControllerBase
             if (!hasState)
                 continue;
 
-            SeriesEntity? match = library.FirstOrDefault(s =>
-                s.Title.AreStringSimilar(manga.Title) ||
-                s.Sources.Any(p => !string.IsNullOrEmpty(p.Title) && p.Title.AreStringSimilar(manga.Title)));
+            if (!matchByTitle.TryGetValue(manga.Title, out SeriesEntity? match))
+            {
+                match = library.FirstOrDefault(s =>
+                    s.Title.AreStringSimilar(manga.Title) ||
+                    s.Sources.Any(p => !string.IsNullOrEmpty(p.Title) && p.Title.AreStringSimilar(manga.Title)));
+                matchByTitle[manga.Title] = match;
+            }
             if (match == null)
             {
                 result.Unmatched.Add(manga.Title);
@@ -367,19 +431,48 @@ public class ReaderController : ControllerBase
             }
             result.MatchedSeries++;
 
+            if (!perSeries.TryGetValue(match.Id, out var acc))
+                perSeries[match.Id] = acc = (match, new Dictionary<decimal, TachibkChapter>());
+            foreach (TachibkChapter ch in manga.Chapters)
+            {
+                if (ch.Number < 0 || (!ch.Read && !ch.Bookmark && ch.LastPageRead <= 0))
+                    continue;
+                // Same merge as the parser's within one entry: read/bookmark OR-ed,
+                // furthest page kept.
+                if (acc.chapters.TryGetValue(ch.Number, out TachibkChapter? seen))
+                {
+                    seen.Read |= ch.Read;
+                    seen.Bookmark |= ch.Bookmark;
+                    seen.LastPageRead = Math.Max(seen.LastPageRead, ch.LastPageRead);
+                }
+                else
+                {
+                    acc.chapters[ch.Number] = new TachibkChapter
+                    {
+                        Number = ch.Number, Name = ch.Name, Read = ch.Read,
+                        Bookmark = ch.Bookmark, LastPageRead = ch.LastPageRead,
+                    };
+                }
+            }
+        }
+
+        foreach ((SeriesEntity match, Dictionary<decimal, TachibkChapter> chapters) in perSeries.Values)
+        {
             // Never downgrade what's already read locally.
-            List<ChapterReadState> existing = _readState.GetSeriesReadStates(username, match.StoragePath);
+            // Indexed by number: a per-chapter linear search here was O(n²) on a
+            // long series (see TachibkParser's caps for the other half).
+            var existing = new Dictionary<decimal, ChapterReadState>();
+            foreach (ChapterReadState e in _readState.GetSeriesReadStates(username, match.StoragePath))
+                existing.TryAdd(e.ChapterNumber, e);
             Dictionary<decimal, int?> pageCounts = match.Sources.SelectMany(p => p.Chapters)
                 .Where(c => c.Number != null && c.PageCount > 0)
                 .GroupBy(c => c.Number!.Value)
                 .ToDictionary(g => g.Key, g => g.Max(c => c.PageCount));
 
             var incoming = new List<ChapterReadState>();
-            foreach (TachibkChapter ch in manga.Chapters)
+            foreach (TachibkChapter ch in chapters.Values)
             {
-                if (ch.Number < 0 || (!ch.Read && !ch.Bookmark && ch.LastPageRead <= 0))
-                    continue;
-                ChapterReadState? local = existing.FirstOrDefault(e => e.ChapterNumber == ch.Number);
+                existing.TryGetValue(ch.Number, out ChapterReadState? local);
 
                 float progress = 0f;
                 if (ch.Read)
@@ -416,6 +509,15 @@ public class ReaderController : ControllerBase
             result.MatchedSeries, result.BackupSeries, result.UpdatedChapters, result.Bookmarks);
         return Ok(result);
     }
+
+    /// <summary>
+    /// The series a backup import may write read state into: the caller's own
+    /// library, plus legacy ownerless rows (which CanAccessSeries also allows).
+    /// It used to match across EVERY library, so one user's import wrote
+    /// progress into series other users own.
+    /// </summary>
+    internal static IQueryable<SeriesEntity> ImportableSeries(IQueryable<SeriesEntity> series, Guid ownerId) =>
+        series.Where(s => s.OwnerId == ownerId || s.OwnerId == Guid.Empty);
 
     /// <summary>
     /// Chapter archive filenames arrive base64url-encoded (they can contain

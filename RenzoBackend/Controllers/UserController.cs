@@ -42,6 +42,20 @@ public class UserController : ControllerBase
     }
 
     /// <summary>
+    /// A user's OPDS path signs an OPDS reader and the MCP endpoint in as that
+    /// user, so it is a credential: only its own user ever gets it back (here or
+    /// via /api/auth/me). For anyone else it goes out blank, not omitted, since
+    /// Hub's UserDto requires the field.
+    /// </summary>
+    private UserDto ToDto(UserEntity user)
+    {
+        UserDto dto = UserDto.FromEntity(user);
+        if ((HttpContext.Items["User"] as UserEntity)?.Id != user.Id)
+            dto.OpdsPath = string.Empty;
+        return dto;
+    }
+
+    /// <summary>
     /// GET /api/users - List all users. Admin only.
     /// </summary>
     [HttpGet]
@@ -49,7 +63,7 @@ public class UserController : ControllerBase
     public async Task<ActionResult<List<UserDto>>> ListUsers(CancellationToken token)
     {
         var users = await _userQueryService.ListUsersAsync(token);
-        var result = users.Select(UserDto.FromEntity).ToList();
+        var result = users.Select(ToDto).ToList();
         return Ok(result);
     }
 
@@ -64,7 +78,7 @@ public class UserController : ControllerBase
         if (user == null)
             return NotFound();
 
-        return Ok(UserDto.FromEntity(user));
+        return Ok(ToDto(user));
     }
 
     /// <summary>
@@ -75,17 +89,16 @@ public class UserController : ControllerBase
     [RequireUserLevel(UserLevel.Admin)]
     public async Task<ActionResult<UserDto>> CreateUser([FromBody] CreateUserDto dto, CancellationToken token)
     {
-        if (string.IsNullOrWhiteSpace(dto.Username))
-            return BadRequest(new { error = "Username is required" });
+        // The name is the user's library folder: one plain folder name, unique
+        // ignoring case (folders resolve case-insensitively).
+        if (UserCommandService.UsernameProblem(dto.Username) is { } problem)
+            return BadRequest(new { error = problem });
 
-        // Check for existing username
-        UserEntity? existing = await _userQueryService.GetByUsernameAsync(dto.Username, token);
-        if (existing != null)
+        if (await _userQueryService.UsernameTakenAsync(dto.Username, token))
             return Conflict(new { error = "Username already exists" });
 
-        // Validate username format
-        if (dto.Username.Length < 3 || dto.Username.Length > 32)
-            return BadRequest(new { error = "Username must be between 3 and 32 characters" });
+        if (UserCommandService.LibraryFolderTwinProblem((await _settingsService.GetSettingsAsync(token)).StorageFolder, dto.Username) is { } twin)
+            return Conflict(new { error = twin });
 
         // Only owner can create admin-level users; non-owner admins are restricted to user/manager
         UserEntity? currentUser = HttpContext.Items["User"] as UserEntity;
@@ -97,7 +110,7 @@ public class UserController : ControllerBase
             return BadRequest(new { error = "Cannot create another owner. Only one owner is allowed." });
 
         UserEntity user = await _userCommandService.CreateUserAsync(dto.Username, dto.Level, token);
-        return CreatedAtAction(nameof(GetUser), new { id = user.Id }, UserDto.FromEntity(user));
+        return CreatedAtAction(nameof(GetUser), new { id = user.Id }, ToDto(user));
     }
 
     /// <summary>
@@ -137,7 +150,23 @@ public class UserController : ControllerBase
             // Only owner can change another admin's level/isActive
             if (user.Level == UserLevel.Admin && !isCurrentUserOwner)
                 return StatusCode(403, new { error = "Only the owner can change another admin's level or active status" });
+
+            // Same rule as CreateUser: only the owner grants Admin. An Admin
+            // promoting a Manager to a peer Admin could then reset that peer.
+            if (dto.Level >= UserLevel.Admin && !isCurrentUserOwner)
+                return StatusCode(403, new { error = "Only the owner can make a user an admin" });
+
+            // There is one owner; ownership is never handed over through an edit.
+            if (dto.Level == UserLevel.Owner)
+                return BadRequest(new { error = "Cannot make another owner. Only one owner is allowed." });
         }
+
+        // The email is where the public forgot-password flow mails a reset link,
+        // so setting a peer Admin's email to your own address is a takeover. Below
+        // Owner, an Admin's email and avatar are theirs alone to change.
+        bool changingProfile = dto.Email != null || !string.IsNullOrWhiteSpace(dto.AvatarBase64) || dto.RemoveAvatar == true;
+        if (changingProfile && user.Level >= UserLevel.Admin && !isSelf && !isCurrentUserOwner)
+            return StatusCode(403, new { error = "Only the owner can change another admin's email or avatar" });
 
         byte[]? avatarBlob = null;
         if (!string.IsNullOrWhiteSpace(dto.AvatarBase64))
@@ -169,7 +198,7 @@ public class UserController : ControllerBase
             email: dto.Email,
             token: token);
 
-        return Ok(UserDto.FromEntity(user));
+        return Ok(ToDto(user));
     }
 
     /// <summary>
@@ -224,11 +253,8 @@ public class UserController : ControllerBase
         if (await _userQueryService.AnyUsersExistAsync(token))
             return BadRequest(new { error = "Users already exist" });
 
-        if (string.IsNullOrWhiteSpace(dto.Username))
-            return BadRequest(new { error = "Username is required" });
-
-        if (dto.Username.Length < 3 || dto.Username.Length > 32)
-            return BadRequest(new { error = "Username must be between 3 and 32 characters" });
+        if (UserCommandService.UsernameProblem(dto.Username) is { } problem)
+            return BadRequest(new { error = problem });
 
         // Force owner level for first user
         UserEntity user = await _userCommandService.CreateUserAsync(dto.Username, UserLevel.Owner, token);
@@ -264,7 +290,15 @@ public class UserController : ControllerBase
 
     /// <summary>
     /// POST /api/users/{id}/generate-invite - Generate an invite token for a user.
-    /// Admin only. Admin users cannot invite the owner.
+    /// Admin only. The link sets the account's password, so for an account that
+    /// already has one it is a password RESET (a takeover of that account):
+    /// - only the owner may invite/reset an Admin (or the owner) — an Admin can
+    ///   only invite/reset the Users and Managers below them;
+    /// - nobody resets their own password this way (change-password asks for the
+    ///   current one, so a stolen session can't turn into a permanent takeover);
+    /// - the token is marked as a reset only when the account has a password now,
+    ///   and set-password refuses an unmarked (invite) token for an account that
+    ///   has a password by then.
     /// </summary>
     [HttpPost("{id:guid}/generate-invite")]
     [RequireUserLevel(UserLevel.Admin)]
@@ -274,14 +308,21 @@ public class UserController : ControllerBase
         if (user == null)
             return NotFound();
 
-        // Admin users cannot invite the owner
+        // Admin users cannot invite the owner or a peer admin. No user at all is
+        // guest mode (auth off), which RequireUserLevel treats as the owner.
         UserEntity? currentUser = HttpContext.Items["User"] as UserEntity;
-        if (IsOwner(user) && (currentUser == null || !IsOwner(currentUser)))
+        bool isCurrentUserOwner = currentUser == null || IsOwner(currentUser);
+        bool isReset = !string.IsNullOrWhiteSpace(user.PasswordHash);
+        if (isReset && currentUser?.Id == user.Id)
+            return BadRequest(new { error = "Change your own password under Account instead" });
+        if (IsOwner(user) && !isCurrentUserOwner)
             return StatusCode(403, new { error = "Admin users cannot invite the owner" });
+        if (user.Level == UserLevel.Admin && !isCurrentUserOwner)
+            return StatusCode(403, new { error = "Only the owner can invite or reset an admin" });
 
         // Generate new token (invalidates any previous one). The raw token is only
         // available here — the entity stores just its hash — so thread it through.
-        string rawSetToken = _userInviteService.GeneratePasswordSetToken(user);
+        string rawSetToken = _userInviteService.GeneratePasswordSetToken(user, isReset);
         await _dbSaveChangesAsync(user, token);
 
         var settings = await _settingsService.GetSettingsAsync();
@@ -289,11 +330,13 @@ public class UserController : ControllerBase
 
         string message = _userInviteService.GetInviteMessage(user, externalDomain, settings.AuthenticationEnabled, rawSetToken);
 
+        // No OpdsPath: it is the invited user's credential, not the inviter's.
+        // They get it from /api/auth/me once signed in. Blank, not omitted, for Hub.
         return Ok(new InviteMessageDto
         {
             Message = message,
             Token = rawSetToken,
-            OpdsPath = user.OpdsPath
+            OpdsPath = string.Empty
         });
     }
 
@@ -314,8 +357,14 @@ public class UserController : ControllerBase
         if (IsOwner(user) && (currentUser == null || !IsOwner(currentUser)))
             return StatusCode(403, new { error = "Admin users cannot regenerate the OPDS path for the owner" });
 
+        // Only Users/Managers below an Admin, as with invites and edits.
+        if (user.Level == UserLevel.Admin && currentUser != null && !IsOwner(currentUser) && currentUser.Id != user.Id)
+            return StatusCode(403, new { error = "Only the owner can regenerate an admin's OPDS path" });
+
+        // Regenerating revokes the old path; the new one is shown only to its own
+        // user (see ToDto), so an admin can revoke a path without learning it.
         string newPath = await _userCommandService.RegenerateOpdsPathAsync(user, token);
-        return Ok(new RegenerateOpdsResponseDto { OpdsPath = newPath });
+        return Ok(new RegenerateOpdsResponseDto { OpdsPath = currentUser == null || currentUser.Id == user.Id ? newPath : string.Empty });
     }
 
     private async Task _dbSaveChangesAsync(UserEntity user, CancellationToken token)

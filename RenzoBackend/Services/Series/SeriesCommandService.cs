@@ -100,6 +100,8 @@ namespace RenzoBackend.Services.Series
             {
                 throw new ArgumentException("No series provided to add");
             }
+            ValidateAddPaths(ProviderSeriesDetails);
+            SanitizeAddThumbnails(ProviderSeriesDetails);
 
             string? ownerUsername = ownerId == Guid.Empty
                 ? null
@@ -148,6 +150,23 @@ namespace RenzoBackend.Services.Series
                     }
                 }
 
+                // Checked again on the FINAL path: the owner prefix, the case fix-up
+                // and the title-derived fallback all run after the input check.
+                if (dbSeries == null && !IsSafeSeriesStoragePath(settings, ProviderSeriesDetails.StorageFolderPath))
+                    throw new ArgumentException("The storage folder must be inside the library.");
+                // Containment alone is not ownership: a NEW series pointed at another
+                // user's folder (a legacy case-only username twin, or a name with "/")
+                // would pass every path check and then read or "delete downloads" on
+                // that user's real files under its own row.
+                if (dbSeries == null && await FolderBelongsToAnotherUserAsync(_db, ProviderSeriesDetails.StorageFolderPath, ownerId, token).ConfigureAwait(false))
+                    throw new UnauthorizedAccessException("That folder belongs to another user's library.");
+                // Rows are not the whole library: folders nobody has a row for (an
+                // old "Manga/" tree, a username twin of one) would pass the check
+                // above. A NEW series whose folder already holds files written before
+                // the caller's account existed is not the caller's.
+                if (dbSeries == null && await FolderPredatesOwnerAsync(_db, settings, ProviderSeriesDetails.StorageFolderPath, ownerId, token).ConfigureAwait(false))
+                    throw new UnauthorizedAccessException("That folder already holds files that aren't from your library.");
+
                 if (dbSeries != null)
                 {
                     existingProviders = await _db.SeriesProviders.Where(a => a.SeriesId == dbSeries.Id)
@@ -186,10 +205,11 @@ namespace RenzoBackend.Services.Series
                 existingProviders.CalculateContinueAfterChapter(ProviderSeriesDetails.StartChapter);
                 
                 // Populate Pages and PageCount for all chapters from physical archive files
-                string seriesBasePath = Path.Combine(settings.StorageFolder, dbSeries.StoragePath);
-                foreach (var provider in existingProviders)
+                string? seriesBasePath = settings.ResolveSeriesAbsolutePath(dbSeries.StoragePath);
+                if (seriesBasePath != null)
                 {
-                    provider.PopulateChapterPageCounts(seriesBasePath);
+                    foreach (var provider in existingProviders)
+                        provider.PopulateChapterPageCounts(seriesBasePath);
                 }
                 
                 await _providerService.CheckIfTheStorageFlagsChangedTheInLibraryStatusOfLastSeriesAsync(
@@ -1627,8 +1647,11 @@ namespace RenzoBackend.Services.Series
                         continue;
 
                     _hashCache.DeleteChapterHash(series.StoragePath, c.Filename!);
-                    string full = Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!);
-                    if (File.Exists(full))
+                    // Contained: a stored filename is never trusted to stay in the series folder.
+                    string? full = settings.ResolveChapterFilePath(series.StoragePath, c.Filename);
+                    if (full == null)
+                        _logger.LogWarning("Not deleting chapter file {File}: it resolves outside the series folder", c.Filename);
+                    else if (File.Exists(full))
                     {
                         try { File.Delete(full); }
                         catch (Exception e) { _logger.LogWarning(e, "Unable to delete file {full}", full); }
@@ -1727,7 +1750,7 @@ namespace RenzoBackend.Services.Series
                 // says (a partial archive scan sets that and keeps the name).
                 SeriesProviderEntity? holder = series.Sources.FirstOrDefault(sp => sp.Chapters.Any(c =>
                     c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)
-                    && File.Exists(Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!))));
+                    && settings.ResolveChapterFilePath(series.StoragePath, c.Filename) is { } f && File.Exists(f)));
                 if (holder != null)
                     return new RedownloadResult(RedownloadOutcome.AlreadyDownloaded, holder.Provider);
             }
@@ -1813,7 +1836,8 @@ namespace RenzoBackend.Services.Series
                     // that landed meanwhile is kept, never deleted.
                     SeriesProviderEntity? landed = series.Sources.FirstOrDefault(sp => sp.Chapters.Any(c =>
                         c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)
-                        && File.Exists(Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!))));
+                        && settings.ResolveChapterFilePath(series.StoragePath, c.Filename) is { } landedPath
+                        && File.Exists(landedPath)));
                     if (landed != null)
                         return new RedownloadResult(RedownloadOutcome.AlreadyDownloaded, landed.Provider);
                 }
@@ -1821,12 +1845,12 @@ namespace RenzoBackend.Services.Series
                 {
                     foreach (Models.Chapter c in sp.Chapters.Where(c => c.Number == chapterNumber && !string.IsNullOrEmpty(c.Filename)))
                     {
-                        string full = Path.Combine(settings.StorageFolder, series.StoragePath, c.Filename!);
-                        bool onDisk = File.Exists(full);
+                        string? full = settings.ResolveChapterFilePath(series.StoragePath, c.Filename);
+                        bool onDisk = full != null && File.Exists(full);
                         _hashCache.DeleteChapterHash(series.StoragePath, c.Filename!);
                         if (onDisk)
                         {
-                            try { File.Delete(full); }
+                            try { File.Delete(full!); }
                             catch (Exception e) { _logger.LogWarning(e, "Unable to delete file {full} for re-download", full); }
                         }
                         c.Filename = null;
@@ -1861,6 +1885,132 @@ namespace RenzoBackend.Services.Series
                 chapterNumber, series.Title, target.Provider);
             return new RedownloadResult(RedownloadOutcome.Queued, target.Provider, chaps.Count);
         }
+        /// <summary>
+        /// Rejects an add whose client-supplied paths could reach outside the
+        /// library. Chapter filenames and the storage folder are stored as sent and
+        /// later joined onto the library for reads, renames and deletes ("Delete
+        /// downloads", delete series with files), so a "../" here became a
+        /// delete-anywhere. Absolute storage paths are still accepted when they
+        /// sit inside the library: the add wizard sends {StorageFolder}/Title.
+        /// </summary>
+        public static void ValidateAddPaths(AugmentedResponseDto dto)
+        {
+            string path = dto.StorageFolderPath ?? string.Empty;
+            if (path.Contains('\0') || path.Split('/', '\\').Any(seg => seg == ".."))
+                throw new ArgumentException("The storage folder must be inside the library.");
+            foreach (ProviderSeriesDetails ps in dto.Series)
+            {
+                foreach (Models.Chapter c in ps.Chapters ?? [])
+                {
+                    if (!string.IsNullOrEmpty(c.Filename) && !PathSafety.IsSafeFileName(c.Filename))
+                        throw new ArgumentException($"Invalid chapter filename for chapter {c.Number}.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Drops a client-sent cover that isn't one the server should fetch or
+        /// read: only a source's http(s) URL, an already-cached /api/image/ key
+        /// or a storage:// library file (import) are kept. The cover is fetched
+        /// server-side later, so "ext://../..", "file:" and the like must not be
+        /// stored; a URL to a private address is refused again at fetch time.
+        /// Dropped rather than rejected: a missing cover is refetched from the
+        /// source, a refused add would lose the whole series.
+        /// </summary>
+        public static void SanitizeAddThumbnails(AugmentedResponseDto dto)
+        {
+            foreach (ProviderSeriesDetails ps in dto.Series)
+            {
+                if (!string.IsNullOrWhiteSpace(ps.ThumbnailUrl) && !IsAcceptableThumbnail(ps.ThumbnailUrl))
+                    ps.ThumbnailUrl = null;
+            }
+        }
+
+        public static bool IsAcceptableThumbnail(string url) =>
+            url.StartsWith("/api/image/", StringComparison.Ordinal)
+            || url.StartsWith("storage://", StringComparison.Ordinal)
+            || (Uri.TryCreate(url, UriKind.Absolute, out Uri? u)
+                && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)
+                && !string.IsNullOrEmpty(u.Host));
+
+        /// <summary>A series StoragePath that is relative and resolves strictly inside the library.</summary>
+        public static bool IsSafeSeriesStoragePath(SettingsDto settings, string? storagePath) =>
+            !string.IsNullOrWhiteSpace(storagePath)
+            && PathSafety.IsSafeRelativePath(storagePath)
+            && settings.ResolveSeriesAbsolutePath(storagePath) != null;
+
+        /// <summary>
+        /// True when <paramref name="storagePath"/> (library-relative) is, contains or
+        /// sits inside a series folder owned by another user, or sits under another
+        /// user's library root. Compared ignoring case because the add path resolves
+        /// folders case-insensitively. Ownerless legacy rows are shared, so they
+        /// don't count. Skipped for the Owner (who can already open every library,
+        /// and whose library import must not trip on it) and with no owner at all.
+        /// </summary>
+        internal static async Task<bool> FolderBelongsToAnotherUserAsync(AppDbContext db, string storagePath, Guid ownerId, CancellationToken token)
+        {
+            if (ownerId == Guid.Empty)
+                return false;
+            UserLevel? level = await db.Users.AsNoTracking().Where(u => u.Id == ownerId)
+                .Select(u => (UserLevel?)u.Level).FirstOrDefaultAsync(token).ConfigureAwait(false);
+            if (level == UserLevel.Owner)
+                return false;
+            static string Norm(string p) => p.Replace('\\', '/').Trim('/');
+            string mine = Norm(storagePath);
+            string firstSegment = mine.Split('/')[0];
+            bool otherUserRoot = await db.Users.AsNoTracking()
+                .Where(u => u.Id != ownerId).Select(u => u.Username)
+                .ToListAsync(token).ConfigureAwait(false) is { } names
+                && names.Any(n => string.Equals(Norm(n), firstSegment, StringComparison.OrdinalIgnoreCase)
+                                  || mine.StartsWith(Norm(n) + "/", StringComparison.OrdinalIgnoreCase));
+            if (otherUserRoot)
+                return true;
+            List<string> others = await db.Series.AsNoTracking()
+                .Where(x => x.OwnerId != ownerId && x.OwnerId != Guid.Empty)
+                .Select(x => x.StoragePath).ToListAsync(token).ConfigureAwait(false);
+            return others.Where(o => !string.IsNullOrWhiteSpace(o)).Select(Norm).Any(o =>
+                string.Equals(o, mine, StringComparison.OrdinalIgnoreCase)
+                || mine.StartsWith(o + "/", StringComparison.OrdinalIgnoreCase)
+                || o.StartsWith(mine + "/", StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// True when a non-Owner's NEW series would land in a folder that already
+        /// exists and holds entries last written before that user's account was
+        /// created — files that can't be theirs (everything Shiori writes for them
+        /// is newer). A folder of their own from a series they deleted while
+        /// keeping the files is newer than the account, so re-adding it still
+        /// works. Skipped for the Owner and with no owner.
+        /// </summary>
+        internal static async Task<bool> FolderPredatesOwnerAsync(AppDbContext db, SettingsDto settings, string storagePath, Guid ownerId, CancellationToken token)
+        {
+            if (ownerId == Guid.Empty)
+                return false;
+            var who = await db.Users.AsNoTracking().Where(u => u.Id == ownerId)
+                .Select(u => new { u.Level, u.CreatedAt }).FirstOrDefaultAsync(token).ConfigureAwait(false);
+            if (who == null || who.Level == UserLevel.Owner)
+                return false;
+            string? abs = settings.ResolveSeriesAbsolutePath(storagePath);
+            return abs != null && HoldsEntriesOlderThan(abs, who.CreatedAt);
+        }
+
+        /// <summary>Any entry directly in <paramref name="dir"/> last written before <paramref name="createdUtc"/> (a minute's slack).</summary>
+        internal static bool HoldsEntriesOlderThan(string dir, DateTime createdUtc)
+        {
+            if (!Directory.Exists(dir))
+                return false;
+            DateTime cutoff = DateTime.SpecifyKind(createdUtc, DateTimeKind.Utc).AddMinutes(-1);
+            int seen = 0;
+            foreach (string entry in Directory.EnumerateFileSystemEntries(dir))
+            {
+                if (File.GetLastWriteTimeUtc(entry) < cutoff)
+                    return true;
+                if (++seen >= 5000)
+                    break;
+            }
+            return false;
+        }
+
        // Private helper methods
         private async Task<Models.Database.SeriesEntity?> FindExistingSeriesAsync(AugmentedResponseDto ProviderSeriesDetails,
             SettingsDto settings, Dictionary<string, Guid> paths, Guid ownerId, string? ownerUsername, CancellationToken token)

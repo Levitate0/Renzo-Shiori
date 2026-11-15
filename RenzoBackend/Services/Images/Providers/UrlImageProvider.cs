@@ -142,6 +142,10 @@ namespace RenzoBackend.Services.Images.Providers
         {
             if (!Uri.TryCreate(cache.Url, UriKind.Absolute, out Uri? uri))
                 return null;
+            // The solver's browser fetches the URL itself, outside our connect
+            // check, so a private target never reaches it.
+            if (!await OutboundUrlGuard.IsPublicHttpUrlAsync(cache.Url, token).ConfigureAwait(false))
+                return null;
 
             CloudflareClearance? clearance = await _clearance.GetAsync(uri, token).ConfigureAwait(false);
             if (clearance == null)
@@ -191,6 +195,20 @@ namespace RenzoBackend.Services.Images.Providers
             }
         }
 
+        /// <summary>A body that hasn't arrived in this long isn't a cover worth waiting for.</summary>
+        private static readonly TimeSpan BodyReadTimeout = TimeSpan.FromSeconds(60);
+
+        /// <summary>Reads a response body, bounded in size and time.</summary>
+        private static async Task ReadCappedAsync(HttpContent content, Stream destination, CancellationToken token)
+        {
+            if (content.Headers.ContentLength > OutboundUrlGuard.MaxImageBytes)
+                throw new InvalidDataException($"Response is larger than {OutboundUrlGuard.MaxImageBytes / (1024 * 1024)} MB.");
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            cts.CancelAfter(BodyReadTimeout);
+            await using Stream body = await content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
+            await OutboundUrlGuard.CopyCappedAsync(body, destination, OutboundUrlGuard.MaxImageBytes, cts.Token).ConfigureAwait(false);
+        }
+
         public async Task UpdateCacheWithRemoteAsync(EtagCacheEntity cache, HttpClient httpClient, CancellationToken token = default)
         {
             if (string.IsNullOrEmpty(cache.Url))
@@ -218,7 +236,7 @@ namespace RenzoBackend.Services.Images.Providers
                 {
                     request.Headers.TryAddWithoutValidation("If-None-Match", cache.ExternalEtag);
                 }
-                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
 
                 if (response.Headers.ETag != null)
                 {
@@ -248,7 +266,7 @@ namespace RenzoBackend.Services.Images.Providers
                 if (cleared != null)
                 {
                     response.Dispose();
-                    await cleared.Content.CopyToAsync(memoryStream, token).ConfigureAwait(false);
+                    await ReadCappedAsync(cleared.Content, memoryStream, token).ConfigureAwait(false);
                     string? clearedMedia = cleared.Content.Headers.ContentType?.MediaType;
                     if (!string.IsNullOrEmpty(clearedMedia))
                         mediaType = clearedMedia;
@@ -258,6 +276,14 @@ namespace RenzoBackend.Services.Images.Providers
                 else if (response.StatusCode != HttpStatusCode.OK)
                 {
                     //try source
+                    // The extension fetches the URL in the sidecar, outside our
+                    // connect check, so a private target never reaches it.
+                    if (cache.MihonProviderId != null && !await OutboundUrlGuard.IsPublicHttpUrlAsync(cache.Url, token).ConfigureAwait(false))
+                    {
+                        _logger.LogWarning("Not fetching the image for {Key}: its host is not a public internet address.", cache.Key);
+                        await MarkFailedAsync(cache).ConfigureAwait(false);
+                        return;
+                    }
                     if (cache.MihonProviderId != null)
                     {
 
@@ -282,7 +308,7 @@ namespace RenzoBackend.Services.Images.Providers
                                 await MarkFailedAsync(cache).ConfigureAwait(false);
                                 return; //Warning already logged in the wrapper
                             }
-                            await image.CopyToAsync(memoryStream, token).ConfigureAwait(false);
+                            await OutboundUrlGuard.CopyCappedAsync(image, memoryStream, OutboundUrlGuard.MaxImageBytes, token).ConfigureAwait(false);
                         }
                         else
                         {
@@ -299,7 +325,7 @@ namespace RenzoBackend.Services.Images.Providers
                     }
                 }
                 else
-                    await response.Content.CopyToAsync(memoryStream, token).ConfigureAwait(false);
+                    await ReadCappedAsync(response.Content, memoryStream, token).ConfigureAwait(false);
                 string? med = response.Content.Headers.ContentType?.MediaType;
                 if (!string.IsNullOrEmpty(med))
                     mediaType = med;
@@ -313,19 +339,17 @@ namespace RenzoBackend.Services.Images.Providers
                 cache.Etag = await ComputeMd5HashFromStreamAsync(memoryStream, token).ConfigureAwait(false);
                 memoryStream.Position = 0;
                 (string? detectedContentType, string? detectedExtension) = memoryStream.GetImageMimeTypeAndExtension();
-                var contentType = !string.IsNullOrWhiteSpace(detectedContentType)
-                    ? detectedContentType
-                    : mediaType;
-
-                var normalizedExtension = NormalizeExtension(detectedExtension);
-                if (string.IsNullOrEmpty(normalizedExtension))
+                // Only a sniffed raster image is cached. The upstream Content-Type
+                // used to be kept for anything else, so a URL answering text/html
+                // (or SVG) was served back from our origin as a page: stored XSS.
+                if (string.IsNullOrWhiteSpace(detectedContentType) || string.IsNullOrEmpty(detectedExtension))
                 {
-                    normalizedExtension = NormalizeExtension(Path.GetExtension(cache.Url));
-                    if (string.IsNullOrEmpty(normalizedExtension))
-                    {
-                        normalizedExtension = ".bin";
-                    }
+                    _logger.LogWarning("Not caching the image for {Key}: the response is not an image ({MediaType}).", cache.Key, mediaType);
+                    await MarkFailedAsync(cache).ConfigureAwait(false);
+                    return;
                 }
+                var contentType = detectedContentType;
+                var normalizedExtension = NormalizeExtension(detectedExtension);
                 var targetFile = baseFile + normalizedExtension;
                 if (originalFile != null && File.Exists(originalFile) && (originalFile != baseFile))
                 {
@@ -349,7 +373,7 @@ namespace RenzoBackend.Services.Images.Providers
                 cache.NextUpdateUTC = DateTime.UtcNow.Add(cacheDuration);
                 await _db.SaveChangesAsync().ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 throw; // the caller gave up; not a fetch failure worth backing off
             }

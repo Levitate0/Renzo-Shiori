@@ -37,6 +37,10 @@ namespace Mihon.ExtensionsBridge.Core.Extensions
             if (extension == null)
                 throw new ArgumentNullException(nameof(extension));
             var folderName = Path.Combine(folder.ExtensionsFolder, extension.GetName());
+            // The name comes from an extension's package (an uploaded APK or a repo
+            // index): never create or hand out a folder outside the extensions root.
+            if (!ExtensionIdentity.IsUnder(folder.ExtensionsFolder, folderName))
+                throw new ArgumentException("Extension name resolves outside the extensions folder.", nameof(extension));
             if (!Directory.Exists(folderName))
                 Directory.CreateDirectory(folderName);
             return folderName;
@@ -61,6 +65,9 @@ namespace Mihon.ExtensionsBridge.Core.Extensions
                 throw new ArgumentException("RepositoryEntry must have a valid Extension.Version", nameof(entry));
             var folderName = Path.Combine(folder.ExtensionsFolder, entry.Extension.GetName());
             var versionFolder = Path.Combine(folderName, entry.Extension.Version+"_"+entry.RepositoryId);
+            // Package, version and repository id are all external input (see GetExtensionFolder).
+            if (!ExtensionIdentity.IsUnder(folder.ExtensionsFolder, versionFolder))
+                throw new ArgumentException("Extension version folder resolves outside the extensions folder.", nameof(entry));
             if (!Directory.Exists(versionFolder))
                 Directory.CreateDirectory(versionFolder);
             return versionFolder;

@@ -63,7 +63,14 @@ namespace RenzoBackend.Services.Series
             if (series == null)
                 throw new ArgumentException("Invalid series Id");
             
-            string basePath = Path.Combine(settings.StorageFolder, series.StoragePath);
+            // Stored paths are contained at every disk touch (defence in depth: a
+            // row written before add-time validation could hold "../").
+            string? basePath = settings.ResolveSeriesAbsolutePath(series.StoragePath);
+            if (basePath == null)
+            {
+                _logger.LogWarning("Skipping integrity verify for series {SeriesId}: its storage path is outside the library.", seriesId);
+                return new SeriesIntegrityResultDto { Success = true, BadFiles = [] };
+            }
             bool dbChanged = false;
 
             // SAFETY GUARD (mergerfs / network-backed /series): never delete a
@@ -81,7 +88,7 @@ namespace RenzoBackend.Services.Series
             {
                 bool folderMissing = !Directory.Exists(basePath);
                 bool nonePresent = !folderMissing &&
-                    !downloadedChapters.Any(c => File.Exists(Path.Combine(basePath, c.Filename!)));
+                    !downloadedChapters.Any(c => PathSafety.ContainedPath(basePath, c.Filename) is { } f && File.Exists(f));
                 if (folderMissing || nonePresent)
                 {
                     _logger.LogWarning(
@@ -101,7 +108,9 @@ namespace RenzoBackend.Services.Series
 
                 foreach (Chapter chapter in provider.Chapters.Where(c => !string.IsNullOrEmpty(c.Filename)))
                 {
-                    string archivePath = Path.Combine(basePath, chapter.Filename);
+                    // A filename that isn't a bare name is treated as missing, so a
+                    // bad legacy row is cleared instead of being opened.
+                    string? archivePath = PathSafety.IsSafeFileName(chapter.Filename) ? PathSafety.ContainedPath(basePath, chapter.Filename) : null;
 
                     // The archive is gone. Its download is, not the chapter: on a
                     // source that lists chapters the row stays and the chapter is
@@ -109,7 +118,7 @@ namespace RenzoBackend.Services.Series
                     // Removing the row took the chapter off the list whenever no
                     // other source happened to list it. Only a local or Unknown
                     // row, which was nothing but its file, goes.
-                    if (!File.Exists(archivePath))
+                    if (archivePath == null || !File.Exists(archivePath))
                     {
                         if (provider.IsLocal || provider.IsUnknown)
                             chaptersToRemove.Add(chapter);
@@ -396,7 +405,9 @@ namespace RenzoBackend.Services.Series
             
             List<Chapter> chaps = series.Sources.SelectMany(a => a.Chapters)
                 .Where(a => !string.IsNullOrEmpty(a.Filename)).ToList();
-            string basePath = Path.Combine(settings.StorageFolder, series.StoragePath);
+            string? basePath = settings.ResolveSeriesAbsolutePath(series.StoragePath);
+            if (basePath == null)
+                return;
             SeriesIntegrityResultDto sr = GetIntegrityResult(basePath, chaps);
             bool update = false;
 
@@ -404,10 +415,11 @@ namespace RenzoBackend.Services.Series
             {
                 if (r.Result == ArchiveResult.NoImages || r.Result == ArchiveResult.NotAnArchive)
                 {
-                    string finalName = Path.Combine(basePath, r.Filename);
+                    string? finalName = settings.ResolveChapterFilePath(series.StoragePath, r.Filename);
                     try
                     {
-                        File.Delete(finalName);
+                        if (finalName != null)
+                            File.Delete(finalName);
                     }
                     catch (Exception)
                     {
@@ -555,7 +567,9 @@ namespace RenzoBackend.Services.Series
 
             foreach (Chapter c in chapters)
             {
-                string fileName = Path.Combine(path, c.Filename!);
+                string? fileName = PathSafety.IsSafeFileName(c.Filename) ? PathSafety.ContainedPath(path, c.Filename) : null;
+                if (fileName == null)
+                    continue;
                 ArchiveResult ar = ArchiveHelperService.CheckArchive(fileName);
                 if (ar != ArchiveResult.Fine)
                 {

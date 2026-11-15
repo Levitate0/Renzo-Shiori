@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Button } from "@/components/ui/button";
 import { Settings } from "lucide-react";
 import { ProviderPreferencesRequester } from "./provider-preferences-requester";
+import { useAuth } from "@/contexts/auth-context";
 
 interface ProviderSettingsButtonProps {
   pkgName: string;
@@ -21,6 +22,9 @@ export function ProviderSettingsButton({
   className = ""
 }: ProviderSettingsButtonProps) {
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  // Extension settings can hold a source login: reading and saving them is Owner-only.
+  const { canOwner } = useAuth();
+  if (!canOwner) return null;
 
   return (
     <>

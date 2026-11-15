@@ -41,14 +41,19 @@ namespace RenzoBackend.Services.Series
         /// Returns both Mihon-linked and user-based providers as potential match targets.
         /// </summary>
         /// <param name="providerId">The provider's unique identifier</param>
+        /// <param name="requesterId">The requesting user — another user's series answers null.</param>
+        /// <param name="allowAll">True for an Owner-level requester (every library).</param>
         /// <param name="token">Cancellation token</param>
         /// <returns>The provider match if found</returns>
-        public async Task<ProviderMatchDto?> GetMatchAsync(Guid providerId, CancellationToken token = default)
+        public async Task<ProviderMatchDto?> GetMatchAsync(Guid providerId, Guid requesterId, bool allowAll, CancellationToken token = default)
         {
 
             SeriesProviderEntity? provider = await _db.SeriesProviders.Where(a => a.Id == providerId).AsNoTracking()
                 .FirstOrDefaultAsync(token).ConfigureAwait(false);
             if (provider == null)
+                return null;
+            // A source id alone must not reveal another library's chapter files.
+            if (!await CanAccessSeriesAsync(provider.SeriesId, requesterId, allowAll, token).ConfigureAwait(false))
                 return null;
             
             // Include ALL non-unknown providers on the same series (both Mihon-linked and user-based)
@@ -76,6 +81,13 @@ namespace RenzoBackend.Services.Series
 
         private static readonly Guid NewProviderSentinel = Guid.Empty;
 
+        private async Task<bool> CanAccessSeriesAsync(Guid seriesId, Guid requesterId, bool allowAll, CancellationToken token)
+        {
+            Guid? ownerId = await _db.Series.Where(s => s.Id == seriesId).Select(s => (Guid?)s.OwnerId)
+                .FirstOrDefaultAsync(token).ConfigureAwait(false);
+            return ownerId != null && SeriesQueryService.CanAccessSeries(ownerId.Value, requesterId, allowAll);
+        }
+
         /// <summary>
         /// Sets a provider match by moving chapters from unknown provider to known providers.
         /// Supports both existing providers and creating new user-based providers.
@@ -83,11 +95,12 @@ namespace RenzoBackend.Services.Series
         /// using the MatchInfo's provider/scanlator/language metadata.
         /// </summary>
         /// <param name="pm">The provider match object</param>
+        /// <param name="requesterId">The requesting user — another user's series is left alone.</param>
+        /// <param name="allowAll">True for an Owner-level requester (every library).</param>
         /// <param name="token">Cancellation token</param>
         /// <returns>True if the match was set successfully</returns>
-        public async Task<bool> SetMatchAsync(ProviderMatchDto pm, CancellationToken token = default)
+        public async Task<bool> SetMatchAsync(ProviderMatchDto pm, Guid requesterId, bool allowAll, CancellationToken token = default)
         {
-            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
             SeriesProviderEntity? unknown = await _db.SeriesProviders.FirstOrDefaultAsync(a => a.Id == pm.Id, token)
                 .ConfigureAwait(false);
             if (unknown == null)
@@ -97,6 +110,10 @@ namespace RenzoBackend.Services.Series
                 .FirstOrDefaultAsync(a => a.Id == unknown.SeriesId, token).ConfigureAwait(false);
             if (series == null)
                 return false;
+            // This renames files on disk: only in the requester's own library.
+            if (!SeriesQueryService.CanAccessSeries(series.OwnerId, requesterId, allowAll))
+                return false;
+            SettingsDto settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
             
             // Build dictionary of existing providers, excluding any sentinel entries
             Dictionary<Guid, SeriesProviderEntity> minfo = new();
@@ -167,10 +184,10 @@ namespace RenzoBackend.Services.Series
                     string filename = ArchiveHelperService.MakeFileNameSafe(targetProvider.Provider, targetProvider.Scanlator,
                         targetProvider.Title, targetProvider.Language, ch.Number, ch.Name, maxChap);
                     string newFilename = filename + extension;
-                    string originalPath = Path.Combine(settings.StorageFolder, series.StoragePath, ch.Filename ?? "");
-                    string newPath = Path.Combine(settings.StorageFolder, series.StoragePath, newFilename);
+                    string? originalPath = settings.ResolveChapterFilePath(series.StoragePath, ch.Filename);
+                    string? newPath = settings.ResolveChapterFilePath(series.StoragePath, newFilename);
                     
-                    if (File.Exists(originalPath))
+                    if (originalPath != null && newPath != null && File.Exists(originalPath))
                     {
                         try
                         {
@@ -209,10 +226,10 @@ namespace RenzoBackend.Services.Series
                             targetProvider.Title, targetProvider.Language, dst.Number, dst.Name, maxChap);
                         string? extension = Path.GetExtension(ch.Filename);
                         string newFilename = filename + extension;
-                        string originalPath = Path.Combine(settings.StorageFolder, series.StoragePath, ch.Filename ?? "");
-                        string newPath = Path.Combine(settings.StorageFolder, series.StoragePath, newFilename);
+                        string? originalPath = settings.ResolveChapterFilePath(series.StoragePath, ch.Filename);
+                        string? newPath = settings.ResolveChapterFilePath(series.StoragePath, newFilename);
                         
-                        if (File.Exists(originalPath))
+                        if (originalPath != null && newPath != null && File.Exists(originalPath))
                         {
                             try
                             {

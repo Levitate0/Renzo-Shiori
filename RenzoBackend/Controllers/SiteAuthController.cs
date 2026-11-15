@@ -1,4 +1,6 @@
 using RenzoBackend.Models.Database;
+using RenzoBackend.Models.Enums;
+using RenzoBackend.Services.Auth;
 using RenzoBackend.Services.SiteAuth;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json.Serialization;
@@ -100,6 +102,10 @@ public class SiteAuthController : ControllerBase
 
     /// <summary>Saves username/password and logs in immediately.</summary>
     [HttpPost]
+    // Owner only: every login writes the ONE cookie jar the server shares
+    // (and delete clears it), so a lower account would replace or sign out the
+    // Owner's session. Reading one's own rows stays open.
+    [RequireUserLevel(UserLevel.Owner)]
     [ProducesResponseType(typeof(SiteCredentialDto), 200)]
     [ProducesResponseType(400)]
     public async Task<ActionResult> Save([FromBody] SaveCredentialRequest req, CancellationToken token = default)
@@ -114,6 +120,10 @@ public class SiteAuthController : ControllerBase
 
     /// <summary>Saves a pasted session cookie for sites that can't auto-login.</summary>
     [HttpPost("cookie")]
+    // Owner only: every login writes the ONE cookie jar the server shares
+    // (and delete clears it), so a lower account would replace or sign out the
+    // Owner's session. Reading one's own rows stays open.
+    [RequireUserLevel(UserLevel.Owner)]
     [ProducesResponseType(typeof(SiteCredentialDto), 200)]
     [ProducesResponseType(400)]
     public async Task<ActionResult> SaveCookie([FromBody] SaveCookieRequest req, CancellationToken token = default)
@@ -130,6 +140,10 @@ public class SiteAuthController : ControllerBase
 
     /// <summary>Re-runs login for an existing credential (the "Test / Re-login" button).</summary>
     [HttpPost("{id:guid}/login")]
+    // Owner only: every login writes the ONE cookie jar the server shares
+    // (and delete clears it), so a lower account would replace or sign out the
+    // Owner's session. Reading one's own rows stays open.
+    [RequireUserLevel(UserLevel.Owner)]
     [ProducesResponseType(200)]
     [ProducesResponseType(404)]
     public async Task<ActionResult> Relogin(Guid id, CancellationToken token = default)
@@ -141,6 +155,10 @@ public class SiteAuthController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    // Owner only: every login writes the ONE cookie jar the server shares
+    // (and delete clears it), so a lower account would replace or sign out the
+    // Owner's session. Reading one's own rows stays open.
+    [RequireUserLevel(UserLevel.Owner)]
     [ProducesResponseType(200)]
     public async Task<ActionResult> Delete(Guid id, CancellationToken token = default)
     {

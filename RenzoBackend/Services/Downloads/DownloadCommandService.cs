@@ -751,11 +751,20 @@ namespace RenzoBackend.Services.Downloads
                     .Select(s => s.StoragePath).FirstOrDefaultAsync(token).ConfigureAwait(false);
                 if (!string.IsNullOrEmpty(currentPath))
                     ch.StoragePath = currentPath;
-                string dirPath = Path.Combine(appSettings.StorageFolder, ch.StoragePath);
+                // Contained: the folder and name come from stored data, and a path
+                // that leaves the library is never created or written to.
+                string? dirPath = appSettings.ResolveSeriesAbsolutePath(ch.StoragePath);
+                string? finalPath = dirPath == null ? null : PathSafety.ContainedPath(dirPath, zipFile);
+                if (dirPath == null || finalPath == null)
+                {
+                    _logger.LogError("Not saving chapter {Chapter} of {Series}: storage path {Path} is outside the library", ch.Chapter.ParsedNumber, ch.SeriesTitle, ch.StoragePath);
+                    try { File.Delete(tempZipPath); } catch { }
+                    reporter.Report(ProgressStatus.Failed, (int)acum, message, downloadSummary);
+                    return JobResult.Failed;
+                }
                 if (!Directory.Exists(dirPath))
                     Directory.CreateDirectory(dirPath);
 
-                string finalPath = Path.Combine(dirPath, zipFile);
                 try
                 {
                     await Task.Run(() => File.Move(tempZipPath, finalPath, true), token).ConfigureAwait(false);
@@ -860,8 +869,8 @@ namespace RenzoBackend.Services.Downloads
                                     _hashCache.DeleteChapterHash(s.StoragePath, c.Filename);
                                 }
 
-                                string rfname = Path.Combine(appSettings.StorageFolder, s.StoragePath, c.Filename!);
-                                if (File.Exists(rfname))
+                                string? rfname = appSettings.ResolveChapterFilePath(s.StoragePath, c.Filename);
+                                if (rfname != null && File.Exists(rfname))
                                 {
                                     try
                                     {
@@ -922,8 +931,8 @@ namespace RenzoBackend.Services.Downloads
                             {
                                 if (ReferenceEquals(c, keep.chap)) continue;
                                 _hashCache.DeleteChapterHash(s.StoragePath, c.Filename!);
-                                string rfname = Path.Combine(appSettings.StorageFolder, s.StoragePath, c.Filename!);
-                                if (File.Exists(rfname))
+                                string? rfname = appSettings.ResolveChapterFilePath(s.StoragePath, c.Filename);
+                                if (rfname != null && File.Exists(rfname))
                                 {
                                     try { File.Delete(rfname); }
                                     catch { _logger.LogError("Unable to delete duplicate file {rfname}", rfname); }

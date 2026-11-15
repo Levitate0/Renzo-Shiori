@@ -237,6 +237,17 @@ public class HashCacheService
 
         // If series is in a category subfolder, preserve that structure
         string relativePath = sanitized;
+
+        // A stored StoragePath with ".." or a rooted part would put this file
+        // (created and written on OPDS reads) outside the hashes folder. Such a
+        // row still gets a cache, under a name derived from its hash instead.
+        if (!Extensions.PathSafety.IsInside(_hashesRootPath, System.IO.Path.Combine(_hashesRootPath, relativePath + ".json")))
+        {
+            string digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(seriesStoragePath)));
+            return System.IO.Path.Combine(_hashesRootPath, "_unsafe-" + digest + ".json");
+        }
+
         if (relativePath.Contains(System.IO.Path.DirectorySeparatorChar))
         {
             string dir = System.IO.Path.GetDirectoryName(relativePath) ?? "";

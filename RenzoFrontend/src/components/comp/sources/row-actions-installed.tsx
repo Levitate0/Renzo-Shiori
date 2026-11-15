@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ProviderPreferencesRequester } from "@/components/comp/provider-preferences-requester";
 import { type Provider } from "@/lib/api/types";
+import { useAuth } from "@/contexts/auth-context";
 
 interface RowActionsInstalledProps {
   extension: Provider;
@@ -24,6 +25,9 @@ export function RowActionsInstalled({
   isLoading,
 }: RowActionsInstalledProps) {
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  // Extension settings are one shared store (POST /api/provider/preferences
+  // is Owner-only), so the settings entry points are hidden below Owner.
+  const { canOwner } = useAuth();
 
   const desktopMenu = (
     <DropdownMenu>
@@ -70,14 +74,18 @@ export function RowActionsInstalled({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuItem
-          onSelect={() => setPreferencesOpen(true)}
-          className="gap-2"
-        >
-          <Settings className="h-4 w-4" />
-          Settings…
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
+        {canOwner && (
+          <>
+            <DropdownMenuItem
+              onSelect={() => setPreferencesOpen(true)}
+              className="gap-2"
+            >
+              <Settings className="h-4 w-4" />
+              Settings…
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuItem
           onSelect={() => onUninstall(extension.package)}
           disabled={isLoading}
@@ -94,13 +102,15 @@ export function RowActionsInstalled({
     <>
       {/* Desktop: settings icon + installed pill dropdown */}
       <div className="hidden md:flex items-center gap-1.5">
-        <button
-          className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors"
-          onClick={() => setPreferencesOpen(true)}
-          aria-label={`${extension.name} settings`}
-        >
-          <Settings className="h-4 w-4" />
-        </button>
+        {canOwner && (
+          <button
+            className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:bg-white/10 hover:text-foreground transition-colors"
+            onClick={() => setPreferencesOpen(true)}
+            aria-label={`${extension.name} settings`}
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        )}
         {desktopMenu}
       </div>
 
@@ -110,12 +120,14 @@ export function RowActionsInstalled({
       </div>
 
       {/* Preferences dialog / drawer (shared) */}
+      {canOwner && (
       <ProviderPreferencesRequester
         open={preferencesOpen}
         onOpenChange={setPreferencesOpen}
         pkgName={extension.package}
         providerName={extension.name}
       />
+      )}
     </>
   );
 }

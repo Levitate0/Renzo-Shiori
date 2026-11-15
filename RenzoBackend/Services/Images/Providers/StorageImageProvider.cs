@@ -27,8 +27,10 @@ namespace RenzoBackend.Services.Images.Providers
             if (string.IsNullOrEmpty(storagePath))
                 return null;
             string path = cache.Url.Substring(10);
-            string finalPath = Path.GetFullPath(Path.Combine(storagePath, path));
-            if (File.Exists(finalPath))
+            // storage:// names a file in the library and nothing else: a stored
+            // "storage://../../renzo.db" (or an absolute path) must not be served.
+            string? finalPath = RenzoBackend.Extensions.PathSafety.ContainedPath(storagePath, path);
+            if (finalPath != null && File.Exists(finalPath))
             {
                 Stream stream = File.OpenRead(finalPath);
                 if (string.IsNullOrEmpty(cache.Etag))

@@ -388,7 +388,13 @@ public class ImportCommandService
                     if (s != null)
                     {
                         _logger.LogInformation("Assigning '{Title}' to existing Series", import.Info.Title);
-                        string seriesBasePath = Path.Combine(appSettings.StorageFolder, s.StoragePath);
+                        // Contained: an existing row's StoragePath outside the library is skipped.
+                        string? seriesBasePath = appSettings.ResolveSeriesAbsolutePath(s.StoragePath);
+                        if (seriesBasePath == null)
+                        {
+                            _logger.LogWarning("Import: series '{Title}' has a storage path outside the library; skipped.", s.Title);
+                            continue;
+                        }
                         Dictionary<Chapter, SeriesProviderEntity> chapters = s.Sources
                             .SelectMany(a => a.Chapters, (p, c) => new { Provider = p, Chapter = c })
                             .Where(a => !string.IsNullOrEmpty(a.Chapter.Filename))

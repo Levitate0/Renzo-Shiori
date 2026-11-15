@@ -118,22 +118,28 @@ public class AuthController : ControllerBase
         if (!settings.AuthenticationEnabled)
             return BadRequest(new { error = "Authentication is not enabled" });
 
-        // Per-account brute-force lockout (complements the per-IP rate limiter).
-        // Checked by username BEFORE touching the DB or hashing, so a locked
-        // account short-circuits regardless of whether the guess is right.
-        TimeSpan? locked = _loginThrottle.GetLockRemaining(request.Username);
-        if (locked != null)
-        {
-            int mins = Math.Max(1, (int)Math.Ceiling(locked.Value.TotalMinutes));
-            Response.Headers.RetryAfter = ((int)locked.Value.TotalSeconds).ToString();
-            return StatusCode(StatusCodes.Status429TooManyRequests,
-                new { error = $"Too many failed attempts. Try again in about {mins} minute{(mins == 1 ? "" : "s")}." });
-        }
+        // Brute-force lockout (complements the per-IP rate limiter). Checked
+        // BEFORE hashing, so a locked caller short-circuits whether or not the
+        // guess is right. Keyed on (username, IP): a stranger hammering the
+        // Owner's name locks only themselves out, not the Owner.
+        string? ip = ClientIp();
+        if (_loginThrottle.GetLockRemaining(request.Username, ip) is { } locked)
+            return TooManyAttempts(locked);
 
         UserEntity? user = await _userQueryService.GetByUsernameAsync(request.Username, token);
+
+        // Failures spread over many IPs also lock the account — but only for
+        // clients it has never been used from, so the Owner's own devices keep
+        // working through a distributed attack.
+        if (_loginThrottle.GetAccountLockRemaining(request.Username) is { } accountLock
+            && !await IsKnownClientAsync(user, ip, token).ConfigureAwait(false))
+        {
+            return TooManyAttempts(accountLock);
+        }
+
         if (user == null || !user.IsActive)
         {
-            _loginThrottle.RecordFailure(request.Username);
+            _loginThrottle.RecordFailure(request.Username, ip);
             return Unauthorized(new { error = "Invalid credentials" });
         }
 
@@ -142,12 +148,13 @@ public class AuthController : ControllerBase
 
         if (!_passwordService.VerifyPassword(request.Password, user.PasswordHash, user.Salt))
         {
-            _loginThrottle.RecordFailure(request.Username);
+            _loginThrottle.RecordFailure(request.Username, ip);
             return Unauthorized(new { error = "Invalid credentials" });
         }
 
-        // Success — clear any accumulated failure/lock state for this account.
-        _loginThrottle.RecordSuccess(request.Username);
+        // Success — clear failure/lock state and remember this IP as one the
+        // account really signs in from.
+        _loginThrottle.RecordSuccess(request.Username, ip);
 
         // Update last login
         await _userCommandService.UpdateLastLoginAsync(user, token);
@@ -465,7 +472,7 @@ public class AuthController : ControllerBase
             expiresAt = s.ExpiresAt,
             createdIp = s.CreatedIp,
             isTvPairing = s.IsTvPairing,
-            isCurrent = currentRaw != null && _jwtTokenService.ValidateRefreshToken(currentRaw, s.TokenHash),
+            isCurrent = currentRaw != null && RefreshSessionService.HoldsToken(_jwtTokenService, s, currentRaw, DateTime.UtcNow),
         }));
     }
 
@@ -486,6 +493,32 @@ public class AuthController : ControllerBase
     // ── helpers ────────────────────────────────────────────────────────
 
     private string? ClientIp() => HttpContext.Connection.RemoteIpAddress?.ToString();
+
+    private ObjectResult TooManyAttempts(TimeSpan remaining)
+    {
+        int mins = Math.Max(1, (int)Math.Ceiling(remaining.TotalMinutes));
+        Response.Headers.RetryAfter = ((int)remaining.TotalSeconds).ToString();
+        return StatusCode(StatusCodes.Status429TooManyRequests,
+            new { error = $"Too many failed attempts. Try again in about {mins} minute{(mins == 1 ? "" : "s")}." });
+    }
+
+    /// <summary>
+    /// A client the account demonstrably already uses: it signed in from this IP
+    /// since the last restart, or one of the account's live remembered sessions
+    /// was created from it (which survives restarts). Only this lets a request
+    /// past an account-wide lock — never past the per-IP one.
+    /// </summary>
+    private async Task<bool> IsKnownClientAsync(UserEntity? user, string? ip, CancellationToken token)
+    {
+        if (user == null || string.IsNullOrEmpty(ip))
+            return false;
+        if (_loginThrottle.IsKnownIp(user.Username, ip))
+            return true;
+        DateTime now = DateTime.UtcNow;
+        return await _db.RefreshSessions.AnyAsync(
+            s => s.UserId == user.Id && s.RevokedAt == null && s.ExpiresAt > now && s.CreatedIp == ip,
+            token).ConfigureAwait(false);
+    }
 
     /// <summary>A best-effort label so the device list isn't a row of blanks.</summary>
     private string? DeviceNameFromRequest()
@@ -627,7 +660,12 @@ public class AuthController : ControllerBase
         if (!_userInviteService.ConsumePasswordSetToken(user, request.Token))
             return BadRequest(new { error = "Invalid or expired token" });
 
+        user.RefreshTokenHash = null;
+        user.RefreshTokenExpiresAt = null;
         await _userCommandService.SetPasswordAsync(user, request.Password, token);
+        // A reset link replaces the password; like reset-password, it also signs
+        // out every remembered device (an invite has none, so this is a no-op there).
+        await _refreshSessions.RevokeAllAsync(user.Id, token: token).ConfigureAwait(false);
         await _userCommandService.UpdateLastLoginAsync(user, token);
 
         string accessToken = _jwtTokenService.GenerateAccessToken(user);
@@ -667,7 +705,11 @@ public class AuthController : ControllerBase
         if (revoked > 0)
             _logger.LogInformation("Password change for '{Username}' signed out {Count} other device(s).", user.Username, revoked);
 
-        return Ok(new { success = true });
+        // The change bumped the account's security stamp, which ends every access
+        // token minted before it — this device's included. Hand it a fresh one so
+        // it stays signed in; a client that ignores the field (Hub) gets a 401 on
+        // its next call and renews through its refresh cookie, which was spared.
+        return Ok(new { success = true, token = _jwtTokenService.GenerateAccessToken(user) });
     }
 
     /// <summary>

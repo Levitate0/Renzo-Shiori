@@ -69,13 +69,15 @@ public class ReaderPreviewService
     /// <summary>
     /// Clears the in-memory cache of streamed (web-pulled) page images. Downloaded
     /// chapters are unaffected — they read from their CBZ on disk, not this cache.
-    /// Returns the number of cached images dropped.
+    /// Returns the number of cached images dropped. With <paramref name="onlyUser"/>
+    /// only that user's reads are dropped (the cache is shared between users).
     /// </summary>
-    public long ClearStreamCache() => _imageCache.Clear();
+    public long ClearStreamCache(Guid? onlyUser = null) =>
+        onlyUser is Guid u ? _imageCache.ClearForUser(u) : _imageCache.Clear();
 
     /// <summary>Keeps only the given chapters' streamed pages for one series.</summary>
-    public int TrimStreamCache(Guid seriesId, IReadOnlyCollection<decimal> keep) =>
-        _imageCache.TrimSeries(seriesId, keep);
+    public int TrimStreamCache(Guid seriesId, IReadOnlyCollection<decimal> keep, Guid? onlyUser = null) =>
+        _imageCache.TrimSeries(seriesId, keep, onlyUser);
 
     public ReaderPreviewService(AppDbContext db, MihonBridgeService mihon, IMemoryCache cache,
         SiteAuth.SiteAuthService siteAuth, StreamImageCache imageCache,
@@ -217,7 +219,7 @@ public class ReaderPreviewService
 
         string ct = string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType;
         byte[] bytes = img.ToArray();
-        _imageCache.Set(imgKey, bytes, ct);
+        _imageCache.Set(imgKey, bytes, ct, userId);
         return (new MemoryStream(bytes, writable: false), ct);
     }
 
@@ -415,7 +417,7 @@ public class ReaderPreviewService
 
         string ct = string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType;
         byte[] bytes = img.ToArray();
-        _imageCache.Set(imgKey, bytes, ct);
+        _imageCache.Set(imgKey, bytes, ct, userId);
         return (new MemoryStream(bytes, writable: false), ct);
     }
 
@@ -436,7 +438,7 @@ public class ReaderPreviewService
     /// <param name="onFailure">Told why when it fails, for SourceHealthService; not told for a client abort.</param>
     private async Task<Probe> ProbeAndCacheFirstImageAsync(
         Guid seriesId, decimal chapterNumber, ISourceInterop src, List<Page> pages, CancellationToken token,
-        bool trustCached, Action<SourceFailureKind>? onFailure = null)
+        bool trustCached, Action<SourceFailureKind>? onFailure = null, Guid? userId = null)
     {
         // The reader is waiting on this: it goes ahead of the download queue
         // for this source's image slots (SourceImageGate).
@@ -457,7 +459,7 @@ public class ReaderPreviewService
                 return Probe.Failed;
             }
             string ct = string.IsNullOrEmpty(img.ContentType) ? "image/jpeg" : img.ContentType;
-            _imageCache.Set(imgKey, img.ToArray(), ct);
+            _imageCache.Set(imgKey, img.ToArray(), ct, userId);
             return Probe.Live;
         }
         // 15 s is a probe limit, not a source failing: an error, not a timeout step-down.
@@ -1071,7 +1073,7 @@ public class ReaderPreviewService
             {
                 chosen = candidate;
                 probe = await ProbeAndCacheFirstImageAsync(seriesId, chapterNumber, src, candidate, token,
-                    trustCached: provider.Id == cachedFrom, k => probeFailure = k).ConfigureAwait(false);
+                    trustCached: provider.Id == cachedFrom, k => probeFailure = k, userId).ConfigureAwait(false);
                 if (probe != Probe.Failed)
                     break;
             }

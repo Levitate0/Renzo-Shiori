@@ -63,7 +63,11 @@ namespace RenzoBackend.Services.Helpers
                 return;
             if (coverStream.Length == 0)
                 return;
-            await coverStream.WriteCoverJpegAsync(Path.Combine(settings.StorageFolder, series.StoragePath), 85, token);
+            // Contained: the folder comes from a stored StoragePath.
+            string? folder = settings.ResolveSeriesAbsolutePath(series.StoragePath);
+            if (folder == null)
+                return;
+            await coverStream.WriteCoverJpegAsync(folder, 85, token);
         }
 
 
@@ -91,8 +95,9 @@ namespace RenzoBackend.Services.Helpers
                 {
                     if (string.IsNullOrEmpty(chap.Filename))
                         continue;
-                    string archivePath = Path.Combine(settings.StorageFolder, series.StoragePath, chap.Filename);
-                    if (!File.Exists(archivePath))
+                    // Contained: a stored StoragePath or Filename must never point outside the series folder.
+                    string? archivePath = settings.ResolveChapterFilePath(series.StoragePath, chap.Filename);
+                    if (archivePath == null || !File.Exists(archivePath))
                         continue;
                     // Now check if the filename should be changed
                     string prefix = $"[{sp.Provider}][{sp.Language}]";
@@ -108,9 +113,10 @@ namespace RenzoBackend.Services.Helpers
                         extension = ".cbz"; // Force .cbz, we don't write other formats.
                     if (!string.Equals(newFileName, chap.Filename, StringComparison.OrdinalIgnoreCase))
                     {
-                        string basePath = Path.Combine(settings.StorageFolder, series.StoragePath);
-                        string oldFullPath = Path.Combine(basePath, chap.Filename);
-                        string newFullPath = Path.Combine(basePath, newFileName);
+                        string? oldFullPath = settings.ResolveChapterFilePath(series.StoragePath, chap.Filename);
+                        string? newFullPath = settings.ResolveChapterFilePath(series.StoragePath, newFileName);
+                        if (oldFullPath == null || newFullPath == null)
+                            continue;
                         try
                         {
                             // Clean up hash cache before renaming, since hashes are keyed by filename
@@ -186,7 +192,7 @@ namespace RenzoBackend.Services.Helpers
                 }
             }
 
-            string path = Path.Combine(settings.StorageFolder, series.StoragePath);
+            string path = settings.ResolveSeriesAbsolutePath(series.StoragePath) ?? "(outside the library)";
             _logger.LogInformation("Writing Cover.jpg in {archivePath}", path);
             await WriteComicThumbnailAsync(series, token).ConfigureAwait(false);
 

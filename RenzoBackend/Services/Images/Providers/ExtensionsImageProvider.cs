@@ -26,8 +26,10 @@ namespace RenzoBackend.Services.Images.Providers
         public async Task<Stream?> ObtainStreamAsync(EtagCacheEntity cache, CancellationToken token)
         {
             string originalFilename = cache.Url.Substring(6);
-            string finalPath = Path.GetFullPath(Path.Combine(_workingFolderStructure.ExtensionsFolder, originalFilename));
-            if (File.Exists(finalPath))
+            // ext:// names an extension icon and nothing else; "ext://../../renzo.db"
+            // must not be served (same rule as storage://).
+            string? finalPath = RenzoBackend.Extensions.PathSafety.ContainedPath(_workingFolderStructure.ExtensionsFolder, originalFilename);
+            if (finalPath != null && File.Exists(finalPath))
             {
                 Stream stream = File.OpenRead(finalPath);
                 if (string.IsNullOrEmpty(cache.Etag))

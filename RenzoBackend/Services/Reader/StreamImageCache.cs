@@ -32,12 +32,13 @@ public sealed class StreamImageCache : IDisposable
     // MemoryCache cannot be enumerated, so the keys are mirrored here — the only
     // way to drop "every chapter of this series except these" (TrimSeries). An
     // eviction callback keeps it in step when the LRU or the sliding expiry
-    // removes an entry on its own.
-    private readonly ConcurrentDictionary<string, byte> _keys = new(StringComparer.Ordinal);
+    // removes an entry on its own. The value is the user whose read pulled the
+    // image (Guid.Empty when unknown), so a user's "clear" drops only their own.
+    private readonly ConcurrentDictionary<string, Guid> _keys = new(StringComparer.Ordinal);
 
     public bool TryGet(string key, out Entry entry) => _cache.TryGetValue(key, out entry);
 
-    public void Set(string key, byte[] bytes, string contentType)
+    public void Set(string key, byte[] bytes, string contentType, Guid? userId = null)
     {
         if (bytes is null || bytes.Length == 0 || bytes.Length > MaxItemBytes)
             return;
@@ -53,7 +54,7 @@ public sealed class StreamImageCache : IDisposable
                 _keys.TryRemove(s, out _);
         });
         _cache.Set(key, new Entry(bytes, contentType), options);
-        _keys[key] = 0;
+        _keys[key] = userId ?? Guid.Empty;
     }
 
     /// <summary>
@@ -65,14 +66,21 @@ public sealed class StreamImageCache : IDisposable
     /// Chapter numbers are compared as decimals, not as key text: the web sends
     /// "60" and Hub sends "60.0" for the same chapter, and decimal equality
     /// ignores scale where string equality would not.
+    ///
+    /// <paramref name="onlyUser"/> limits the trim to pages that user's reads
+    /// pulled (null = everyone's): the cache is shared, so one reader moving
+    /// on must not drop the pages another reader of the same series is on.
     /// </summary>
-    public int TrimSeries(Guid seriesId, IReadOnlyCollection<decimal> keep)
+    public int TrimSeries(Guid seriesId, IReadOnlyCollection<decimal> keep, Guid? onlyUser = null)
     {
         string prefix = $"lib:img:{seriesId}:";
         int removed = 0;
-        foreach (string key in _keys.Keys)
+        foreach (KeyValuePair<string, Guid> kv in _keys)
         {
+            string key = kv.Key;
             if (!key.StartsWith(prefix, StringComparison.Ordinal))
+                continue;
+            if (onlyUser is Guid u && kv.Value != u)
                 continue;
             // lib:img:{series}:{chapter}:{page} — the chapter is everything up to
             // the LAST colon of the remainder.
@@ -111,6 +119,25 @@ public sealed class StreamImageCache : IDisposable
         _cache.Clear();
         _keys.Clear();
         return freed;
+    }
+
+    /// <summary>
+    /// Drops only the images <paramref name="userId"/>'s own reads pulled. The cache
+    /// is shared, so below Owner "clear" must not throw away every other reader's
+    /// pages (and make them all re-fetch from the sources at once).
+    /// </summary>
+    public long ClearForUser(Guid userId)
+    {
+        long removed = 0;
+        foreach (KeyValuePair<string, Guid> kv in _keys)
+        {
+            if (kv.Value != userId)
+                continue;
+            _cache.Remove(kv.Key);
+            _keys.TryRemove(kv.Key, out _);
+            removed++;
+        }
+        return removed;
     }
 
     /// <summary>Number of streamed images currently held.</summary>

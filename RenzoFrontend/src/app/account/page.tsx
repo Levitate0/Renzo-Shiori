@@ -41,7 +41,11 @@ type AccountSectionId = (typeof ACCOUNT_SECTIONS)[number]["id"];
  * account, so everything about "who am I" belongs on it directly.
  */
 export default function AccountPage() {
-  const { user, refreshAuth, changePassword } = useAuth();
+  const { user, refreshAuth, changePassword, canOwner } = useAuth();
+  // Site logins write the ONE browser session the server shares (and the
+  // auto-buy switch spends it), so the section is the Owner's alone; the
+  // server refuses those writes below Owner.
+  const sections = canOwner ? ACCOUNT_SECTIONS : ACCOUNT_SECTIONS.filter((s) => s.id !== "site-logins");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeSectionId, setActiveSectionId] = useState<AccountSectionId>("account");
 
@@ -196,7 +200,7 @@ export default function AccountPage() {
           own. */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[200px_1fr] lg:items-start">
         <SettingsSectionNav
-          sections={ACCOUNT_SECTIONS}
+          sections={sections}
           activeId={activeSectionId}
           onChange={(id) => setActiveSectionId(id as AccountSectionId)}
           drawerTitle="Account"
@@ -292,7 +296,7 @@ export default function AccountPage() {
         )}
 
         {/* Site Logins */}
-        {activeSectionId === "site-logins" && (
+        {activeSectionId === "site-logins" && canOwner && (
         <Card>
           <CardHeader>
             <CardTitle>Site Logins</CardTitle>

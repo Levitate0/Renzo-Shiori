@@ -27,6 +27,13 @@ public class JwtTokenService
     /// </summary>
     private const string ImageAudience = "RenzoImages";
 
+    /// <summary>
+    /// Claim carrying <see cref="UserEntity.SecurityStamp"/> at mint time. The
+    /// auth middleware compares it with the live value, so bumping the stamp
+    /// ends every access token issued before the bump.
+    /// </summary>
+    public const string SecurityStampClaim = "sst";
+
     private readonly ILogger<JwtTokenService>? _logger;
 
     public JwtTokenService(IConfiguration configuration, ILogger<JwtTokenService>? logger = null)
@@ -101,6 +108,7 @@ public class JwtTokenService
             new Claim(JwtRegisteredClaimNames.UniqueName, user.Username),
             new Claim("level", ((int)user.Level).ToString()),
             new Claim("opdsPath", user.OpdsPath),
+            new Claim(SecurityStampClaim, user.SecurityStamp.ToString(System.Globalization.CultureInfo.InvariantCulture)),
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
 
@@ -278,6 +286,21 @@ public class JwtTokenService
             return userId;
 
         return null;
+    }
+
+    /// <summary>
+    /// True when the principal was minted under the user's CURRENT security
+    /// stamp. A token from before the stamp existed has no claim and counts as
+    /// stamp 0, so upgrading signs nobody out; only a later bump does.
+    /// </summary>
+    public static bool MatchesSecurityStamp(ClaimsPrincipal principal, UserEntity user)
+    {
+        string? raw = principal.FindFirst(SecurityStampClaim)?.Value;
+        int minted = 0;
+        if (raw != null && !int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out minted))
+            return false;
+        return minted == user.SecurityStamp;
     }
 
     /// <summary>

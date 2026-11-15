@@ -18,6 +18,11 @@
 
   <ItemGroup>
     <ProjectReference Include="../RenzoBackend/RenzoBackend.csproj" />
+    <!-- The bundled OAuth proxy's guard and store are unit-tested here too. Only
+         its source is shared: referencing the project would drag a second web
+         app (and a second appsettings.json) into the test output. -->
+    <Compile Include="../RenzoOAuthProxy/Services/InstanceGuardService.cs" Link="OAuthProxy/InstanceGuardService.cs" />
+    <Compile Include="../RenzoOAuthProxy/Services/TokenStoreService.cs" Link="OAuthProxy/TokenStoreService.cs" />
   </ItemGroup>
 
 </Project>

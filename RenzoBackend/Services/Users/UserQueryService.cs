@@ -27,6 +27,18 @@ public class UserQueryService
         return await _db.Users.FindAsync(new object[] { id }, token);
     }
 
+    /// <summary>
+    /// True when <paramref name="username"/> matches an existing account ignoring
+    /// case. Each user's files live under {library}/{username}/ and folders are
+    /// resolved case-insensitively, so "levitate" next to "Levitate" would share
+    /// one library folder. Compared in memory: SQLite's lower() is ASCII-only.
+    /// </summary>
+    public async Task<bool> UsernameTakenAsync(string username, CancellationToken token = default)
+    {
+        List<string> names = await _db.Users.AsNoTracking().Select(u => u.Username).ToListAsync(token);
+        return names.Any(n => string.Equals(n, username, StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<UserEntity?> GetByUsernameAsync(string username, CancellationToken token = default)
     {
         return await _db.Users.FirstOrDefaultAsync(u => u.Username == username, token);

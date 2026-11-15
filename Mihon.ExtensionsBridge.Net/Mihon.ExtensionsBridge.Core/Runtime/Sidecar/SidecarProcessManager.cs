@@ -110,6 +110,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         private readonly IWorkingFolderStructure _folder;
         private readonly ILogger _logger;
         private readonly HttpClient _http;
+        private readonly SidecarAuthHandler _auth = new();
         private readonly SemaphoreSlim _startLock = new(1, 1);
         private Process? _proc;
         private volatile bool _ready;
@@ -155,7 +156,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             _opts = opts;
             _folder = folder;
             _logger = logger;
-            _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{opts.Port}"), Timeout = TimeSpan.FromMinutes(3) };
+            _http = new HttpClient(_auth) { BaseAddress = new Uri($"http://127.0.0.1:{opts.Port}"), Timeout = TimeSpan.FromMinutes(3) };
             Client = new SidecarClient(_http);
         }
 
@@ -539,6 +540,11 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             psi.ArgumentList.Add("extension.bridge.server.SidecarServer");
             psi.Environment["RENZO_SIDECAR_PORT"] = _opts.Port.ToString();
             psi.Environment["RENZO_SIDECAR_STATUS_PORT"] = StatusPort.ToString();
+            // A new secret per launch (see SidecarAuthHandler). Set on the client
+            // before the JVM starts so the health wait already carries it.
+            string secret = SidecarAuthHandler.NewSecret();
+            psi.Environment[SidecarAuthHandler.EnvVar] = secret;
+            _auth.Secret = secret;
             if (_opts.DisableJcef) psi.Environment["RENZO_SIDECAR_NO_JCEF"] = "1";
             if (!string.IsNullOrEmpty(_opts.EnjarifyDir)) psi.Environment["RENZO_ENJARIFY_DIR"] = _opts.EnjarifyDir!;
             // The app runs with LD_LIBRARY_PATH pointed at IKVM's native libs (/app/ikvm/.../bin).

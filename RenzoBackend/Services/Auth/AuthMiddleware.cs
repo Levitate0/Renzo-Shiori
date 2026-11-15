@@ -103,6 +103,13 @@ public class AuthMiddleware
         if (authEnabled)
         {
             ClaimsPrincipal? principal = null;
+            // Only the full-scope session token is checked against the security
+            // stamp. Image/hub tokens live 15 minutes, can only read images and
+            // progress events, and can only be minted with a live session token —
+            // which the stamp does end — so after a password change the last of
+            // them dies on its own within minutes instead of 401ing every cover
+            // the web has already cached a URL for.
+            bool fullScope = false;
 
             // Primary path: full-scope session token via the Authorization header.
             // This is what every apiClient.ts fetch() call uses.
@@ -111,6 +118,7 @@ public class AuthMiddleware
             {
                 string headerToken = authHeader["Bearer ".Length..].Trim();
                 principal = jwtService.ValidateToken(headerToken);
+                fullScope = principal != null;
             }
             else
             {
@@ -185,6 +193,15 @@ public class AuthMiddleware
             if (user == null || !user.IsActive)
             {
                 authLogger.LogWarning("AUTH 401 (user {UserId} null/inactive) path={Path}", userId, context.Request.Path);
+                context.Response.StatusCode = 401;
+                return;
+            }
+
+            // A password change/reset or level change bumps the stamp, so access
+            // tokens minted before it stop working now rather than at expiry.
+            if (fullScope && !JwtTokenService.MatchesSecurityStamp(principal, user))
+            {
+                authLogger.LogInformation("AUTH 401 (stale security stamp for user {UserId}) path={Path}", userId, context.Request.Path);
                 context.Response.StatusCode = 401;
                 return;
             }

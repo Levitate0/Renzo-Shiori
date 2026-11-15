@@ -502,10 +502,10 @@ public class SeriesMatchingService
             try
             {
                 var settings = await _settings.GetSettingsAsync(token).ConfigureAwait(false);
-                var seriesFolder = System.IO.Path.Combine(settings.StorageFolder, series.StoragePath);
-                var renzoJsonPath = System.IO.Path.Combine(seriesFolder, "renzo.json");
+                var seriesFolder = settings.ResolveSeriesAbsolutePath(series.StoragePath);
+                var renzoJsonPath = seriesFolder == null ? null : System.IO.Path.Combine(seriesFolder, "renzo.json");
 
-                if (File.Exists(renzoJsonPath))
+                if (renzoJsonPath != null && File.Exists(renzoJsonPath))
                 {
                     var jsonContent = await File.ReadAllTextAsync(renzoJsonPath, token).ConfigureAwait(false);
                     var snapshot = System.Text.Json.JsonSerializer.Deserialize<ImportSeriesSnapshot>(jsonContent);

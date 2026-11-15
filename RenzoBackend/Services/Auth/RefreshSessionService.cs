@@ -99,6 +99,12 @@ public class RefreshSessionService
     /// so a client repeating a request whose response it lost ends up holding
     /// exactly what the lost response carried, and a client that did receive the
     /// new token keeps a token that stays valid.
+    ///
+    /// Beyond that window the replaced token is forgiven once (within its
+    /// original 24h). A token the session has provably moved past — the one
+    /// before the previous, the replacement a stranded device disowned, or the
+    /// previous token presented again after its one forgiveness — means the
+    /// tokens were copied, and the whole session is revoked.
     /// </summary>
     public async Task<(UserEntity user, string newRawToken)?> RotateAsync(string rawToken, CancellationToken token = default)
     {
@@ -146,8 +152,40 @@ public class RefreshSessionService
                 s => s.PreviousTokenHash != null
                      && s.PreviousTokenValidUntil > now
                      && _jwt.ValidateRefreshToken(rawToken, s.PreviousTokenHash));
-            if (stranded?.User == null || !stranded.User.IsActive)
+            if (stranded == null)
+            {
+                // A token the session has moved past for good. No legitimate
+                // client holds one (it already presented the token after it), so
+                // somebody copied it.
+                RefreshSessionEntity? retired = candidates.FirstOrDefault(s => IsRetired(s, rawToken, now));
+                if (retired != null)
+                    await RevokeForReuseAsync(retired, now, "a token it has already moved past", token).ConfigureAwait(false);
                 return null;
+            }
+            if (stranded.User == null || !stranded.User.IsActive)
+                return null;
+
+            // The fallback is forgiven ONCE. It used to re-extend itself every
+            // time, so a token lifted from a device before a rotation kept minting
+            // fresh sessions forever, each one evicting the real device's token.
+            // A device that lost the response to this fallback too is vanishingly
+            // rare (and the 90s replay above still covers a prompt retry); a
+            // second arrival on the same old token is a copy of it.
+            if (stranded.PreviousTokenReplayedAt != null)
+            {
+                await RevokeForReuseAsync(stranded, now, "its previous token a second time", token).ConfigureAwait(false);
+                return null;
+            }
+            // Nor once per rotation: a copier holding a pre-rotation token could
+            // rotate, wait out the 90s replay, and be "stranded" again, each time
+            // pinning one more disowned replacement until the real device's pin
+            // fell off the list. A second forgiveness while an earlier one's pin
+            // is still live is the same copied session, so it ends here.
+            if (HasLivePin(stranded, now))
+            {
+                await RevokeForReuseAsync(stranded, now, "a previous token again while an earlier forgiveness was still pinned", token).ConfigureAwait(false);
+                return null;
+            }
 
             // No raw replacement to replay this time — only its hash was kept —
             // so issue a fresh one. The token being presented is by definition
@@ -158,11 +196,20 @@ public class RefreshSessionService
                 "Session {SessionId} refreshed with the token it held before a rotation {Age:F1}h ago — the replacement evidently never reached it. Issuing a new one instead of signing the device out.",
                 stranded.Id, (ReplacedTokenGrace - (stranded.PreviousTokenValidUntil!.Value - now)).TotalHours);
             // The fallback stays pinned to the token the device demonstrably
-            // holds, rather than advancing to the replacement it never received:
-            // if this response is lost as well, that same token must still work
-            // the next time the app wakes up.
+            // holds, within its ORIGINAL deadline (not extended). The replacement
+            // it says it never received is retired: if that one turns up later,
+            // two parties hold this session's tokens and it is revoked.
             string presentedHash = stranded.PreviousTokenHash!;
-            stranded.PreviousTokenValidUntil = now.Add(ReplacedTokenGrace);
+            // Pinned, not rolled: rotating the new token quickly must not push
+            // the disowned one out of the list. The device that really holds it
+            // shows up with it at its next refresh, and that is the detection.
+            if (!Retire(stranded, stranded.TokenHash, now, pinUntil: now.AddDays(_jwt.GetRememberMeExpirationDays())))
+            {
+                // Never drop a pin to make room: that is what lets a copy outlive the device.
+                await RevokeForReuseAsync(stranded, now, "more disowned replacements than it can keep as tripwires", token).ConfigureAwait(false);
+                return null;
+            }
+            stranded.PreviousTokenReplayedAt = now;
             stranded.TokenHash = retryHash;
             stranded.ExpiresAt = now.AddDays(_jwt.GetRememberMeExpirationDays());
             stranded.LastSeenAt = now;
@@ -176,8 +223,13 @@ public class RefreshSessionService
 
         (string newRaw, string newHash) = _jwt.GenerateRefreshToken();
         string replacedHash = match.TokenHash;
+        // The previous token is now two steps behind: nothing legitimate will
+        // present it again, so it joins the tripwires (added to, never replaced:
+        // one overwritten slot let a copier rotate its way past detection).
+        Retire(match, match.PreviousTokenHash, now, pinUntil: null);
         match.PreviousTokenHash = replacedHash;
         match.PreviousTokenValidUntil = now.Add(ReplacedTokenGrace);
+        match.PreviousTokenReplayedAt = null;
         match.TokenHash = newHash;
         match.ExpiresAt = now.AddDays(_jwt.GetRememberMeExpirationDays());
         match.LastSeenAt = now;
@@ -186,6 +238,95 @@ public class RefreshSessionService
         return (match.User, newRaw);
     }
 
+    /// <summary>Most recent rolled-off tokens kept as tripwires per session.</summary>
+    private const int MaxRolledRetired = 32;
+
+    /// <summary>Pinned tripwires (replacements a stranded device disowned) kept per session.</summary>
+    private const int MaxPinnedRetired = 16;
+
+    /// <summary>
+    /// <see cref="RefreshSessionEntity.RetiredTokenHash"/> holds a newline-separated
+    /// list. A plain entry is a rolled-off token hash; "!{unixSeconds}:{hash}" is a
+    /// pinned one that survives later rotations until that time. Base64 hashes
+    /// never contain '!', ':' or a newline, and a value written before the list
+    /// existed (a single hash) reads as one plain entry.
+    /// </summary>
+    private static List<string> RetiredEntries(RefreshSessionEntity s) =>
+        string.IsNullOrEmpty(s.RetiredTokenHash)
+            ? new List<string>()
+            : s.RetiredTokenHash.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    /// <summary>The hash in a retired entry, or null for a pin that has run out.</summary>
+    private static string? RetiredHash(string entry, DateTime now)
+    {
+        if (!entry.StartsWith('!'))
+            return entry;
+        int colon = entry.IndexOf(':');
+        if (colon < 0 || !long.TryParse(entry.AsSpan(1, colon - 1), out long until)
+            || DateTimeOffset.FromUnixTimeSeconds(until).UtcDateTime <= now)
+            return null;
+        return entry[(colon + 1)..];
+    }
+
+    private bool IsRetired(RefreshSessionEntity s, string rawToken, DateTime now) =>
+        RetiredEntries(s).Any(e => RetiredHash(e, now) is { } h && _jwt.ValidateRefreshToken(rawToken, h));
+
+    private static bool HasLivePin(RefreshSessionEntity s, DateTime now) =>
+        RetiredEntries(s).Any(e => e.StartsWith('!') && RetiredHash(e, now) != null);
+
+    /// <summary>
+    /// Adds a tripwire. Rolled entries past <see cref="MaxRolledRetired"/> fall off
+    /// oldest first; pins never do — false (nothing written) when a pin would
+    /// overflow <see cref="MaxPinnedRetired"/>, and the caller revokes instead.
+    /// </summary>
+    private static bool Retire(RefreshSessionEntity s, string? hash, DateTime now, DateTime? pinUntil)
+    {
+        if (string.IsNullOrEmpty(hash))
+            return true;
+        List<string> entries = RetiredEntries(s).Where(e => RetiredHash(e, now) != null).ToList();
+        entries.Add(pinUntil is DateTime u ? $"!{new DateTimeOffset(u, TimeSpan.Zero).ToUnixTimeSeconds()}:{hash}" : hash);
+        List<string> rolled = entries.Where(e => !e.StartsWith('!')).ToList();
+        foreach (string old in rolled.Take(Math.Max(0, rolled.Count - MaxRolledRetired)))
+            entries.Remove(old);
+        if (pinUntil != null && entries.Count(e => e.StartsWith('!')) > MaxPinnedRetired)
+            return false;
+        s.RetiredTokenHash = string.Join('\n', entries);
+        return true;
+    }
+
+    /// <summary>
+    /// A refresh token turned up that only a copy could still be holding.
+    /// Revoking the whole session ends both the thief's and the device's
+    /// tokens — the device signs in again, which is the point: there is no way
+    /// to tell from here which of the two is the real one.
+    ///
+    /// No "just a race" window: a prompt duplicate of a refresh is already
+    /// answered by the in-memory replay before this is reached, and a window
+    /// keyed on the last refresh let a copier who refreshes every minute keep
+    /// any reuse from ever revoking.
+    /// </summary>
+    private async Task RevokeForReuseAsync(RefreshSessionEntity session, DateTime now, string what, CancellationToken token)
+    {
+        session.RevokedAt = now;
+        RecentRotations.TryRemove(session.Id, out _);
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        _logger.LogWarning(
+            "Session {SessionId} ({Device}) presented {What}; its refresh tokens have been copied. Revoked the session — the device will have to sign in again.",
+            session.Id, session.DeviceName ?? "unnamed device", what);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="rawToken"/> is a token this session will still
+    /// honour: its current one, or the previous one inside its grace. Every
+    /// match on a session token must accept both — a device can legitimately
+    /// be holding the token it just replaced.
+    /// </summary>
+    public static bool HoldsToken(JwtTokenService jwt, RefreshSessionEntity session, string rawToken, DateTime now) =>
+        jwt.ValidateRefreshToken(rawToken, session.TokenHash)
+        || (session.PreviousTokenHash != null
+            && session.PreviousTokenValidUntil > now
+            && jwt.ValidateRefreshToken(rawToken, session.PreviousTokenHash));
+
     /// <summary>Revokes the single session a raw token belongs to (sign-out).</summary>
     public async Task RevokeByTokenAsync(string rawToken, CancellationToken token = default)
     {
@@ -193,8 +334,10 @@ public class RefreshSessionService
         List<RefreshSessionEntity> candidates = await _db.RefreshSessions
             .Where(s => s.RevokedAt == null)
             .ToListAsync(token).ConfigureAwait(false);
+        // The previous token counts too: a device whose last refresh response
+        // was lost signs out holding it, and that must still end the session.
         RefreshSessionEntity? match = candidates
-            .FirstOrDefault(s => _jwt.ValidateRefreshToken(rawToken, s.TokenHash));
+            .FirstOrDefault(s => HoldsToken(_jwt, s, rawToken, now));
         if (match == null)
             return;
         match.RevokedAt = now;
@@ -233,7 +376,7 @@ public class RefreshSessionService
         int count = 0;
         foreach (RefreshSessionEntity s in live)
         {
-            if (exceptRawToken != null && _jwt.ValidateRefreshToken(exceptRawToken, s.TokenHash))
+            if (exceptRawToken != null && HoldsToken(_jwt, s, exceptRawToken, now))
                 continue;
             s.RevokedAt = now;
             RecentRotations.TryRemove(s.Id, out _);

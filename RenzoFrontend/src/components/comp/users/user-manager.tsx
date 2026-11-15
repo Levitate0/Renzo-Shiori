@@ -211,7 +211,10 @@ export function UserManager() {
                         {levelLabels[user.level]}
                       </span>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{user.opdsPath}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {/* The server sends another user's OPDS path blank: it is their credential. */}
+                      {user.opdsPath || <span className="font-sans text-muted-foreground">Private</span>}
+                    </TableCell>
                     <TableCell>
                       <span className={`inline-block w-2 h-2 rounded-full ${user.isActive ? 'bg-green-500' : 'bg-red-500'}`} />
                     </TableCell>

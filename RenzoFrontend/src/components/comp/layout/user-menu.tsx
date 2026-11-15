@@ -67,7 +67,7 @@ const LEVEL_BADGE: Record<UserLevel, string> = {
  * for palette/accent customization.
  */
 export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
-  const { user, logout, canManage, canAdmin, canOwner, refreshAuth } = useAuth();
+  const { user, logout, canAdmin, canOwner, refreshAuth } = useAuth();
   const { startWizard } = useImportWizard();
   const { data: settings } = useSettings();
   const [hideAdult, toggleHideAdult] = useHideAdult();
@@ -259,11 +259,12 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
             </DropdownMenuItem>
           )}
 
-          {/* Import Series — Manager+ (Users have no access). A DropdownMenuSub flyout
+          {/* Import Series — Owner only (the /api/setup wizard scans library folders
+              and creates accounts; the server refuses it below Owner). A DropdownMenuSub flyout
               here would render identically (and awkwardly) on mobile, so the two-option
               choice lives in a ResponsiveModal instead (Dialog on desktop, bottom-sheet
               Drawer on mobile) opened from a plain menu item. */}
-          {canManage && (
+          {canOwner && (
             <DropdownMenuItem
               onClick={() => setIsImportPickerOpen(true)}
               className="flex items-center gap-2 cursor-pointer"
@@ -273,7 +274,7 @@ export function UserAvatarDropdown({ size = "md" }: { size?: "sm" | "md" }) {
             </DropdownMenuItem>
           )}
 
-          {(canOwner || canManage) && <DropdownMenuSeparator />}
+          {canOwner && <DropdownMenuSeparator />}
 
           {/* Theme customization (palette presets + custom accent) lives on
               the dedicated Appearance page — no light/dark toggle, the app is dark-only. */}

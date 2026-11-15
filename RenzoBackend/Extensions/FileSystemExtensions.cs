@@ -178,7 +178,14 @@ namespace RenzoBackend.Extensions
         {
             if (string.IsNullOrEmpty(dbSeries.StoragePath))
                 return;
-            string seriesPath = Path.Combine(settings.StorageFolder, dbSeries.StoragePath);
+            // Contained: a StoragePath outside (or equal to) the library is never
+            // deleted from, and each file must stay inside the series folder.
+            string? seriesPath = settings.ResolveSeriesAbsolutePath(dbSeries.StoragePath);
+            if (seriesPath == null)
+            {
+                logger?.LogWarning("Not deleting files of series {Title}: storage path {Path} is outside the library.", dbSeries.Title, dbSeries.StoragePath);
+                return;
+            }
             if (!Directory.Exists(seriesPath))
                 return;
             logger?.LogInformation("Deleting Series {Title} in path {seriesPath}.", dbSeries.Title, seriesPath);
@@ -186,7 +193,12 @@ namespace RenzoBackend.Extensions
                 .Select(a => a.Filename!).ToList();
             foreach (string file in files)
             {
-                string fullPath = Path.Combine(seriesPath, file);
+                string? fullPath = PathSafety.IsSafeFileName(file) ? PathSafety.ContainedPath(seriesPath, file) : null;
+                if (fullPath == null)
+                {
+                    logger?.LogWarning("Not deleting {File}: it resolves outside the series folder.", file);
+                    continue;
+                }
                 try
                 {
                     if (File.Exists(fullPath))

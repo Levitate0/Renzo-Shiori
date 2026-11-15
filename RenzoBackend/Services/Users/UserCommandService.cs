@@ -25,6 +25,55 @@ public class UserCommandService
     }
 
     /// <summary>
+    /// Why <paramref name="username"/> can't be used, or null when it can. The
+    /// name becomes the user's library folder ({library}/{username}/…), so it
+    /// must be one plain folder name: a "/" or ".." would put that user's series
+    /// inside another user's folder, where every path check passes because the
+    /// files really are "inside the series folder".
+    /// </summary>
+    public static string? UsernameProblem(string? username)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+            return "Username is required";
+        if (username.Length < 3 || username.Length > 32)
+            return "Username must be between 3 and 32 characters";
+        if (username != username.Trim() || username.EndsWith('.')
+            || username.IndexOfAny(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) >= 0
+            || username.Any(char.IsControl) || username.Contains(".."))
+            return "Username can't contain / \\ : * ? \" < > |, \"..\", control characters, or start or end with a space or end with a dot";
+        return null;
+    }
+
+    /// <summary>
+    /// Why <paramref name="username"/> can't be a NEW user's name because a
+    /// folder of that name (any case) already sits at the top of the library
+    /// and holds files, or null when it can. The name becomes the user's library
+    /// root, and folders resolve case-insensitively, so a user named "manga" next
+    /// to an unowned "Manga/" tree would own those files. An empty folder is fine.
+    /// Fails closed when the library can't be listed.
+    /// </summary>
+    public static string? LibraryFolderTwinProblem(string? storageRoot, string username)
+    {
+        if (string.IsNullOrEmpty(storageRoot) || !Directory.Exists(storageRoot))
+            return null;
+        try
+        {
+            foreach (string dir in Directory.EnumerateDirectories(storageRoot))
+            {
+                string name = Path.GetFileName(dir);
+                if (string.Equals(name, username, StringComparison.OrdinalIgnoreCase)
+                    && Directory.EnumerateFileSystemEntries(dir).Any())
+                    return $"The library already has a folder named \"{name}\" with files in it, and a user's name becomes their library folder. Pick another username, or move that folder first.";
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return "Couldn't check the library folder for a folder with that name; try again.";
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Creates a new user with an auto-generated OPDS path.
     /// </summary>
     public async Task<UserEntity> CreateUserAsync(string username, UserLevel level, CancellationToken token = default)
@@ -58,6 +107,8 @@ public class UserCommandService
         user.PasswordHash = _passwordService.HashPassword(password, out string salt);
         user.Salt = salt;
         user.PasswordSetToken = null; // Clear any pending invite token
+        // Access tokens minted under the old password stop working (see AuthMiddleware).
+        user.SecurityStamp++;
         await _db.SaveChangesAsync(token);
     }
 
@@ -83,7 +134,10 @@ public class UserCommandService
 
         dbUser.PasswordHash = _passwordService.HashPassword(newPassword, out string salt);
         dbUser.Salt = salt;
+        dbUser.SecurityStamp++;
         await _db.SaveChangesAsync(token);
+        // The caller re-mints this device's access token from its entity.
+        user.SecurityStamp = dbUser.SecurityStamp;
         return true;
     }
 
@@ -108,11 +162,27 @@ public class UserCommandService
                             ?? await _db.Users.FirstOrDefaultAsync(u => u.Id == user.Id, token)
                             ?? user;
 
-        if (level.HasValue)
+        if (level.HasValue && target.Level != level.Value)
+        {
             target.Level = level.Value;
+            // An invite/reset link issued at the old level was authorised for that
+            // level: an Admin may reset a Manager, but once the Owner promotes that
+            // Manager to Admin the link the Admin holds must not still work.
+            target.PasswordSetToken = null;
+            target.PasswordSetTokenExpiresAt = null;
+            // A demoted account must not keep acting on a token minted at the
+            // higher level until it expires.
+            target.SecurityStamp++;
+        }
 
         if (isActive.HasValue)
+        {
+            // Deactivation already 401s every request; the bump makes sure the
+            // same old tokens don't come back to life on reactivation.
+            if (target.IsActive && !isActive.Value)
+                target.SecurityStamp++;
             target.IsActive = isActive.Value;
+        }
 
         if (email != null)
             target.Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim();
@@ -139,6 +209,7 @@ public class UserCommandService
         {
             user.Level = target.Level;
             user.IsActive = target.IsActive;
+            user.SecurityStamp = target.SecurityStamp;
             user.Email = target.Email;
             user.Preferences = target.Preferences;
             user.AvatarBlob = target.AvatarBlob;
@@ -164,6 +235,7 @@ public class UserCommandService
             throw new InvalidOperationException("An owner already exists. Only one owner is allowed.");
 
         user.Level = UserLevel.Owner;
+        user.SecurityStamp++;
         await _db.SaveChangesAsync(token);
     }
 

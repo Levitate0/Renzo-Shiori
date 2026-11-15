@@ -101,8 +101,8 @@ public class OpdsImageService
             if (pageIndex < state.Pages.Count)
             {
                 string entryKey = state.Pages[pageIndex].Replace('/', System.IO.Path.DirectorySeparatorChar);
-                string pageFile = System.IO.Path.Combine(cacheDir, entryKey);
-                if (File.Exists(pageFile))
+                string? pageFile = PathSafety.ContainedPath(cacheDir, entryKey);
+                if (pageFile != null && File.Exists(pageFile))
                 {
                     return await ReadAndConvertPageAsync(pageFile, supportedImageFormats, seriesStoragePath, chapterFilename, pageIndex, token);
                 }
@@ -153,8 +153,8 @@ public class OpdsImageService
                 }
 
                 // Read the file now that it's ready — run conversion if needed
-                string pageFile = System.IO.Path.Combine(cacheDir, entryKey);
-                if (File.Exists(pageFile))
+                string? pageFile = PathSafety.ContainedPath(cacheDir, entryKey);
+                if (pageFile != null && File.Exists(pageFile))
                 {
                     return await ReadAndConvertPageAsync(pageFile, supportedImageFormats, seriesStoragePath, chapterFilename, pageIndex, token);
                 }
@@ -578,7 +578,14 @@ public class OpdsImageService
                 cts.Token.ThrowIfCancellationRequested();
 
                 string entryKey = entry.Key?.Replace('/', System.IO.Path.DirectorySeparatorChar) ?? "";
-                string fullPath = System.IO.Path.Combine(cacheDir, entryKey);
+                // Zip-slip: an entry named "../../x" or "/x" would otherwise be
+                // written outside the cache folder. Such an entry is never a page.
+                string? fullPath = PathSafety.ContainedPath(cacheDir, entryKey);
+                if (fullPath == null)
+                {
+                    _logger.LogWarning("Skipping archive entry {EntryKey} in {Archive}: it resolves outside the cache folder", entry.Key, archivePath);
+                    continue;
+                }
 
                 // Create subdirectories if needed
                 string? dir = System.IO.Path.GetDirectoryName(fullPath);
@@ -845,6 +852,10 @@ public class OpdsImageService
         string tempFolder = _configuration.GetValue<string>("TempFolder", "");
         if (string.IsNullOrWhiteSpace(tempFolder))
             tempFolder = System.IO.Path.GetTempPath();
+        // The language comes from a source row a client may have written; this
+        // folder is later deleted recursively, so it must stay one plain segment.
+        if (!PathSafety.IsSafeFileName(language))
+            language = "unknown";
         return System.IO.Path.Combine(tempFolder, "opds-cache",
             seriesId.ToString("N"), language, base64Filename);
     }
