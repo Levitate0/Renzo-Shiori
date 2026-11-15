@@ -2089,11 +2089,9 @@ function ReaderInner() {
               </div>
             </div>
           )}
-        {/* @container: the chapter breaks span the whole screen (100cqw), not
-            just the page column, and cqw is the one width that excludes the
-            scrollbar — 100vw would overflow by its width. overflow-x-hidden
-            covers any subpixel left over. */}
-        <div ref={scrollRef} className="@container h-full overflow-y-auto overflow-x-hidden" onClick={handleTap}>
+        {/* The chapter breaks are as wide as the page column, never wider:
+            screen-wide ones overhung the pages on either side. */}
+        <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden" onClick={handleTap}>
           <div className="mx-auto flex flex-col items-center" style={{ ...containerWidthStyle, rowGap: gap }}>
             {segments.map((seg, si) => (
               <React.Fragment key={seg.key}>
@@ -2618,8 +2616,8 @@ function ReaderInner() {
  *
  * - Its own dark surface with the theme accent along both edges, so it stands
  *   out against any artwork and on every reader background, white included.
- * - The whole width of the screen, not just the page column (100cqw, against
- *   the @container on the scroller).
+ * - Exactly as wide as the page column, so it lines up with the pages above
+ *   and below; long chapter names wrap inside it.
  * - The next chapter's name in large type.
  *
  * `tall` fills the screen (min-h-dvh, not a padding: see the divider render for
@@ -2639,7 +2637,7 @@ function ChapterBreak({
 }) {
   return (
     <div
-      className={`flex w-[100cqw] min-w-full shrink-0 flex-col items-center justify-center px-6 py-14 text-center text-white ${
+      className={`flex w-full min-w-0 shrink-0 flex-col items-center justify-center px-6 py-14 text-center text-white ${
         tall ? "min-h-dvh" : "min-h-[60dvh]"
       }`}
       style={{
@@ -2653,7 +2651,7 @@ function ChapterBreak({
     >
       <CheckCircle2 className="h-8 w-8 text-primary" aria-hidden />
       <div className="mt-3 text-xs font-semibold uppercase tracking-[0.2em] text-white/50">Finished</div>
-      <div className="mt-1 max-w-md break-words text-base font-medium text-white/80 sm:text-lg">{finishedLabel}</div>
+      <div className="mt-1 max-w-md min-w-0 break-words text-base font-medium text-white/80 sm:text-lg">{finishedLabel}</div>
       <div className="my-6 flex w-full max-w-64 items-center gap-3" aria-hidden>
         <div className="h-px flex-1 bg-white/15" />
         {nextLabel && <ChevronsDown className="h-5 w-5 text-primary" />}
@@ -2662,7 +2660,7 @@ function ChapterBreak({
       {nextLabel ? (
         <>
           <div className="text-xs font-semibold uppercase tracking-[0.2em] text-white/50">Up next</div>
-          <div className="mt-1 max-w-lg break-words text-2xl font-bold leading-tight text-primary sm:text-3xl">{nextLabel}</div>
+          <div className="mt-1 max-w-lg min-w-0 break-words text-2xl font-bold leading-tight text-primary sm:text-3xl">{nextLabel}</div>
         </>
       ) : caughtUp ? (
         <div className="text-sm text-white/50">You&apos;re all caught up.</div>
