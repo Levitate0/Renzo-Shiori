@@ -125,7 +125,10 @@
         window.alert = function () { };
         s = { clicked: true, button: best.t, noCoins: count(NO_COINS, t), signedOut: count(SIGNED_OUT, t) };
         save(s);
-        best.e.click();
+        // Clicked just after this step answers: a site that reloads the page
+        // on purchase would otherwise lose the answer along with the page.
+        var target = best.e;
+        setTimeout(function () { target.click(); }, 50);
         r.clicked = true;
       } else {
         save({});

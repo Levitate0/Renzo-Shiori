@@ -172,6 +172,12 @@ public class ChapterAutoBuyService
     {
         PageRun run = await RunAsync(sidecar, url, login: null, dryRun, token).ConfigureAwait(false);
 
+        // Nothing came back from the page at all: the embedded browser may have
+        // stopped running scripts (it did for a whole day, 2026-11-15, and every
+        // buy ended "unavailable"). Check it, restart it if so, and try once more.
+        if (run.Inspect == null && await sidecar.RecoverBrowserIfWedgedAsync($"auto-buy on {site}", token).ConfigureAwait(false))
+            run = await RunAsync(sidecar, url, login: null, dryRun, token).ConfigureAwait(false);
+
         // Signed out in the browser although the server holds a session: sign
         // the browser in with the saved login, then try once more.
         if (run.Inspect is { SignedOut: true, Clicked: false })
@@ -189,7 +195,14 @@ public class ChapterAutoBuyService
 
         PageInspect? i = run.Inspect;
         if (i == null)
+        {
+            // The page told us nothing, but the source has the last word: the
+            // chapter may be readable already (bought by hand, or by a click whose
+            // answer was lost to the page reloading).
+            if (!dryRun && await PagesNowAsync(seriesId, chapterNumber, ownerId, token).ConfigureAwait(false))
+                return new AutoBuyResultDto { Status = "bought", Provider = site };
             return Fail("unavailable", $"Couldn't open the chapter on {site}.", site);
+        }
 
         // Dry run (diagnostics): everything up to the click, reported.
         if (dryRun)
@@ -213,17 +226,7 @@ public class ChapterAutoBuyService
         }
 
         // The definitive test: does the source hand over the pages now?
-        PreviewPagesDto? pages = null;
-        try
-        {
-            pages = await _reader.GetLibraryStreamPagesAsync(seriesId, chapterNumber, ownerId == Guid.Empty ? null : ownerId,
-                forceRefresh: true, refreshChapterList: true, token).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Auto-buy recheck failed for {SeriesId} ch {Chapter}", seriesId, chapterNumber);
-        }
-        if (pages is { PageCount: > 0 })
+        if (await PagesNowAsync(seriesId, chapterNumber, ownerId, token).ConfigureAwait(false))
             return new AutoBuyResultDto { Status = "bought", Provider = site, Price = i.Price, Balance = i.Balance };
 
         if (run.NoCoins)
@@ -237,6 +240,22 @@ public class ChapterAutoBuyService
         return Fail("not-confirmed", i.Clicked
             ? $"Pressed \"{i.Buttons.FirstOrDefault()}\" on {site}, but the chapter still doesn't open. {site} may need a step only a person can do."
             : $"The chapter page on {site} opened without a buy button, yet the chapter still doesn't load here.", site, i.Price, i.Balance);
+    }
+
+    /// <summary>Does the source hand over the chapter's pages now? Pages coming back is the purchase.</summary>
+    private async Task<bool> PagesNowAsync(Guid seriesId, decimal chapterNumber, Guid ownerId, CancellationToken token)
+    {
+        try
+        {
+            PreviewPagesDto? pages = await _reader.GetLibraryStreamPagesAsync(seriesId, chapterNumber, ownerId == Guid.Empty ? null : ownerId,
+                forceRefresh: true, refreshChapterList: true, token).ConfigureAwait(false);
+            return pages is { PageCount: > 0 };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Auto-buy recheck failed for {SeriesId} ch {Chapter}", seriesId, chapterNumber);
+            return false;
+        }
     }
 
     private sealed class PageInspect

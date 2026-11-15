@@ -78,6 +78,25 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         /// </summary>
         public int WatchdogMaxZombieHelpers { get; set; } =
             int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_MAX_ZOMBIES"), out var z) ? z : 1000;
+
+        /// <summary>
+        /// How often (minutes) the watchdog checks that the embedded browser can
+        /// still run a script, by opening about:blank and evaluating 1+1. 0
+        /// disables it. The JVM can be perfectly healthy while Chromium has
+        /// stopped launching renderers: every page then starts but never finishes,
+        /// so every script answers null — measured 2026-11-15 after ~40 h up, when
+        /// every auto-buy for a day ended "unavailable" and nothing noticed.
+        /// </summary>
+        public int BrowserCanaryMinutes { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_BROWSER_CANARY_MINUTES"), out var bc) ? bc : 10;
+
+        /// <summary>
+        /// Prevention: once the sidecar has been up this many hours, recycle it at
+        /// the next idle moment (no worker busy), before Chromium can drift into
+        /// the state above. 0 disables it.
+        /// </summary>
+        public int RecycleAfterHours { get; set; } =
+            int.TryParse(Environment.GetEnvironmentVariable("RENZO_SIDECAR_RECYCLE_HOURS"), out var rh) ? rh : 24;
     }
 
     /// <summary>
@@ -98,6 +117,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
         private readonly CancellationTokenSource _watchdogCts = new();
         private Task? _watchdog;
         private int _consecutiveRestarts;
+        private DateTime _lastCanaryAt = DateTime.UtcNow;
 
         /// <summary>
         /// Bumped every time the JVM is (re)started. A restarted sidecar has NO
@@ -286,6 +306,49 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             }
         }
 
+        /// <summary>
+        /// Can the embedded browser still run a script? Opens about:blank and
+        /// evaluates 1+1. True = it answered, false = it definitely did not (the
+        /// page never ran, or no WebView could be made), null = couldn't tell
+        /// (another page script held the browser, the call failed for another
+        /// reason) — never a reason to restart.
+        /// </summary>
+        public async Task<bool?> BrowserRunsScriptsAsync(CancellationToken token = default)
+        {
+            if (!IsReady)
+                return null;
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+                List<string?> r = await Client.RunPageScriptAsync("about:blank", null,
+                    [new SidecarClient.PageScriptStep("1+1", 10_000, 500)], cts.Token).ConfigureAwait(false);
+                return r.Count > 0 && r[0] == "2";
+            }
+            catch (SidecarException e) when (e.Message.Contains("WebView could not be created", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            catch (Exception e) when (!token.IsCancellationRequested)
+            {
+                _logger.LogDebug(e, "Browser canary could not run.");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Restarts the sidecar when its browser no longer runs scripts. Returns
+        /// true when it restarted. For callers whose page script came back empty.
+        /// </summary>
+        public async Task<bool> RecoverBrowserIfWedgedAsync(string why, CancellationToken token = default)
+        {
+            if (await BrowserRunsScriptsAsync(token).ConfigureAwait(false) != false)
+                return false;
+            CaptureDiagnostics();
+            await RestartAsync($"embedded browser no longer runs scripts ({why})", token).ConfigureAwait(false);
+            return true;
+        }
+
         private void StartWatchdog()
         {
             if (_opts.WatchdogIntervalSeconds <= 0 || _watchdog is { IsCompleted: false })
@@ -380,6 +443,27 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
                             await RestartWithBackoffAsync(
                                 $"{zombies} unreaped browser helper zombies (limit {_opts.WatchdogMaxZombieHelpers})", token)
                                 .ConfigureAwait(false);
+                        }
+                        // Prevention: a long-lived Chromium is the one that wedges.
+                        // Recycle a day-old sidecar while nothing is running on it.
+                        else if (_opts.RecycleAfterHours > 0 && StartedAt is { } up
+                                 && DateTime.UtcNow - up > TimeSpan.FromHours(_opts.RecycleAfterHours)
+                                 && status is { Busy: 0 })
+                        {
+                            await RestartWithBackoffAsync($"scheduled recycle after {_opts.RecycleAfterHours}h up, while idle", token)
+                                .ConfigureAwait(false);
+                        }
+                        // Keep-alive: the JVM answering says nothing about Chromium.
+                        else if (_opts.BrowserCanaryMinutes > 0
+                                 && DateTime.UtcNow - _lastCanaryAt > TimeSpan.FromMinutes(_opts.BrowserCanaryMinutes))
+                        {
+                            _lastCanaryAt = DateTime.UtcNow;
+                            if (await BrowserRunsScriptsAsync(token).ConfigureAwait(false) == false)
+                            {
+                                CaptureDiagnostics();
+                                await RestartWithBackoffAsync("embedded browser no longer runs scripts (canary)", token)
+                                    .ConfigureAwait(false);
+                            }
                         }
                         continue;
                     }
