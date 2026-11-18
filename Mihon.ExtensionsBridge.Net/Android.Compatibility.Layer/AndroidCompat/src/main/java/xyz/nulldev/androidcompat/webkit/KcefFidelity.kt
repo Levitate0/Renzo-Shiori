@@ -121,7 +121,7 @@ internal object KcefFidelity {
         if (!started) finish() else timers.schedule(finish, 400, TimeUnit.MILLISECONDS)
     }
 
-    private fun toOkHttp(c: CefCookie): Cookie? = runCatching {
+    internal fun toOkHttp(c: CefCookie): Cookie? = runCatching {
         val b = Cookie.Builder().name(c.name).value(c.value)
         val d = c.domain ?: return null
         if (d.startsWith(".")) b.domain(d.removePrefix(".")) else b.hostOnlyDomain(d)

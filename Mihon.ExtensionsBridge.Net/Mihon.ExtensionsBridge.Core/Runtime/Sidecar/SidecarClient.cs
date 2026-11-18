@@ -96,8 +96,10 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
 
         /// <summary>One step of <see cref="RunPageScriptAsync"/>: re-evaluated every
         /// <paramref name="PollMs"/> until it returns a truthy value or <paramref name="TimeoutMs"/>
-        /// passes. An empty script is a plain pause.</summary>
-        public sealed record PageScriptStep(string Js, int TimeoutMs, int PollMs = 1000);
+        /// passes. An empty script is a plain pause. <paramref name="Action"/> runs an engine-side
+        /// step instead of a script: "clearSiteCookies" drops Chromium's cookies for the page's
+        /// site (Cloudflare's kept) and reports their names.</summary>
+        public sealed record PageScriptStep(string Js, int TimeoutMs, int PollMs = 1000, string? Action = null);
 
         /// <summary>
         /// Opens <paramref name="url"/> in the engine's WebView (its cookie store, so a
@@ -110,7 +112,7 @@ namespace Mihon.ExtensionsBridge.Core.Runtime.Sidecar
             {
                 url,
                 userAgent,
-                steps = steps.Select(s => new { js = s.Js, timeoutMs = s.TimeoutMs.ToString(), pollMs = s.PollMs.ToString() }).ToList(),
+                steps = steps.Select(s => new { js = s.Js, timeoutMs = s.TimeoutMs.ToString(), pollMs = s.PollMs.ToString(), action = s.Action }).ToList(),
             };
             using var doc = await PostJsonAsync("/webview/script", body, token).ConfigureAwait(false);
             var list = new List<string?>();

@@ -24,11 +24,14 @@ public static class BrowserSignIn
         return r.ReadToEnd();
     });
 
+    /// <summary>The steps' index whose result says which cookies were dropped first.</summary>
+    public const int ClearedStep = 0;
+
     /// <summary>The steps' index whose result says how the form submit went.</summary>
-    public const int SubmitStep = 4;
+    public const int SubmitStep = 5;
 
     /// <summary>The steps' index holding what the site showed after the submit.</summary>
-    public const int SaidStep = 6;
+    public const int SaidStep = 7;
 
     internal static string Call(string fn, params object?[] args) =>
         Script.Value + "\n;window." + fn + "(" + string.Join(",", args.Select(a => JsonSerializer.Serialize(a))) + ")";
@@ -39,6 +42,11 @@ public static class BrowserSignIn
     /// <summary>The sign-in, as page-script steps to run on any page of the site.</summary>
     public static List<SidecarClient.PageScriptStep> Steps(string user, string pass) => new()
     {
+        // From a clean slate: opening the page pushed the server's own login
+        // into Chromium, and signing in on top of it left two sessions there.
+        // A one-session-per-account site (EZmanga) ends the older one at this
+        // sign-in, and Chromium kept sending it: login accepted, then 401.
+        new("", 0, Action: "clearSiteCookies"),
         Ready(),
         new("", 3_000),
         new(Call("__rzLogin", "open"), 2_000),
@@ -47,6 +55,10 @@ public static class BrowserSignIn
         new(Call("__rzLogin", "done"), 15_000),
         new(Call("__rzLogin", "said"), 1_000),
         new("", 3_000),
+        // The new session into the server's jar too: the per-page copy covers
+        // only the page's host, not the site's API host, so the server kept
+        // reading with the session this sign-in had just ended.
+        new("", 0, Action: "syncSiteCookiesToJar"),
     };
 
     /// <summary>
@@ -62,7 +74,9 @@ public static class BrowserSignIn
         if (submit != "submitted") return submit;
         string? said = result(SaidStep);
         string outcome = result(SubmitStep + 1) == "done" ? "signed in" : "refused";
-        return said is null or "-" ? outcome : $"{outcome}, site said \"{said}\"";
+        if (said is not (null or "-")) outcome += $", site said \"{said}\"";
+        string? cleared = result(ClearedStep);
+        return cleared is null or "none" ? outcome : $"{outcome}; cleared first: {cleared}";
     }
 
     /// <summary>
@@ -78,7 +92,7 @@ public static class BrowserSignIn
         string? Result(int i) => i < r.Count ? Unwrap(r[i]) : null;
         string? submit = Result(SubmitStep);
         if (submit == null)
-            return Result(2) == "none" ? "none" : "noform";
+            return Result(SubmitStep - 2) == "none" ? "none" : "noform";
         if (submit != "submitted")
             return submit;
         return Result(SubmitStep + 1) == "done" ? "done" : "rejected";

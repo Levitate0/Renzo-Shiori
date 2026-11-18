@@ -33,11 +33,26 @@ public class BrowserSignInOutcomeTests
     }
 
     [Fact]
+    public void Sign_in_starts_by_clearing_the_sites_cookies_and_logs_them()
+    {
+        var steps = BrowserSignIn.Steps("u", "p");
+        Assert.Equal("clearSiteCookies", steps[BrowserSignIn.ClearedStep].Action);
+        Assert.Contains("\"submit\"", steps[BrowserSignIn.SubmitStep].Js);
+        Func<int, string?> r = i =>
+            i == BrowserSignIn.ClearedStep ? "accessToken@vapi.example.org/"
+            : i == BrowserSignIn.SubmitStep ? "submitted"
+            : i == BrowserSignIn.SubmitStep + 1 ? "done"
+            : null;
+        Assert.Equal("signed in; cleared first: accessToken@vapi.example.org/", BrowserSignIn.Describe(r));
+    }
+
+    [Fact]
     public void Said_step_comes_after_done_and_before_the_final_wait()
     {
         var steps = BrowserSignIn.Steps("u", "p");
         Assert.Contains("\"done\"", steps[BrowserSignIn.SubmitStep + 1].Js);
         Assert.Contains("\"said\"", steps[BrowserSignIn.SaidStep].Js);
-        Assert.Equal(BrowserSignIn.SaidStep + 2, steps.Count);
+        Assert.Equal(BrowserSignIn.SaidStep + 3, steps.Count);
+        Assert.Equal("syncSiteCookiesToJar", steps[^1].Action);
     }
 }
