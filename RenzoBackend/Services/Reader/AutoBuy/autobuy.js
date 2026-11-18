@@ -220,6 +220,17 @@
       return "submitted";
     }
     if (step === "done") return passwordField() ? null : "done";
+    // What the site said after the submit (an error under the form, a toast),
+    // so a refused sign-in is logged with its reason. "-" when nothing shows.
+    if (step === "said") {
+      var seen = [];
+      Array.prototype.forEach.call(document.querySelectorAll(
+        "[role=alert],[aria-live],[class*=error],[class*=invalid],[class*=toast],[class*=alert],[class*=danger]"), function (e) {
+        var t = vis(e) ? (e.innerText || "").replace(/\s+/g, " ").trim() : "";
+        if (t && t.length <= 160 && seen.indexOf(t) < 0) seen.push(t);
+      });
+      return seen.join(" / ").slice(0, 200) || "-";
+    }
     return null;
   };
   return true;

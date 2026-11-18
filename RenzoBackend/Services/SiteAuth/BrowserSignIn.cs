@@ -27,6 +27,9 @@ public static class BrowserSignIn
     /// <summary>The steps' index whose result says how the form submit went.</summary>
     public const int SubmitStep = 4;
 
+    /// <summary>The steps' index holding what the site showed after the submit.</summary>
+    public const int SaidStep = 6;
+
     internal static string Call(string fn, params object?[] args) =>
         Script.Value + "\n;window." + fn + "(" + string.Join(",", args.Select(a => JsonSerializer.Serialize(a))) + ")";
 
@@ -42,8 +45,25 @@ public static class BrowserSignIn
         new(Call("__rzLogin", "form"), 20_000),
         new(Call("__rzLogin", "submit", user, pass), 2_000),
         new(Call("__rzLogin", "done"), 15_000),
+        new(Call("__rzLogin", "said"), 1_000),
         new("", 3_000),
     };
+
+    /// <summary>
+    /// How a sign-in run went, for a log line: what stopped it ("captcha",
+    /// "noform", …), or whether the site took the login — "signed in" when the
+    /// form went away, "refused" when it stayed up — with whatever the site
+    /// showed. Logging only "submitted" hid every refusal (EZmanga, 2026-11-17).
+    /// </summary>
+    internal static string Describe(Func<int, string?> result)
+    {
+        string? submit = result(SubmitStep);
+        if (submit == null) return "no form";
+        if (submit != "submitted") return submit;
+        string? said = result(SaidStep);
+        string outcome = result(SubmitStep + 1) == "done" ? "signed in" : "refused";
+        return said is null or "-" ? outcome : $"{outcome}, site said \"{said}\"";
+    }
 
     /// <summary>
     /// Runs the sign-in from <paramref name="url"/>. Returns "done" when the

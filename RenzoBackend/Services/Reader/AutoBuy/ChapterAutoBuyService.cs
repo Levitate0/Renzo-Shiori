@@ -380,7 +380,7 @@ public class ChapterAutoBuyService
                 catch (JsonException) { }
             }
         }
-        string? loginOutcome = login != null ? Result(BrowserSignIn.SubmitStep) : null;
+        string? loginOutcome = login != null ? BrowserSignIn.Describe(Result) : null;
         return new PageRun(inspect, noCoins, siteText?.Length > 200 ? siteText[..200] : siteText, signedOutAfter, loginOutcome,
             Result(inspectAt + 1), Result(inspectAt + 2));
     }
