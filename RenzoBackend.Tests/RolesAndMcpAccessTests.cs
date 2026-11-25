@@ -425,8 +425,11 @@ public class RolesAndMcpAccessTests : IDisposable
         AddCred(AddUser(UserLevel.User).Id);       // someone else's login for the site
         var (series, _) = AddSeries(Guid.Empty, autoBuy: true);
 
+        // Without a login of their own it goes on the browser's session (the
+        // Owner's jar), never the other user's saved login: stops only because
+        // no browser runs in a test.
         AutoBuyResultDto? r = await AutoBuy().PrecheckAsync(series, 5, owner, default);
-        Assert.Equal("no-login", r?.Reason);
+        Assert.Equal("unavailable", r?.Reason);
     }
 
     [Fact]

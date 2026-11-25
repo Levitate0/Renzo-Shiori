@@ -75,7 +75,7 @@ public class ChapterAutoBuyService
 
     /// <summary>What a purchase needs once the checks pass.</summary>
     private sealed record Plan(SeriesEntity Series, Guid OwnerId, SeriesProviderEntity Source, Chapter Chapter,
-        SiteCredentialEntity Cred, SidecarProcessManager Sidecar);
+        SiteCredentialEntity? Cred, SidecarProcessManager Sidecar);
 
     /// <summary>
     /// The answer that needs no browser, or null when there is a purchase to try:
@@ -167,14 +167,13 @@ public class ChapterAutoBuyService
         List<SiteCredentialEntity> creds = await _db.SiteCredentials.AsNoTracking()
             .Where(c => (c.Status == "ok" || c.Status == "manual_cookie") && c.UserId == credUserId)
             .ToListAsync(token).ConfigureAwait(false);
-        var pick = holders.Select(h => (h.p, h.c, cred: creds.FirstOrDefault(c => c.Provider.Equals(h.p.Provider, StringComparison.OrdinalIgnoreCase))))
-            .FirstOrDefault(x => x.cred != null);
+        // A source with a saved login first; otherwise the best holder, bought
+        // on whatever session the browser already has there (a pasted cookie, a
+        // sign-in made in the source's web view). Not tied to a list of sites.
+        var withCred = holders.Select(h => (h.p, h.c, cred: creds.FirstOrDefault(c => c.Provider.Equals(h.p.Provider, StringComparison.OrdinalIgnoreCase))));
+        var pick = withCred.FirstOrDefault(x => x.cred != null);
         if (pick.cred == null)
-        {
-            string site = holders[0].p.Provider;
-            return (Remember(seriesId, chapterNumber, Fail("no-login",
-                $"You aren't signed in to {site}. Add your {site} login under Settings → Site logins so chapters can be bought there.", site)), null);
-        }
+            pick = withCred.First();
 
         if (_services.GetService(typeof(SidecarProcessManager)) is not SidecarProcessManager sidecar)
             return (Fail("unavailable", "Auto-buy needs the extension host's browser, which isn't running.", pick.p.Provider), null);
@@ -183,7 +182,7 @@ public class ChapterAutoBuyService
     }
 
     private async Task<AutoBuyResultDto> BuyAsync(SidecarProcessManager sidecar, Guid seriesId, decimal chapterNumber, Guid ownerId,
-        string site, string url, SiteCredentialEntity cred, bool dryRun, CancellationToken token)
+        string site, string url, SiteCredentialEntity? cred, bool dryRun, CancellationToken token)
     {
         var login = new StrongBox<string?>();
         AutoBuyResultDto result = await BuyCoreAsync(sidecar, seriesId, chapterNumber, ownerId, site, url, cred, dryRun, login, token).ConfigureAwait(false);
@@ -192,7 +191,7 @@ public class ChapterAutoBuyService
     }
 
     private async Task<AutoBuyResultDto> BuyCoreAsync(SidecarProcessManager sidecar, Guid seriesId, decimal chapterNumber, Guid ownerId,
-        string site, string url, SiteCredentialEntity cred, bool dryRun, StrongBox<string?> loginOutcome, CancellationToken token)
+        string site, string url, SiteCredentialEntity? cred, bool dryRun, StrongBox<string?> loginOutcome, CancellationToken token)
     {
         PageRun run = await RunAsync(sidecar, url, login: null, dryRun, token).ConfigureAwait(false);
 
@@ -206,6 +205,9 @@ public class ChapterAutoBuyService
         // the browser in with the saved login, then try once more.
         if (run.Inspect is { SignedOut: true, Clicked: false })
         {
+            if (cred == null)
+                return Fail("no-login",
+                    $"Renzo Shiori's browser isn't signed in to {site}. Add your {site} login under Settings → Site logins, or paste its cookie there, so chapters can be bought.", site);
             string? password = _protector.TryDecrypt(cred.EncryptedPassword);
             CoinSiteDefinition? def = await _registry.GetDefinitionAsync(site, token).ConfigureAwait(false);
             if (string.IsNullOrEmpty(password) || string.IsNullOrEmpty(cred.Username) || def is { CaptchaRequired: true })
