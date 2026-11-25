@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.network.interceptor
 
+import extension.bridge.putJarCookie
 import android.app.Application
 import android.os.Handler
 import android.os.Looper
@@ -194,7 +195,7 @@ object ChromiumTransport {
             val cef = CefCookieManager.getGlobalManager() ?: return
             for (c in network.cookieStore.get(url)) {
                 if (c.name in CF_COOKIES) continue
-                cef.setCookie("https://" + c.domain, c.toCefCookie())
+                cef.putJarCookie(c)
             }
             explicit?.split(';')?.map { it.trim() }?.filter { '=' in it }?.forEach { pair ->
                 val name = pair.substringBefore('=').trim()

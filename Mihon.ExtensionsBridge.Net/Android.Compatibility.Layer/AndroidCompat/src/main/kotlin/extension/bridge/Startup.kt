@@ -317,11 +317,7 @@ fun applicationSetup(dataRoot: String, tempRoot: String, sink: AndroidCompatLogS
                                 val cookies = networkHelper.cookieStore.getStoredCookies()
                                 for (cookie in cookies) {
                                     try {
-                                        if (!setCookie(
-                                                "https://" + cookie.domain,
-                                                cookie.toCefCookie(),
-                                            )
-                                        ) {
+                                        if (!putJarCookie(cookie)) {
                                             throw Exception()
                                         }
                                     } catch (e: Exception) {
@@ -391,6 +387,20 @@ fun applicationShutdown(logger: AndroidCompatLogger) {
 /** Java-callable handle on [toCefCookie] for the sidecar server. */
 object StartupCookies {
     fun Cookie.asCef(): CefCookie = toCefCookie()
+}
+
+/**
+ * A jar cookie into Chromium as the ONLY copy of that name for its host.
+ * The jar keeps a cookie's scope as the server's login saw it, and the site's
+ * own Set-Cookie often uses the other one (host-only vs Domain=), so both
+ * copies lived side by side and the older, dead session was sent first: every
+ * EZmanga and Philia auto-buy saw itself signed out (2026-11). Cloudflare's
+ * cookies are left alone: Chromium's copy may be the live one.
+ */
+fun CefCookieManager.putJarCookie(cookie: Cookie): Boolean {
+    val url = "https://" + cookie.domain
+    if (cookie.name != "cf_clearance" && cookie.name != "__cf_bm") deleteCookies(url, cookie.name)
+    return setCookie(url, cookie.toCefCookie())
 }
 
 fun Cookie.toCefCookie(): CefCookie {
